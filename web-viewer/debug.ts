@@ -9,6 +9,14 @@ async function main() {
     console.log("Layers:", doc.layers.length);
     console.log("Images:", doc.layers.reduce((acc, l) => acc + l.images.length, 0));
     console.log("Strokes:", doc.layers.reduce((acc, l) => acc + l.strokes.length, 0));
+    console.log("Resources keys:", Object.keys(doc.resources));
+    if (doc.layers.length > 0) {
+      doc.layers.forEach(l => {
+        l.images.forEach(img => {
+          console.log("Image resourceId:", img.resourceId);
+        });
+      });
+    }
     if (doc.layers.length > 0 && doc.layers[0].strokes.length > 0) {
       console.log("First stroke points sample:", doc.layers[0].strokes[0].points.slice(0, 3));
     }

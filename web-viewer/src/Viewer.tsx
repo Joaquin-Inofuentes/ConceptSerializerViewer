@@ -19,7 +19,7 @@ export const Viewer: React.FC<ViewerProps> = ({ doc }) => {
   const [size, setSize] = useState({ width: 800, height: 600 });
   
   // Loaded Images State
-  const [images, setImages] = useState<Record<string, HTMLImageElement>>({});
+  const [images, setImages] = useState<Record<string, CanvasImageSource>>({});
 
   // 1. Handle Resize
   useEffect(() => {
@@ -62,26 +62,57 @@ export const Viewer: React.FC<ViewerProps> = ({ doc }) => {
     }
 
     // Load Images
-    const loadedImgs: Record<string, HTMLImageElement> = {};
+    const loadedImgs: Record<string, CanvasImageSource> = {};
     let pending = 0;
     
     doc.layers.forEach(layer => {
       layer.images.forEach(img => {
         if (img.resourceId && doc.resources[img.resourceId]) {
           const blob = doc.resources[img.resourceId];
-          // Concept images might not have mime type set correctly, let's force it if it's empty
-          const blobUrl = URL.createObjectURL(blob);
-          const imageObj = new Image();
           pending++;
-          imageObj.onload = () => {
-            loadedImgs[img.resourceId] = imageObj;
-            pending--;
-            if (pending === 0) {
-              setImages({ ...loadedImgs });
+          
+          const processBlob = async () => {
+            try {
+              const header = await blob.slice(0, 5).text();
+              if (header === "%PDF-") {
+                 // Dynamic import to avoid SSR/Vite issues if any, and only load pdfjs when needed
+                 const pdfjsLib = await import('pdfjs-dist');
+                 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+                 const url = URL.createObjectURL(blob);
+                 const pdf = await pdfjsLib.getDocument({ url }).promise;
+                 const page = await pdf.getPage(1);
+                 const viewport = page.getViewport({ scale: 2.0 });
+                 const canvas = document.createElement("canvas");
+                 const context = canvas.getContext("2d");
+                 if (context) {
+                   canvas.height = viewport.height;
+                   canvas.width = viewport.width;
+                   await page.render({ canvasContext: context, viewport } as any).promise;
+                   loadedImgs[img.resourceId] = canvas;
+                 }
+                 URL.revokeObjectURL(url);
+              } else {
+                 // Normal Image
+                 const url = URL.createObjectURL(blob);
+                 const imageObj = new Image();
+                 await new Promise((resolve, reject) => {
+                    imageObj.onload = () => resolve(true);
+                    imageObj.onerror = reject;
+                    imageObj.src = url;
+                 });
+                 loadedImgs[img.resourceId] = imageObj;
+              }
+            } catch (e) {
+              console.error("Error loading resource", img.resourceId, e);
+            } finally {
+              pending--;
+              if (pending === 0) {
+                setImages({ ...loadedImgs });
+              }
             }
           };
-          imageObj.onerror = () => { pending--; };
-          imageObj.src = blobUrl;
+          
+          processBlob();
         }
       });
     });

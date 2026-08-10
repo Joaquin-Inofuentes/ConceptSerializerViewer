@@ -133,7 +133,7 @@ export async function parseConceptsFile(fileBuffer: ArrayBuffer): Promise<Docume
         let keys = Object.keys(mapa);
         for (const k of keys) {
             const ruuid = k;
-            const filename = Object.keys(zip.files).find(n => n.replace(/-/g, "") === ruuid.replace(/-/g, ""));
+            const filename = Object.keys(zip.files).find(n => n.replace(/-/g, "").includes(ruuid.replace(/-/g, "")));
             if (filename) {
                 const fileBlob = await zip.file(filename)!.async("blob");
                 resources[ruuid] = fileBlob;
