@@ -139,10 +139,6 @@ body {
   display: flex;
   position: relative;
   background-color: var(--bg-canvas);
-  background-image: 
-    linear-gradient(#f0f0f0 1px, transparent 1px),
-    linear-gradient(90deg, #f0f0f0 1px, transparent 1px);
-  background-size: 40px 40px;
 }
 
 .canvas-wrapper {
@@ -165,4 +161,96 @@ body {
 .empty-state h3 {
   margin-bottom: 1rem;
   font-weight: 500;
+}
+
+/* Layer Menu Dropdown */
+.dropdown-container {
+  position: relative;
+}
+
+.btn-ghost {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-weight: 500;
+}
+.btn-ghost:hover {
+  background: transparent;
+  text-decoration: underline;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 0.5rem;
+  background: white;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  min-width: 250px;
+  z-index: 100;
+  padding: 0.5rem 0;
+}
+
+.layer-menu-header {
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.btn-tiny {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.4rem;
+}
+
+.layer-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 1rem;
+}
+.layer-item:hover {
+  background: var(--bg-color);
+}
+.layer-item.isolated {
+  background: #e7f1ff;
+}
+
+.layer-name {
+  font-weight: 500;
+  font-size: 0.85rem;
+}
+
+.layer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.opacity-slider {
+  width: 60px;
+}
+
+.icon-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem;
+  border-radius: 4px;
+  color: var(--text-muted);
+}
+.icon-btn:hover {
+  background: #e9ecef;
+  color: var(--text-main);
+}
+.active-icon {
+  color: var(--primary);
 }
