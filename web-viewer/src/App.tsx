@@ -18,20 +18,36 @@ function App() {
   
   // UI State
   const [showLayerMenu, setShowLayerMenu] = useState(false);
+  const [showImageMenu, setShowImageMenu] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const layerMenuRef = useRef<HTMLDivElement>(null);
+  const imageMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Close layer menu if clicked outside
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowLayerMenu(false);
+        setShowImageMenu(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (layerMenuRef.current && !layerMenuRef.current.contains(e.target as Node)) {
         setShowLayerMenu(false);
       }
+      if (imageMenuRef.current && !imageMenuRef.current.contains(e.target as Node)) {
+        setShowImageMenu(false);
+      }
     };
-    if (showLayerMenu) {
+    if (showLayerMenu || showImageMenu) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showLayerMenu]);
+  }, [showLayerMenu, showImageMenu]);
 
   const initDoc = (parsedDoc: Document) => {
     setDoc(parsedDoc);
@@ -99,8 +115,49 @@ function App() {
     setIsolatedLayer(prev => prev === id ? null : id);
   };
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (!doc) setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file || !file.name.endsWith('.concepts')) {
+      setError("Solo se admiten archivos .concepts");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      const buffer = await file.arrayBuffer();
+      initDoc(await parseConceptsFile(buffer));
+    } catch (err: any) {
+      setError(err.message || "Error al leer el archivo");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <div className="app-container">
+    <div 
+      className="app-container" 
+      onDragOver={handleDragOver} 
+      onDragLeave={handleDragLeave} 
+      onDrop={handleDrop}
+    >
+      {isDragging && !doc && (
+        <div className="drag-overlay">
+          <h2>Suelta el archivo .concepts aquí</h2>
+        </div>
+      )}
       {/* Ultra Minimalist Topbar */}
       <header className="toolbar-slim">
         <div className="toolbar-brand">
@@ -111,7 +168,7 @@ function App() {
           <div className="stats">
             <div className="dropdown-container" ref={layerMenuRef}>
               <button 
-                className={`btn btn-ghost ${showLayerMenu ? 'active' : ''}`}
+                className={`btn btn-dropdown ${showLayerMenu ? 'active' : ''}`}
                 onClick={() => setShowLayerMenu(!showLayerMenu)}
               >
                 Capas : {stats.layers}
@@ -121,12 +178,23 @@ function App() {
                 <div className="layer-menu dropdown-menu">
                   <div className="layer-menu-header">
                     <span>Ajustes de Capas</span>
-                    <button className="btn btn-tiny" onClick={() => {
+                    <div style={{display:'flex', gap:'4px'}}>
+                      <button className="btn btn-tiny" onClick={() => {
                         const newConfigs = {...layerConfigs};
-                        let allVisible = Object.values(newConfigs).every(c => c.visible);
-                        Object.keys(newConfigs).forEach(k => newConfigs[k].visible = !allVisible);
+                        Object.keys(newConfigs).forEach(k => {
+                          newConfigs[k].visible = true;
+                          newConfigs[k].opacity = 1.0;
+                        });
                         setLayerConfigs(newConfigs);
-                    }}>Alternar todas</button>
+                        setIsolatedLayer(null);
+                      }}>Restablecer</button>
+                      <button className="btn btn-tiny" onClick={() => {
+                          const newConfigs = {...layerConfigs};
+                          let allVisible = Object.values(newConfigs).every(c => c.visible);
+                          Object.keys(newConfigs).forEach(k => newConfigs[k].visible = !allVisible);
+                          setLayerConfigs(newConfigs);
+                      }}>Alternar</button>
+                    </div>
                   </div>
                   <div className="layer-list">
                     {doc.layers.map((l, i) => (
@@ -165,8 +233,44 @@ function App() {
               )}
             </div>
             
-            <span className="stat-pill">Trazos : {stats.strokes}</span>
-            <span className="stat-pill">Imágenes : {stats.images}</span>
+            <div className="btn btn-dropdown" style={{cursor: 'default'}}>
+              Trazos : {stats.strokes}
+            </div>
+
+            <div className="dropdown-container" ref={imageMenuRef}>
+              <button 
+                className={`btn btn-dropdown ${showImageMenu ? 'active' : ''}`}
+                onClick={() => setShowImageMenu(!showImageMenu)}
+              >
+                Imágenes : {stats.images}
+              </button>
+              
+              {showImageMenu && (
+                <div className="image-menu dropdown-menu">
+                  <div className="layer-menu-header">
+                    <span>Galería ({stats.images})</span>
+                    <span style={{fontSize:'0.7rem', color:'#888'}}>ESC para cerrar</span>
+                  </div>
+                  <div className="image-gallery">
+                    {Object.entries(doc.resources).length > 0 ? Object.entries(doc.resources).map(([id, blob]) => {
+                      const url = URL.createObjectURL(blob);
+                      const isPDF = blob.type === 'application/pdf' || blob.type === ''; 
+                      return (
+                        <div key={id} className="gallery-item">
+                           {isPDF ? (
+                             <div className="pdf-thumbnail">PDF</div>
+                           ) : (
+                             <img src={url} alt="Recurso" />
+                           )}
+                        </div>
+                      );
+                    }) : (
+                      <div style={{padding:'1rem', textAlign:'center', color:'#888'}}>No hay recursos embebidos.</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         ) : <div className="stats-spacer"></div>}
 
