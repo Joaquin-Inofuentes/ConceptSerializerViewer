@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { parseConceptsFile } from './parser';
 import type { Document } from './parser';
 import { Viewer } from './Viewer';
-import { Play, UploadCloud, AlertCircle, Loader2 } from 'lucide-react';
+import { Upload, X } from 'lucide-react';
 import './App.css';
 
 function App() {
@@ -30,7 +30,7 @@ function App() {
       });
       setStats({ layers: parsedDoc.layers.length, strokes: strokesCount, images: imagesCount });
     } catch (err: any) {
-      setError(err.message || "Error al cargar el archivo .concepts");
+      setError(err.message || "Error al cargar el archivo");
     } finally {
       setLoading(false);
     }
@@ -55,7 +55,7 @@ function App() {
       });
       setStats({ layers: parsedDoc.layers.length, strokes: strokesCount, images: imagesCount });
     } catch (err: any) {
-      setError(err.message || "Error al leer el archivo .concepts (Asegurate que sea válido)");
+      setError(err.message || "Error al leer el archivo");
     } finally {
       setLoading(false);
     }
@@ -63,55 +63,55 @@ function App() {
 
   return (
     <div className="app-container">
-      <header className="glass-header">
-        <div className="header-content">
-          <h1>ConceptSerializer <span className="badge">Viewer</span></h1>
-          <p className="subtitle">Visualizador 2D interactivo para archivos .concepts</p>
+      {/* 1 Solo Renglón Delgado */}
+      <header className="toolbar-slim">
+        <div className="toolbar-brand">
+          ConceptSerializer <span className="badge">Viewer</span>
         </div>
+        <div className="toolbar-subtitle">
+          Visualizador 2D interactivo para archivos .concepts
+        </div>
+        
+        {doc && stats && (
+          <div className="stats">
+            <span className="stat-pill">Capas: {stats.layers}</span>
+            <span className="stat-pill">Trazos: {stats.strokes}</span>
+            <span className="stat-pill">Imágenes: {stats.images}</span>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: '8px', marginLeft: doc ? 'auto' : '0' }}>
+          {!doc ? (
+             <>
+               <label className="btn">
+                 <Upload size={14} /> Subir archivo
+                 <input type="file" accept=".concepts" onChange={handleFileUpload} hidden />
+               </label>
+               <button className="btn btn-primary" onClick={loadExample} disabled={loading}>
+                 {loading ? 'Cargando...' : 'Probar Ejemplo'}
+               </button>
+             </>
+          ) : (
+             <button className="btn" onClick={() => setDoc(null)}>
+               <X size={14} /> Cerrar Visor
+             </button>
+          )}
+        </div>
+
+        {error && <div className="error-text">{error}</div>}
       </header>
 
       <main className="main-content">
         {!doc && (
-          <div className="upload-section">
-            <div className="upload-card">
-              <UploadCloud className="upload-icon" size={64} />
-              <h2>Sube tu archivo .concepts</h2>
-              <p>O utiliza el ejemplo integrado para testear el renderizado.</p>
-              
-              <div className="actions">
-                <label className="btn btn-primary">
-                  <span>Seleccionar Archivo</span>
-                  <input type="file" accept=".concepts" onChange={handleFileUpload} hidden />
-                </label>
-                <button className="btn btn-secondary" onClick={loadExample} disabled={loading}>
-                  {loading ? <Loader2 className="spin" /> : <Play />}
-                  <span>Probar Dibujo12.concepts</span>
-                </button>
-              </div>
-
-              {error && (
-                <div className="error-alert">
-                  <AlertCircle size={20} />
-                  <span>{error}</span>
-                </div>
-              )}
-            </div>
+          <div className="empty-state">
+            <h3>Visor Vacío</h3>
+            <p>Sube un archivo o usa el botón de "Probar Ejemplo" arriba a la derecha.</p>
           </div>
         )}
 
         {doc && (
-          <div className="viewer-container">
-            <div className="toolbar">
-              <div className="stats">
-                <span className="stat-pill">Capas: {stats?.layers}</span>
-                <span className="stat-pill">Trazos: {stats?.strokes}</span>
-                <span className="stat-pill">Imágenes: {stats?.images}</span>
-              </div>
-              <button className="btn btn-small" onClick={() => setDoc(null)}>Cerrar Visor</button>
-            </div>
-            <div className="canvas-wrapper">
-              <Viewer doc={doc} />
-            </div>
+          <div className="canvas-wrapper">
+            <Viewer doc={doc} />
           </div>
         )}
       </main>

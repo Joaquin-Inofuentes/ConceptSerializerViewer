@@ -257,7 +257,7 @@ function emitirTrazo(o: any, blob: Uint8Array, layer: Layer, globalBbox: BBox) {
   try {
     const bw = hdr[1][1];
     const core = bw[1];
-    const col = core[2][2];
+    const col = core[2];
     if (Array.isArray(col) && col.length >= 4) {
       stroke.color = {
         r: col[0], g: col[1], b: col[2], a: col[3],
