@@ -179,8 +179,8 @@ function App() {
         </div>
       )}
       {/* Ultra Minimalist Topbar */}
-      <header className="toolbar-slim">
-        <div className="toolbar-brand">
+      <header className="topbar">
+        <div className="topbar-title">
           Visor de concepts
         </div>
         
