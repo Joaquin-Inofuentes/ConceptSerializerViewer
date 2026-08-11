@@ -20,6 +20,11 @@ function App() {
   const [showLayerMenu, setShowLayerMenu] = useState(false);
   const [showImageMenu, setShowImageMenu] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  
+  // Image Thumbnails & Preview State
+  const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+
   const dragCounter = useRef(0);
   const layerMenuRef = useRef<HTMLDivElement>(null);
   const imageMenuRef = useRef<HTMLDivElement>(null);
@@ -29,6 +34,7 @@ function App() {
       if (e.key === 'Escape') {
         setShowLayerMenu(false);
         setShowImageMenu(false);
+        setPreviewImage(null);
       }
     };
     document.addEventListener('keydown', handleKeyDown);
@@ -263,15 +269,14 @@ function App() {
                     <span style={{fontSize:'0.7rem', color:'#888'}}>ESC para cerrar</span>
                   </div>
                   <div className="image-gallery">
-                    {Object.entries(doc.resources).length > 0 ? Object.entries(doc.resources).map(([id, blob]) => {
-                      const url = URL.createObjectURL(blob);
-                      const isPDF = blob.type === 'application/pdf' || blob.type === ''; 
+                    {Object.entries(doc.resources).length > 0 ? Object.entries(doc.resources).map(([id]) => {
+                      const url = imageUrls[id];
                       return (
-                        <div key={id} className="gallery-item">
-                           {isPDF ? (
-                             <div className="pdf-thumbnail">PDF</div>
-                           ) : (
+                        <div key={id} className="gallery-item" onClick={() => url && setPreviewImage(url)}>
+                           {url ? (
                              <img src={url} alt="Recurso" />
+                           ) : (
+                             <div className="pdf-thumbnail spin-slow">...</div>
                            )}
                         </div>
                       );
@@ -316,7 +321,19 @@ function App() {
 
         {doc && (
           <div className="canvas-wrapper">
-            <Viewer doc={doc} layerConfigs={layerConfigs} isolatedLayer={isolatedLayer} />
+            <Viewer 
+              doc={doc} 
+              layerConfigs={layerConfigs} 
+              isolatedLayer={isolatedLayer} 
+              onImagesLoaded={(urls) => setImageUrls(urls)}
+            />
+          </div>
+        )}
+
+        {previewImage && (
+          <div className="fullscreen-preview" onClick={() => setPreviewImage(null)}>
+            <img src={previewImage} alt="Preview" />
+            <div className="preview-close">Presiona ESC o haz clic para cerrar</div>
           </div>
         )}
       </main>

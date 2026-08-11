@@ -10,9 +10,10 @@ interface ViewerProps {
   doc: Document | null;
   layerConfigs: Record<string, LayerConfig>;
   isolatedLayer: string | null;
+  onImagesLoaded?: (images: Record<string, string>) => void;
 }
 
-export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer }) => {
+export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer, onImagesLoaded }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -104,6 +105,18 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
               pending--;
               if (pending === 0) {
                 setImages({ ...loadedImgs });
+                if (onImagesLoaded) {
+                   const urls: Record<string, string> = {};
+                   Object.keys(loadedImgs).forEach(k => {
+                     const imgOrCanvas = loadedImgs[k];
+                     if (imgOrCanvas instanceof HTMLCanvasElement) {
+                       urls[k] = imgOrCanvas.toDataURL();
+                     } else if (imgOrCanvas instanceof HTMLImageElement) {
+                       urls[k] = imgOrCanvas.src;
+                     }
+                   });
+                   onImagesLoaded(urls);
+                }
               }
             }
           };
