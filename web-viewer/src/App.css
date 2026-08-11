@@ -27,7 +27,7 @@ body {
 }
 
 .app-container {
-  animation: fadeIn 0.5s ease-out forwards;
+  animation: fadeIn 0.2s ease-out forwards;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -111,7 +111,7 @@ body {
   border: 1px solid var(--border-color);
   background: white;
   color: var(--text-main);
-  transition: all 0.5s ease;
+  transition: all 0.2s ease;
 }
 
 .btn:hover:not(:disabled) {
@@ -205,14 +205,12 @@ body {
   .dropdown-menu {
     position: fixed;
     top: 50px;
-    left: 0 !important;
-    right: 0 !important;
-    width: 100vw !important;
-    max-height: calc(100vh - 50px);
+    left: 10px;
+    right: auto;
+    width: auto;
+    max-width: calc(100vw - 20px);
+    max-height: calc(100vh - 60px);
     overflow-y: auto;
-    border-radius: 0;
-    border-left: none;
-    border-right: none;
     margin-top: 0;
   }
 }
@@ -239,12 +237,12 @@ body {
 }
 
 .dropdown-menu {
-  animation: slideDownFade 0.5s ease-out forwards;
+  animation: slideDownFade 0.2s ease-out forwards;
   transform-origin: top;
   position: fixed;
   top: 55px;
-  right: 1.5rem;
-  left: auto;
+  right: auto;
+  left: 1.5rem;
   margin-top: 0;
   background: white;
   border: 1px solid var(--border-color);
@@ -325,7 +323,7 @@ body {
   border-radius: 6px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.5s ease;
+  transition: all 0.2s ease;
 }
 .btn-dropdown:hover {
   background: #f1f3f5;
@@ -392,7 +390,7 @@ body {
 }
 
 .fullscreen-preview {
-  animation: fadeIn 0.5s ease-out forwards;
+  animation: fadeIn 0.2s ease-out forwards;
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
   background: rgba(0, 0, 0, 0.85);
@@ -405,7 +403,7 @@ body {
   padding: 2rem;
 }
 .fullscreen-preview img {
-  animation: popIn 0.5s ease-out forwards;
+  animation: popIn 0.2s ease-out forwards;
   max-width: 100%;
   max-height: 90vh;
   object-fit: contain;
