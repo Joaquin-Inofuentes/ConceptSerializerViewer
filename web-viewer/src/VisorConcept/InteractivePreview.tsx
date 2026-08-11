@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
+import { Download } from 'lucide-react';
 
 interface InteractivePreviewProps {
   src: string;
@@ -16,6 +17,70 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
   const [rightDragStartPos, setRightDragStartPos] = useState({ x: 0, y: 0 });
   const [dragStartZoom, setDragStartZoom] = useState(1);
   const [dragStartPan, setDragStartPan] = useState({ x: 0, y: 0 });
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [exportZoomAll, setExportZoomAll] = useState(true);
+
+  const exportDrawing = async (format: 'png' | 'jpg' | 'pdf', zoomAll: boolean = true) => {
+    const img = new Image();
+    img.src = src;
+    await new Promise((resolve) => {
+      img.onload = resolve;
+      if (img.complete) resolve(true);
+    });
+
+    let exportWidth, exportHeight;
+    let translateX, translateY, exportZoom;
+
+    if (zoomAll) {
+      exportWidth = img.naturalWidth;
+      exportHeight = img.naturalHeight;
+      translateX = img.naturalWidth / 2;
+      translateY = img.naturalHeight / 2;
+      exportZoom = 1;
+    } else {
+      const rect = containerRef.current?.getBoundingClientRect();
+      exportWidth = rect ? rect.width : window.innerWidth;
+      exportHeight = rect ? rect.height : window.innerHeight;
+      translateX = exportWidth / 2 + pan.x;
+      translateY = exportHeight / 2 + pan.y;
+      exportZoom = zoom;
+    }
+
+    const exportCanvas = document.createElement("canvas");
+    exportCanvas.width = exportWidth;
+    exportCanvas.height = exportHeight;
+    const ctx = exportCanvas.getContext("2d");
+    if (!ctx) return;
+
+    if (format === 'jpg' || format === 'pdf') {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, exportWidth, exportHeight);
+    }
+
+    ctx.save();
+    ctx.translate(translateX, translateY);
+    ctx.scale(exportZoom, exportZoom);
+    ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
+    ctx.restore();
+
+    const dataUrl = exportCanvas.toDataURL(`image/${format === 'jpg' ? 'jpeg' : 'png'}`, 1.0);
+
+    if (format === 'pdf') {
+      const jsPDF = (await import('jspdf')).default;
+      const pdf = new jsPDF({
+        orientation: exportWidth > exportHeight ? 'landscape' : 'portrait',
+        unit: 'px',
+        format: [exportWidth, exportHeight]
+      });
+      pdf.addImage(dataUrl, 'JPEG', 0, 0, exportWidth, exportHeight);
+      pdf.save('export.pdf');
+    } else {
+      const link = document.createElement('a');
+      link.download = `export.${format}`;
+      link.href = dataUrl;
+      link.click();
+    }
+  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -225,6 +290,36 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
           <div style={{ width: '4px', height: '4px', background: 'red', borderRadius: '50%', margin: '4px' }} />
         </div>
       )}
+
+      {/* Floating Tools exactly like Viewer */}
+      <div className="floating-tools" style={{ zIndex: 10002 }}>
+        <div className="dropdown-container">
+          <button 
+            className={`btn-tool ${showExportMenu ? 'active-glow' : ''}`}
+            onClick={(e) => { e.stopPropagation(); setShowExportMenu(!showExportMenu); }}
+            title="Exportar"
+          >
+            <Download size={20} />
+          </button>
+          
+          {showExportMenu && (
+            <div className="dropdown-menu" style={{ minWidth: '150px' }} onClick={(e) => e.stopPropagation()}>
+              <div className="layer-menu-header">
+                <span>Exportar</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', padding: '0.5rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', marginBottom: '8px', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={exportZoomAll} onChange={(e) => setExportZoomAll(e.target.checked)} />
+                  Recorte (Zoom All)
+                </label>
+                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => exportDrawing('pdf', exportZoomAll)}>📄 PDF</button>
+                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => exportDrawing('jpg', exportZoomAll)}>🖼 JPG</button>
+                <button className="btn btn-tiny" style={{ padding: '8px' }} onClick={() => exportDrawing('png', exportZoomAll)}>💠 PNG</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
 
       <button 
         onClick={onClose}

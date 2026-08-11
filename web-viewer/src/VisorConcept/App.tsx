@@ -21,6 +21,7 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
   // Layer State
   const [layerConfigs, setLayerConfigs] = useState<Record<string, LayerConfig>>({});
   const [isolatedLayer, setIsolatedLayer] = useState<string | null>(null);
+  const [exportZoomAll, setExportZoomAll] = useState(true);
   
   // UI State
   const [showLayerMenu, setShowLayerMenu] = useState(false);
@@ -167,9 +168,13 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
                 <span>Exportar</span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', padding: '0.5rem' }}>
-                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('pdf')}>📄 PDF</button>
-                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('jpg')}>🖼 JPG</button>
-                <button className="btn btn-tiny" style={{ padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('png')}>💠 PNG</button>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', marginBottom: '8px', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={exportZoomAll} onChange={(e) => setExportZoomAll(e.target.checked)} />
+                  Recorte (Zoom All)
+                </label>
+                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('pdf', exportZoomAll)}>📄 PDF</button>
+                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('jpg', exportZoomAll)}>🖼 JPG</button>
+                <button className="btn btn-tiny" style={{ padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('png', exportZoomAll)}>💠 PNG</button>
               </div>
             </div>
           )}

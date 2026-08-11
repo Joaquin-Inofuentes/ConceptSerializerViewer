@@ -14,7 +14,7 @@ interface ViewerProps {
 }
 
 export interface ViewerHandle {
-  exportDrawing: (format: 'png' | 'jpg' | 'pdf') => Promise<void>;
+  exportDrawing: (format: 'png' | 'jpg' | 'pdf', zoomAll?: boolean) => Promise<void>;
 }
 
 export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs, isolatedLayer, onImagesLoaded }, ref) => {
@@ -27,73 +27,89 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
   const [images, setImages] = useState<Record<string, CanvasImageSource>>({});
 
   useImperativeHandle(ref, () => ({
-    exportDrawing: async (format: 'png' | 'jpg' | 'pdf') => {
+    exportDrawing: async (format: 'png' | 'jpg' | 'pdf', zoomAll: boolean = true) => {
       if (!doc) return;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       
       let hasStrokes = false;
-      doc.layers.forEach(layer => {
-        const config = layerConfigs[layer.id];
-        if (config && !config.visible) return;
-        if (isolatedLayer && isolatedLayer !== layer.id) return;
-        
-        layer.strokes.forEach(stroke => {
-          stroke.points.forEach(pt => {
-             hasStrokes = true;
-             if (pt.x < minX) minX = pt.x;
-             if (pt.y < minY) minY = pt.y;
-             if (pt.x > maxX) maxX = pt.x;
-             if (pt.y > maxY) maxY = pt.y;
-          });
-        });
-      });
-
-      // Si no hay trazos dibujados, usamos los límites de las imágenes como fallback
-      if (!hasStrokes) {
+      
+      if (zoomAll) {
         doc.layers.forEach(layer => {
           const config = layerConfigs[layer.id];
           if (config && !config.visible) return;
           if (isolatedLayer && isolatedLayer !== layer.id) return;
-          layer.images.forEach(img => {
-              const tx = img.transform[12];
-              const ty = img.transform[13];
-              const w = img.width || 500;
-              const h = img.height || 500;
-              if (tx < minX) minX = tx;
-              if (ty < minY) minY = ty;
-              if (tx + w > maxX) maxX = tx + w;
-              if (ty + h > maxY) maxY = ty + h;
+          
+          layer.strokes.forEach(stroke => {
+            stroke.points.forEach(pt => {
+               hasStrokes = true;
+               if (pt.x < minX) minX = pt.x;
+               if (pt.y < minY) minY = pt.y;
+               if (pt.x > maxX) maxX = pt.x;
+               if (pt.y > maxY) maxY = pt.y;
+            });
           });
         });
+
+        if (!hasStrokes) {
+          doc.layers.forEach(layer => {
+            const config = layerConfigs[layer.id];
+            if (config && !config.visible) return;
+            if (isolatedLayer && isolatedLayer !== layer.id) return;
+            layer.images.forEach(img => {
+                const tx = img.transform[12];
+                const ty = img.transform[13];
+                const w = img.width || 500;
+                const h = img.height || 500;
+                if (tx < minX) minX = tx;
+                if (ty < minY) minY = ty;
+                if (tx + w > maxX) maxX = tx + w;
+                if (ty + h > maxY) maxY = ty + h;
+            });
+          });
+        }
       }
 
-      if (minX === Infinity) {
+      if (zoomAll && minX === Infinity) {
         alert("El lienzo está vacío u oculto.");
         return;
       }
 
-      const padding = 20;
-      minX -= padding;
-      minY -= padding;
-      maxX += padding;
-      maxY += padding;
+      let exportWidth, exportHeight;
+      let translateX, translateY;
+      let exportZoom = 1;
 
-      const width = maxX - minX;
-      const height = maxY - minY;
+      if (zoomAll) {
+        const padding = 20;
+        minX -= padding;
+        minY -= padding;
+        maxX += padding;
+        maxY += padding;
+        exportWidth = maxX - minX;
+        exportHeight = maxY - minY;
+        translateX = -minX;
+        translateY = -minY;
+      } else {
+        exportWidth = size.width;
+        exportHeight = size.height;
+        translateX = pan.x;
+        translateY = pan.y;
+        exportZoom = zoom;
+      }
 
       const exportCanvas = document.createElement("canvas");
-      exportCanvas.width = width;
-      exportCanvas.height = height;
+      exportCanvas.width = exportWidth;
+      exportCanvas.height = exportHeight;
       const ctx = exportCanvas.getContext("2d");
       if (!ctx) return;
 
       if (format === 'jpg' || format === 'pdf') {
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, width, height);
+        ctx.fillRect(0, 0, exportWidth, exportHeight);
       }
 
       ctx.save();
-      ctx.translate(-minX, -minY);
+      ctx.translate(translateX, translateY);
+      ctx.scale(exportZoom, exportZoom);
 
       const sortedLayers = [...doc.layers].sort((a, b) => a.index - b.index);
 
@@ -144,11 +160,11 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
       if (format === 'pdf') {
         const jsPDF = (await import('jspdf')).default;
         const pdf = new jsPDF({
-          orientation: width > height ? 'landscape' : 'portrait',
+          orientation: exportWidth > exportHeight ? 'landscape' : 'portrait',
           unit: 'px',
-          format: [width, height]
+          format: [exportWidth, exportHeight]
         });
-        pdf.addImage(dataUrl, 'JPEG', 0, 0, width, height);
+        pdf.addImage(dataUrl, 'JPEG', 0, 0, exportWidth, exportHeight);
         pdf.save('export.pdf');
       } else {
         const link = document.createElement('a');
