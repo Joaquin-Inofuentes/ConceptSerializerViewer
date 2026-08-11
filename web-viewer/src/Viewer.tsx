@@ -224,21 +224,52 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
 
   }, [doc, pan, zoom, size, images, layerConfigs, isolatedLayer]);
 
+  const [isRightDragging, setIsRightDragging] = useState(false);
+  const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
+
   const handleMouseDown = (e: React.MouseEvent) => {
-    setIsDragging(true);
-    setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+    if (e.button === 2) {
+       setIsRightDragging(true);
+       setLastMousePos({ x: e.clientX, y: e.clientY });
+    } else if (e.button === 0) {
+       setIsDragging(true);
+       setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+    }
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging) return;
-    setPan({
-      x: e.clientX - dragStart.x,
-      y: e.clientY - dragStart.y,
-    });
+    if (isRightDragging) {
+       const dx = e.clientX - lastMousePos.x;
+       const dy = e.clientY - lastMousePos.y;
+       setLastMousePos({ x: e.clientX, y: e.clientY });
+       
+       const zoomDelta = dx - dy; 
+       const zoomFactor = 1 + (zoomDelta * 0.01);
+       let newZoom = zoom * zoomFactor;
+       newZoom = Math.max(0.01, Math.min(newZoom, 100));
+
+       const rect = canvasRef.current?.getBoundingClientRect();
+       if (!rect) return;
+       const mouseX = lastMousePos.x - rect.left;
+       const mouseY = lastMousePos.y - rect.top;
+
+       const newPanX = mouseX - (mouseX - pan.x) * (newZoom / zoom);
+       const newPanY = mouseY - (mouseY - pan.y) * (newZoom / zoom);
+
+       setZoom(newZoom);
+       setPan({ x: newPanX, y: newPanY });
+
+    } else if (isDragging) {
+      setPan({
+        x: e.clientX - dragStart.x,
+        y: e.clientY - dragStart.y,
+      });
+    }
   };
 
-  const handleMouseUp = () => {
-    setIsDragging(false);
+  const handleMouseUp = (e: React.MouseEvent) => {
+    if (e.button === 2) setIsRightDragging(false);
+    if (e.button === 0) setIsDragging(false);
   };
 
   const handleWheel = (e: React.WheelEvent) => {

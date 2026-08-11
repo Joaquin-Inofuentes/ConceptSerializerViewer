@@ -3,6 +3,7 @@ import { parseConceptsFile } from './parser';
 import type { Document } from './parser';
 import { Viewer } from './Viewer';
 import type { LayerConfig } from './Viewer';
+import { InteractivePreview } from './InteractivePreview';
 import { Upload, Eye, EyeOff, Lock } from 'lucide-react';
 import './App.css';
 
@@ -43,6 +44,8 @@ function App() {
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
+      if (previewImage) return; // Prevent closing dropdowns when interacting with preview
+      
       if (layerMenuRef.current && !layerMenuRef.current.contains(e.target as Node)) {
         setShowLayerMenu(false);
       }
@@ -51,10 +54,10 @@ function App() {
       }
     };
     if (showLayerMenu || showImageMenu) {
-      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('mousedown', handleClickOutside, true);
     }
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showLayerMenu, showImageMenu]);
+    return () => document.removeEventListener('mousedown', handleClickOutside, true);
+  }, [showLayerMenu, showImageMenu, previewImage]);
 
   const initDoc = (parsedDoc: Document) => {
     setDoc(parsedDoc);
@@ -331,10 +334,7 @@ function App() {
         )}
 
         {previewImage && (
-          <div className="fullscreen-preview" onClick={() => setPreviewImage(null)}>
-            <img src={previewImage} alt="Preview" />
-            <div className="preview-close">Presiona ESC o haz clic para cerrar</div>
-          </div>
+          <InteractivePreview src={previewImage} onClose={() => setPreviewImage(null)} />
         )}
       </main>
     </div>
