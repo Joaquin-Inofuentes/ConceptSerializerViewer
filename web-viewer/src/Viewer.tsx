@@ -250,11 +250,14 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
 
        const rect = canvasRef.current?.getBoundingClientRect();
        if (!rect) return;
-       const mouseX = lastMousePos.x - rect.left;
-       const mouseY = lastMousePos.y - rect.top;
+       const screenX = lastMousePos.x - rect.left;
+       const screenY = lastMousePos.y - rect.top;
 
-       const newPanX = mouseX - (mouseX - pan.x) * (newZoom / zoom);
-       const newPanY = mouseY - (mouseY - pan.y) * (newZoom / zoom);
+       const centerX = screenX - rect.width / 2;
+       const centerY = screenY - rect.height / 2;
+
+       const newPanX = centerX - (centerX - pan.x) * (newZoom / zoom);
+       const newPanY = centerY - (centerY - pan.y) * (newZoom / zoom);
 
        setZoom(newZoom);
        setPan({ x: newPanX, y: newPanY });
@@ -281,14 +284,17 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+    const screenX = e.clientX - rect.left;
+    const screenY = e.clientY - rect.top;
+    
+    const centerX = screenX - rect.width / 2;
+    const centerY = screenY - rect.height / 2;
     
     let newZoom = zoom * factor;
     newZoom = Math.max(0.01, Math.min(newZoom, 100));
 
-    const newPanX = mouseX - (mouseX - pan.x) * (newZoom / zoom);
-    const newPanY = mouseY - (mouseY - pan.y) * (newZoom / zoom);
+    const newPanX = centerX - (centerX - pan.x) * (newZoom / zoom);
+    const newPanY = centerY - (centerY - pan.y) * (newZoom / zoom);
 
     setZoom(newZoom);
     setPan({ x: newPanX, y: newPanY });

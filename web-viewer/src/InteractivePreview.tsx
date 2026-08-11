@@ -49,11 +49,14 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
 
        const rect = containerRef.current?.getBoundingClientRect();
        if (!rect) return;
-       const mouseX = lastMousePos.x - rect.left;
-       const mouseY = lastMousePos.y - rect.top;
+       const screenX = lastMousePos.x - rect.left;
+       const screenY = lastMousePos.y - rect.top;
 
-       const newPanX = mouseX - (mouseX - pan.x) * (newZoom / zoom);
-       const newPanY = mouseY - (mouseY - pan.y) * (newZoom / zoom);
+       const centerX = screenX - rect.width / 2;
+       const centerY = screenY - rect.height / 2;
+
+       const newPanX = centerX - (centerX - pan.x) * (newZoom / zoom);
+       const newPanY = centerY - (centerY - pan.y) * (newZoom / zoom);
 
        setZoom(newZoom);
        setPan({ x: newPanX, y: newPanY });
@@ -80,14 +83,17 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
     
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+    const screenX = e.clientX - rect.left;
+    const screenY = e.clientY - rect.top;
+    
+    const centerX = screenX - rect.width / 2;
+    const centerY = screenY - rect.height / 2;
     
     let newZoom = zoom * factor;
     newZoom = Math.max(0.01, Math.min(newZoom, 100));
 
-    const newPanX = mouseX - (mouseX - pan.x) * (newZoom / zoom);
-    const newPanY = mouseY - (mouseY - pan.y) * (newZoom / zoom);
+    const newPanX = centerX - (centerX - pan.x) * (newZoom / zoom);
+    const newPanY = centerY - (centerY - pan.y) * (newZoom / zoom);
 
     setZoom(newZoom);
     setPan({ x: newPanX, y: newPanY });
@@ -104,23 +110,26 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
       onWheel={handleWheel}
       onContextMenu={(e) => e.preventDefault()}
       style={{
-         cursor: isDragging ? "grabbing" : (isRightDragging ? "ns-resize" : "grab")
+         cursor: isDragging ? "grabbing" : (isRightDragging ? "ns-resize" : "grab"),
+         display: 'block',
+         padding: 0,
+         overflow: 'hidden'
       }}
     >
       <div 
         style={{
-          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-          transformOrigin: '0 0',
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom})`,
+          transformOrigin: 'center center',
           transition: isDragging || isRightDragging ? 'none' : 'transform 0.1s ease',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center'
         }}
       >
         <img 
            src={src} 
            alt="Preview" 
-           style={{ pointerEvents: 'none', userSelect: 'none' }}
+           style={{ pointerEvents: 'none', userSelect: 'none', display: 'block' }}
            draggable={false}
         />
       </div>
