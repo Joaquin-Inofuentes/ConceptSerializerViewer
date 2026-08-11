@@ -219,8 +219,11 @@ function App() {
                   <div className="layer-list">
                     {doc.layers.map((l, i) => (
                       <div key={l.id} className={`layer-item ${isolatedLayer === l.id ? 'isolated' : ''}`}>
-                        <div className="layer-info">
+                        <div className="layer-info" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                            <span className="layer-name">Capa {i+1}</span>
+                           <span style={{ fontSize: '0.75rem', color: '#888' }}>
+                             ({l.strokes.length + l.images.length} elem)
+                           </span>
                         </div>
                         <div className="layer-actions">
                            <input 
