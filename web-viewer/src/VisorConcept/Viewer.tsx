@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
+import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo } from "react";
 import type { Document } from "./parser";
 
 export interface LayerConfig {
@@ -21,50 +21,107 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1);
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  const [images, setImages] = useState<Record<string, CanvasImageSource>>({});
+  // Core state moved to refs for high performance
+  const panRef = useRef({ x: 0, y: 0 });
+  const zoomRef = useRef(1);
+  const sizeRef = useRef({ width: 0, height: 0 });
+  
+  // Cache refs
+  const imagesRef = useRef<Record<string, CanvasImageSource>>({});
+  const layerConfigsRef = useRef<Record<string, LayerConfig>>(layerConfigs);
+  const isolatedLayerRef = useRef<string | null>(isolatedLayer);
+  const isDirtyRef = useRef(true);
+
+  const requestRedraw = () => {
+    isDirtyRef.current = true;
+  };
+
+  // Sync props to refs
+  useEffect(() => {
+    layerConfigsRef.current = layerConfigs;
+    isolatedLayerRef.current = isolatedLayer;
+    requestRedraw();
+  }, [layerConfigs, isolatedLayer]);
+
+  // Pre-calculate Path2D and Bounding Boxes (Frustum Culling)
+  const docCache = useMemo(() => {
+    if (!doc) return null;
+    const strokesCache: any[] = [];
+    const imagesCache: any[] = [];
+
+    doc.layers.forEach(layer => {
+      layer.strokes.forEach(stroke => {
+        if (stroke.points.length === 0) return;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        const path = new Path2D();
+        path.moveTo(stroke.points[0].x, stroke.points[0].y);
+        stroke.points.forEach(pt => {
+           if (pt.x < minX) minX = pt.x;
+           if (pt.y < minY) minY = pt.y;
+           if (pt.x > maxX) maxX = pt.x;
+           if (pt.y > maxY) maxY = pt.y;
+           path.lineTo(pt.x, pt.y);
+        });
+        strokesCache.push({
+           path, minX, minY, maxX, maxY,
+           color: stroke.color.hex,
+           globalAlpha: stroke.color.a,
+           width: stroke.width || 1.5,
+           layerId: layer.id,
+           layerIndex: layer.index
+        });
+      });
+      
+      layer.images.forEach(img => {
+          const tx = img.transform[12];
+          const ty = img.transform[13];
+          const w = img.width || 500;
+          const h = img.height || 500;
+          imagesCache.push({
+             resourceId: img.resourceId,
+             transform: img.transform,
+             minX: tx, minY: ty, maxX: tx + w, maxY: ty + h,
+             width: img.width, height: img.height,
+             layerId: layer.id,
+             layerIndex: layer.index
+          });
+      });
+    });
+    
+    requestRedraw();
+    return { strokes: strokesCache, images: imagesCache };
+  }, [doc]);
 
   useImperativeHandle(ref, () => ({
     exportDrawing: async (format: 'png' | 'jpg' | 'pdf', zoomAll: boolean = true) => {
-      if (!doc) return;
+      if (!doc || !docCache) return;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       
       let hasStrokes = false;
       
       if (zoomAll) {
-        doc.layers.forEach(layer => {
-          const config = layerConfigs[layer.id];
+        docCache.strokes.forEach(stroke => {
+          const config = layerConfigsRef.current[stroke.layerId];
           if (config && !config.visible) return;
-          if (isolatedLayer && isolatedLayer !== layer.id) return;
+          if (isolatedLayerRef.current && isolatedLayerRef.current !== stroke.layerId) return;
           
-          layer.strokes.forEach(stroke => {
-            stroke.points.forEach(pt => {
-               hasStrokes = true;
-               if (pt.x < minX) minX = pt.x;
-               if (pt.y < minY) minY = pt.y;
-               if (pt.x > maxX) maxX = pt.x;
-               if (pt.y > maxY) maxY = pt.y;
-            });
-          });
+          hasStrokes = true;
+          if (stroke.minX < minX) minX = stroke.minX;
+          if (stroke.minY < minY) minY = stroke.minY;
+          if (stroke.maxX > maxX) maxX = stroke.maxX;
+          if (stroke.maxY > maxY) maxY = stroke.maxY;
         });
 
         if (!hasStrokes) {
-          doc.layers.forEach(layer => {
-            const config = layerConfigs[layer.id];
+          docCache.images.forEach(img => {
+            const config = layerConfigsRef.current[img.layerId];
             if (config && !config.visible) return;
-            if (isolatedLayer && isolatedLayer !== layer.id) return;
-            layer.images.forEach(img => {
-                const tx = img.transform[12];
-                const ty = img.transform[13];
-                const w = img.width || 500;
-                const h = img.height || 500;
-                if (tx < minX) minX = tx;
-                if (ty < minY) minY = ty;
-                if (tx + w > maxX) maxX = tx + w;
-                if (ty + h > maxY) maxY = ty + h;
-            });
+            if (isolatedLayerRef.current && isolatedLayerRef.current !== img.layerId) return;
+            
+            if (img.minX < minX) minX = img.minX;
+            if (img.minY < minY) minY = img.minY;
+            if (img.maxX > maxX) maxX = img.maxX;
+            if (img.maxY > maxY) maxY = img.maxY;
           });
         }
       }
@@ -89,11 +146,11 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
         translateX = -minX;
         translateY = -minY;
       } else {
-        exportWidth = size.width;
-        exportHeight = size.height;
-        translateX = pan.x;
-        translateY = pan.y;
-        exportZoom = zoom;
+        exportWidth = sizeRef.current.width;
+        exportHeight = sizeRef.current.height;
+        translateX = panRef.current.x;
+        translateY = panRef.current.y;
+        exportZoom = zoomRef.current;
       }
 
       const exportCanvas = document.createElement("canvas");
@@ -111,46 +168,39 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
       ctx.translate(translateX, translateY);
       ctx.scale(exportZoom, exportZoom);
 
-      const sortedLayers = [...doc.layers].sort((a, b) => a.index - b.index);
+      // We need to draw layers in index order
+      const allItems = [...docCache.images, ...docCache.strokes].sort((a, b) => a.layerIndex - b.layerIndex);
 
-      for (const layer of sortedLayers) {
-        if (isolatedLayer && isolatedLayer !== layer.id) continue;
-        const config = layerConfigs[layer.id];
+      for (const item of allItems) {
+        if (isolatedLayerRef.current && isolatedLayerRef.current !== item.layerId) continue;
+        const config = layerConfigsRef.current[item.layerId];
         if (config && !config.visible) continue;
         
         const layerOpacity = config ? config.opacity : 1.0;
 
-        for (const img of layer.images) {
+        if (item.resourceId) { // It's an image
           ctx.save();
           ctx.globalAlpha = layerOpacity;
-          const m = img.transform;
+          const m = item.transform;
           if (m && m.length === 16) {
              ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
           }
-          const imageObj = images[img.resourceId];
+          const imageObj = imagesRef.current[item.resourceId];
           if (imageObj) {
-             if (img.width && img.height) {
-               ctx.drawImage(imageObj, 0, 0, img.width, img.height);
+             if (item.width && item.height) {
+               ctx.drawImage(imageObj, 0, 0, item.width, item.height);
              } else {
                ctx.drawImage(imageObj, 0, 0);
              }
           }
           ctx.restore();
-        }
-
-        for (const stroke of layer.strokes) {
-          if (stroke.points.length === 0) continue;
-          ctx.beginPath();
-          ctx.strokeStyle = stroke.color.hex;
+        } else { // It's a stroke
+          ctx.strokeStyle = item.color;
           ctx.lineJoin = "round";
           ctx.lineCap = "round";
-          ctx.lineWidth = stroke.width || 1.5;
-          ctx.globalAlpha = stroke.color.a * layerOpacity;
-          ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-          for (let i = 1; i < stroke.points.length; i++) {
-            ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
-          }
-          ctx.stroke();
+          ctx.lineWidth = item.width;
+          ctx.globalAlpha = item.globalAlpha * layerOpacity;
+          ctx.stroke(item.path);
         }
       }
       ctx.restore();
@@ -178,48 +228,41 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
   useEffect(() => {
     const updateSize = () => {
       if (containerRef.current) {
-        setSize({
+        sizeRef.current = {
           width: containerRef.current.clientWidth,
           height: containerRef.current.clientHeight,
-        });
+        };
+        requestRedraw();
       }
     };
     updateSize();
-    const currentContainer = containerRef.current;
     window.addEventListener("resize", updateSize);
     return () => {
-      if (!currentContainer) return;
       window.removeEventListener('resize', updateSize);
     };
   }, []);
 
   const fitToBounds = () => {
-    if (!doc || !containerRef.current) return;
+    if (!docCache || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     
-    doc.layers.forEach(layer => {
-      layer.strokes.forEach(stroke => {
-        stroke.points.forEach(pt => {
-           if (pt.x < minX) minX = pt.x;
-           if (pt.y < minY) minY = pt.y;
-           if (pt.x > maxX) maxX = pt.x;
-           if (pt.y > maxY) maxY = pt.y;
-        });
-      });
-      layer.images.forEach(img => {
-          const tx = img.transform[12];
-          const ty = img.transform[13];
-          if (tx < minX) minX = tx;
-          if (ty < minY) minY = ty;
-          if (tx > maxX) maxX = tx;
-          if (ty > maxY) maxY = ty;
-      });
+    docCache.strokes.forEach(stroke => {
+      if (stroke.minX < minX) minX = stroke.minX;
+      if (stroke.minY < minY) minY = stroke.minY;
+      if (stroke.maxX > maxX) maxX = stroke.maxX;
+      if (stroke.maxY > maxY) maxY = stroke.maxY;
+    });
+    docCache.images.forEach(img => {
+      if (img.minX < minX) minX = img.minX;
+      if (img.minY < minY) minY = img.minY;
+      if (img.maxX > maxX) maxX = img.maxX;
+      if (img.maxY > maxY) maxY = img.maxY;
     });
 
-    if (minX === Infinity) return; // Empty doc
+    if (minX === Infinity) return;
 
     const contentWidth = maxX - minX;
     const contentHeight = maxY - minY;
@@ -230,20 +273,20 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
 
     if (contentWidth > 0 && contentHeight > 0) {
         let newZoom = Math.min(availWidth / contentWidth, availHeight / contentHeight);
-        newZoom = Math.max(0.1, Math.min(newZoom, 5)); // Bound zoom
+        newZoom = Math.max(0.1, Math.min(newZoom, 5));
 
         const cx = (minX + maxX) / 2;
         const cy = (minY + maxY) / 2;
 
-        setZoom(newZoom);
-        setPan({ x: rect.width / 2 - cx * newZoom, y: rect.height / 2 - cy * newZoom });
+        zoomRef.current = newZoom;
+        panRef.current = { x: rect.width / 2 - cx * newZoom, y: rect.height / 2 - cy * newZoom };
+        requestRedraw();
     }
   };
 
-  // Zoom to fit bounds on load
   useEffect(() => {
     fitToBounds();
-  }, [doc, size]);
+  }, [docCache]);
 
   useEffect(() => {
     if (!doc) return;
@@ -291,7 +334,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
             } finally {
               pending--;
               if (pending === 0) {
-                setImages({ ...loadedImgs });
+                imagesRef.current = { ...imagesRef.current, ...loadedImgs };
+                requestRedraw();
                 if (onImagesLoaded) {
                    const urls: Record<string, string> = {};
                    Object.keys(loadedImgs).forEach(k => {
@@ -315,109 +359,123 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
     
   }, [doc]);
 
+  // HIGH PERFORMANCE RENDER LOOP
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !doc) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    let animationFrameId: number;
 
-    canvas.width = size.width;
-    canvas.height = size.height;
-    ctx.clearRect(0, 0, size.width, size.height);
+    const render = () => {
+      if (isDirtyRef.current && canvasRef.current && docCache) {
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext("2d");
+        const pan = panRef.current;
+        const zoom = zoomRef.current;
+        const size = sizeRef.current;
 
-    ctx.save();
-    ctx.translate(pan.x, pan.y);
-    ctx.scale(zoom, zoom);
+        if (ctx && size.width > 0 && size.height > 0) {
+          canvas.width = size.width;
+          canvas.height = size.height;
+          ctx.clearRect(0, 0, size.width, size.height);
 
-    // Draw dynamic background grid
-    const gridSize = 50;
-    ctx.strokeStyle = '#e0e0e0';
-    ctx.lineWidth = 1 / zoom;
+          // Draw Grid
+          ctx.save();
+          ctx.translate(pan.x, pan.y);
+          ctx.scale(zoom, zoom);
+          
+          const gridSize = 50;
+          ctx.strokeStyle = '#e0e0e0';
+          ctx.lineWidth = 1 / zoom;
+          const offsetX = (pan.x) % (gridSize * zoom);
+          const offsetY = (pan.y) % (gridSize * zoom);
+          ctx.beginPath();
+          for (let x = offsetX - gridSize * zoom; x < size.width; x += gridSize * zoom) {
+            ctx.moveTo(x / zoom - pan.x / zoom, 0 / zoom - pan.y / zoom);
+            ctx.lineTo(x / zoom - pan.x / zoom, size.height / zoom - pan.y / zoom);
+          }
+          for (let y = offsetY - gridSize * zoom; y < size.height; y += gridSize * zoom) {
+            ctx.moveTo(0 / zoom - pan.x / zoom, y / zoom - pan.y / zoom);
+            ctx.lineTo(size.width / zoom - pan.x / zoom, y / zoom - pan.y / zoom);
+          }
+          ctx.stroke();
+          ctx.restore();
+
+          ctx.save();
+          ctx.translate(pan.x, pan.y);
+          ctx.scale(zoom, zoom);
+
+          // Calculate View Frustum
+          const viewMinX = -pan.x / zoom;
+          const viewMinY = -pan.y / zoom;
+          const viewMaxX = (size.width - pan.x) / zoom;
+          const viewMaxY = (size.height - pan.y) / zoom;
+
+          const allItems = [...docCache.images, ...docCache.strokes].sort((a, b) => a.layerIndex - b.layerIndex);
+
+          for (const item of allItems) {
+            if (isolatedLayerRef.current && isolatedLayerRef.current !== item.layerId) continue;
+            const config = layerConfigsRef.current[item.layerId];
+            if (config && !config.visible) continue;
+            
+            // Frustum Culling
+            if (item.maxX < viewMinX || item.minX > viewMaxX || item.maxY < viewMinY || item.minY > viewMaxY) {
+               continue;
+            }
+
+            const layerOpacity = config ? config.opacity : 1.0;
+
+            if (item.resourceId) { // Image
+              ctx.save();
+              ctx.globalAlpha = layerOpacity;
+              const m = item.transform;
+              if (m && m.length === 16) {
+                 ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
+              }
+              const imageObj = imagesRef.current[item.resourceId];
+              if (imageObj) {
+                 if (item.width && item.height) {
+                   ctx.drawImage(imageObj, 0, 0, item.width, item.height);
+                 } else {
+                   ctx.drawImage(imageObj, 0, 0);
+                 }
+              }
+              ctx.restore();
+            } else { // Stroke
+              ctx.strokeStyle = item.color;
+              ctx.lineJoin = "round";
+              ctx.lineCap = "round";
+              ctx.lineWidth = item.width;
+              ctx.globalAlpha = item.globalAlpha * layerOpacity;
+              ctx.stroke(item.path);
+            }
+          }
+          ctx.restore();
+        }
+        isDirtyRef.current = false;
+      }
+      animationFrameId = requestAnimationFrame(render);
+    };
     
-    const offsetX = (pan.x) % (gridSize * zoom);
-    const offsetY = (pan.y) % (gridSize * zoom);
-
-    ctx.beginPath();
-    for (let x = offsetX - gridSize * zoom; x < size.width; x += gridSize * zoom) {
-      ctx.moveTo(x / zoom - pan.x / zoom, 0 / zoom - pan.y / zoom);
-      ctx.lineTo(x / zoom - pan.x / zoom, size.height / zoom - pan.y / zoom);
-    }
-    for (let y = offsetY - gridSize * zoom; y < size.height; y += gridSize * zoom) {
-      ctx.moveTo(0 / zoom - pan.x / zoom, y / zoom - pan.y / zoom);
-      ctx.lineTo(size.width / zoom - pan.x / zoom, y / zoom - pan.y / zoom);
-    }
-    ctx.stroke();
-
-    ctx.restore();
-
-    ctx.save();
-    ctx.translate(pan.x, pan.y);
-    ctx.scale(zoom, zoom);
-
-    const sortedLayers = [...doc.layers].sort((a, b) => a.index - b.index);
-
-    for (const layer of sortedLayers) {
-      if (isolatedLayer && isolatedLayer !== layer.id) continue;
-      
-      const config = layerConfigs[layer.id];
-      if (config && !config.visible) continue;
-      
-      const layerOpacity = config ? config.opacity : 1.0;
-
-      for (const img of layer.images) {
-        ctx.save();
-        ctx.globalAlpha = layerOpacity;
-        const m = img.transform;
-        if (m && m.length === 16) {
-           ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
-        }
-        const imageObj = images[img.resourceId];
-        if (imageObj) {
-           if (img.width && img.height) {
-             ctx.drawImage(imageObj, 0, 0, img.width, img.height);
-           } else {
-             ctx.drawImage(imageObj, 0, 0);
-           }
-        }
-        ctx.restore();
-      }
-
-      for (const stroke of layer.strokes) {
-        if (stroke.points.length === 0) continue;
-        ctx.beginPath();
-        ctx.strokeStyle = stroke.color.hex;
-        ctx.lineJoin = "round";
-        ctx.lineCap = "round";
-        ctx.lineWidth = stroke.width || 1.5;
-        ctx.globalAlpha = stroke.color.a * layerOpacity;
-        ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-        for (let i = 1; i < stroke.points.length; i++) {
-          ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
-        }
-        ctx.stroke();
-      }
-    }
-    ctx.restore();
-
-  }, [doc, pan, zoom, size, images, layerConfigs, isolatedLayer]);
+    render();
+    
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [docCache]);
 
   const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const dragStartRef = useRef({ x: 0, y: 0 });
 
   const [isRightDragging, setIsRightDragging] = useState(false);
   const [rightDragStartPos, setRightDragStartPos] = useState({ x: 0, y: 0 });
-  const [dragStartZoom, setDragStartZoom] = useState(1);
-  const [dragStartPan, setDragStartPan] = useState({ x: 0, y: 0 });
+  const dragStartZoomRef = useRef(1);
+  const dragStartPanRef = useRef({ x: 0, y: 0 });
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 2) {
        setIsRightDragging(true);
        setRightDragStartPos({ x: e.clientX, y: e.clientY });
-       setDragStartZoom(zoom);
-       setDragStartPan(pan);
+       dragStartZoomRef.current = zoomRef.current;
+       dragStartPanRef.current = { ...panRef.current };
     } else if (e.button === 0) {
        setIsDragging(true);
-       setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+       dragStartRef.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
     }
   };
 
@@ -430,7 +488,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
        const sign = (totalDx - totalDy) >= 0 ? 1 : -1;
        const zoomDelta = sign * distance; 
        const zoomFactor = Math.exp(zoomDelta * 0.015);
-       let newZoom = dragStartZoom * zoomFactor;
+       let newZoom = dragStartZoomRef.current * zoomFactor;
        newZoom = Math.max(0.01, Math.min(newZoom, 100));
 
        const rect = containerRef.current?.getBoundingClientRect();
@@ -441,17 +499,19 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
        const centerX = screenX;
        const centerY = screenY;
 
-       const newPanX = centerX - (centerX - dragStartPan.x) * (newZoom / dragStartZoom);
-       const newPanY = centerY - (centerY - dragStartPan.y) * (newZoom / dragStartZoom);
+       const newPanX = centerX - (centerX - dragStartPanRef.current.x) * (newZoom / dragStartZoomRef.current);
+       const newPanY = centerY - (centerY - dragStartPanRef.current.y) * (newZoom / dragStartZoomRef.current);
 
-       setZoom(newZoom);
-       setPan({ x: newPanX, y: newPanY });
+       zoomRef.current = newZoom;
+       panRef.current = { x: newPanX, y: newPanY };
+       requestRedraw();
 
     } else if (isDragging) {
-      setPan({
-        x: e.clientX - dragStart.x,
-        y: e.clientY - dragStart.y,
-      });
+      panRef.current = {
+        x: e.clientX - dragStartRef.current.x,
+        y: e.clientY - dragStartRef.current.y,
+      };
+      requestRedraw();
     }
   };
 
@@ -475,17 +535,18 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
     const centerX = screenX;
     const centerY = screenY;
     
-    let newZoom = zoom * factor;
+    let newZoom = zoomRef.current * factor;
     newZoom = Math.max(0.01, Math.min(newZoom, 100));
 
-    const newPanX = centerX - (centerX - pan.x) * (newZoom / zoom);
-    const newPanY = centerY - (centerY - pan.y) * (newZoom / zoom);
+    const newPanX = centerX - (centerX - panRef.current.x) * (newZoom / zoomRef.current);
+    const newPanY = centerY - (centerY - panRef.current.y) * (newZoom / zoomRef.current);
 
-    setZoom(newZoom);
-    setPan({ x: newPanX, y: newPanY });
+    zoomRef.current = newZoom;
+    panRef.current = { x: newPanX, y: newPanY };
+    requestRedraw();
   };
 
-  const [touchDistStart, setTouchDistStart] = useState<number | null>(null);
+  const touchDistStartRef = useRef<number | null>(null);
   const [lastTap, setLastTap] = useState(0);
   const [tapCount, setTapCount] = useState(0);
 
@@ -505,14 +566,14 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
       setLastTap(now);
 
       setIsDragging(true);
-      setDragStart({ x: e.touches[0].clientX - pan.x, y: e.touches[0].clientY - pan.y });
+      dragStartRef.current = { x: e.touches[0].clientX - panRef.current.x, y: e.touches[0].clientY - panRef.current.y };
     } else if (e.touches.length === 2) {
       setIsDragging(false);
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
-      setTouchDistStart(Math.sqrt(dx * dx + dy * dy));
-      setDragStartZoom(zoom);
-      setDragStartPan(pan);
+      touchDistStartRef.current = Math.sqrt(dx * dx + dy * dy);
+      dragStartZoomRef.current = zoomRef.current;
+      dragStartPanRef.current = { ...panRef.current };
       
       const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
       const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
@@ -522,17 +583,18 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
 
   const handleTouchMove = (e: React.TouchEvent) => {
     if (e.touches.length === 1 && isDragging) {
-      setPan({
-        x: e.touches[0].clientX - dragStart.x,
-        y: e.touches[0].clientY - dragStart.y,
-      });
-    } else if (e.touches.length === 2 && touchDistStart !== null) {
+      panRef.current = {
+        x: e.touches[0].clientX - dragStartRef.current.x,
+        y: e.touches[0].clientY - dragStartRef.current.y,
+      };
+      requestRedraw();
+    } else if (e.touches.length === 2 && touchDistStartRef.current !== null) {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       const currentDist = Math.sqrt(dx * dx + dy * dy);
       
-      const zoomFactor = currentDist / touchDistStart;
-      let newZoom = dragStartZoom * zoomFactor;
+      const zoomFactor = currentDist / touchDistStartRef.current;
+      let newZoom = dragStartZoomRef.current * zoomFactor;
       newZoom = Math.max(0.01, Math.min(newZoom, 100));
 
       const rect = containerRef.current?.getBoundingClientRect();
@@ -543,17 +605,18 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
       const centerX = screenX;
       const centerY = screenY;
 
-      const newPanX = centerX - (centerX - dragStartPan.x) * (newZoom / dragStartZoom);
-      const newPanY = centerY - (centerY - dragStartPan.y) * (newZoom / dragStartZoom);
+      const newPanX = centerX - (centerX - dragStartPanRef.current.x) * (newZoom / dragStartZoomRef.current);
+      const newPanY = centerY - (centerY - dragStartPanRef.current.y) * (newZoom / dragStartZoomRef.current);
 
-      setZoom(newZoom);
-      setPan({ x: newPanX, y: newPanY });
+      zoomRef.current = newZoom;
+      panRef.current = { x: newPanX, y: newPanY };
+      requestRedraw();
     }
   };
 
   const handleTouchEnd = () => {
     setIsDragging(false);
-    setTouchDistStart(null);
+    touchDistStartRef.current = null;
   };
 
   return (
