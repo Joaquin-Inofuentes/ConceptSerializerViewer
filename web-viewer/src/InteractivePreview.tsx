@@ -14,6 +14,7 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
   const [isRightDragging, setIsRightDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
+  const [rightDragStartPos, setRightDragStartPos] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -29,6 +30,7 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
     if (e.button === 2) {
        setIsRightDragging(true);
        setLastMousePos({ x: e.clientX, y: e.clientY });
+       setRightDragStartPos({ x: e.clientX, y: e.clientY });
     } else if (e.button === 0) {
        // Only start dragging if we clicked the container, or we want to allow dragging everywhere
        setIsDragging(true);
@@ -49,8 +51,8 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
 
        const rect = containerRef.current?.getBoundingClientRect();
        if (!rect) return;
-       const screenX = lastMousePos.x - rect.left;
-       const screenY = lastMousePos.y - rect.top;
+       const screenX = rightDragStartPos.x - rect.left;
+       const screenY = rightDragStartPos.y - rect.top;
 
        const centerX = screenX - rect.width / 2;
        const centerY = screenY - rect.height / 2;
@@ -134,6 +136,26 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
         />
       </div>
       
+      {/* Zoom Reference Indicator */}
+      {isRightDragging && (
+        <div style={{
+          position: 'absolute',
+          left: rightDragStartPos.x - (containerRef.current?.getBoundingClientRect().left || 0),
+          top: rightDragStartPos.y - (containerRef.current?.getBoundingClientRect().top || 0),
+          width: '16px',
+          height: '16px',
+          marginLeft: '-8px',
+          marginTop: '-8px',
+          border: '2px solid red',
+          borderRadius: '50%',
+          pointerEvents: 'none',
+          boxShadow: '0 0 4px rgba(0,0,0,0.5)',
+          zIndex: 100
+        }}>
+          <div style={{ width: '4px', height: '4px', background: 'red', borderRadius: '50%', margin: '4px' }} />
+        </div>
+      )}
+
       <button 
         onClick={onClose}
         style={{

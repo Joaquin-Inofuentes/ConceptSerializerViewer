@@ -143,31 +143,29 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
     ctx.scale(zoom, zoom);
 
     // Draw dynamic background grid
-    ctx.save();
-    // Invert transform to find visible bounds in world coordinates
-    const startX = -pan.x / zoom;
-    const startY = -pan.y / zoom;
-    const endX = (size.width - pan.x) / zoom;
-    const endY = (size.height - pan.y) / zoom;
+    // --- DRAW BACKGROUND GRID IN SCREEN SPACE ---
+    const gridSize = 50 * zoom;
+    ctx.strokeStyle = '#e0e0e0';
+    ctx.lineWidth = 1;
     
-    // Grid settings
-    const gridSize = 40; 
-    ctx.strokeStyle = "#e5e7eb"; // subtle gray grid
-    ctx.lineWidth = 1 / zoom; // keep line 1px thick regardless of zoom
-    
+    const offsetX = (size.width / 2 + pan.x) % gridSize;
+    const offsetY = (size.height / 2 + pan.y) % gridSize;
+
     ctx.beginPath();
-    // Vertical lines
-    for (let x = Math.floor(startX / gridSize) * gridSize; x < endX; x += gridSize) {
-      ctx.moveTo(x, startY);
-      ctx.lineTo(x, endY);
+    for (let x = offsetX - gridSize; x < size.width + gridSize; x += gridSize) {
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, size.height);
     }
-    // Horizontal lines
-    for (let y = Math.floor(startY / gridSize) * gridSize; y < endY; y += gridSize) {
-      ctx.moveTo(startX, y);
-      ctx.lineTo(endX, y);
+    for (let y = offsetY - gridSize; y < size.height + gridSize; y += gridSize) {
+      ctx.moveTo(0, y);
+      ctx.lineTo(size.width, y);
     }
     ctx.stroke();
-    ctx.restore();
+
+    // --- APPLY WORLD TRANSFORM ---
+    ctx.save();
+    ctx.translate(size.width / 2 + pan.x, size.height / 2 + pan.y);
+    ctx.scale(zoom, zoom);
 
     const sortedLayers = [...doc.layers].sort((a, b) => a.index - b.index);
 
@@ -226,11 +224,13 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
 
   const [isRightDragging, setIsRightDragging] = useState(false);
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
+  const [rightDragStartPos, setRightDragStartPos] = useState({ x: 0, y: 0 });
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 2) {
        setIsRightDragging(true);
        setLastMousePos({ x: e.clientX, y: e.clientY });
+       setRightDragStartPos({ x: e.clientX, y: e.clientY });
     } else if (e.button === 0) {
        setIsDragging(true);
        setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
@@ -248,10 +248,11 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
        let newZoom = zoom * zoomFactor;
        newZoom = Math.max(0.01, Math.min(newZoom, 100));
 
-       const rect = canvasRef.current?.getBoundingClientRect();
+       const rect = containerRef.current?.getBoundingClientRect();
        if (!rect) return;
-       const screenX = lastMousePos.x - rect.left;
-       const screenY = lastMousePos.y - rect.top;
+       // ALWAYS use the initial click position as the zoom anchor
+       const screenX = rightDragStartPos.x - rect.left;
+       const screenY = rightDragStartPos.y - rect.top;
 
        const centerX = screenX - rect.width / 2;
        const centerY = screenY - rect.height / 2;
@@ -281,7 +282,7 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
     const direction = e.deltaY > 0 ? -1 : 1;
     const factor = Math.pow(zoomFactor, direction);
     
-    const rect = canvasRef.current?.getBoundingClientRect();
+    const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
     
     const screenX = e.clientX - rect.left;
@@ -303,12 +304,19 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
   return (
     <div 
       ref={containerRef}
-      style={{ width: "100%", height: "100%", position: "relative", cursor: isDragging ? "grabbing" : "grab" }}
+      style={{ 
+        width: "100%", 
+        height: "100%", 
+        overflow: "hidden",
+        position: "relative", 
+        cursor: isDragging ? "grabbing" : (isRightDragging ? "ns-resize" : "grab") 
+      }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
       onWheel={handleWheel}
+      onContextMenu={(e) => e.preventDefault()}
     >
       <canvas
         ref={canvasRef}
@@ -317,6 +325,25 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
           touchAction: "none"
         }}
       />
+      {/* Zoom Reference Indicator */}
+      {isRightDragging && (
+        <div style={{
+          position: 'absolute',
+          left: rightDragStartPos.x - (containerRef.current?.getBoundingClientRect().left || 0),
+          top: rightDragStartPos.y - (containerRef.current?.getBoundingClientRect().top || 0),
+          width: '16px',
+          height: '16px',
+          marginLeft: '-8px',
+          marginTop: '-8px',
+          border: '2px solid red',
+          borderRadius: '50%',
+          pointerEvents: 'none',
+          boxShadow: '0 0 4px rgba(0,0,0,0.5)',
+          zIndex: 100
+        }}>
+          <div style={{ width: '4px', height: '4px', background: 'red', borderRadius: '50%', margin: '4px' }} />
+        </div>
+      )}
     </div>
   );
 };
