@@ -198,7 +198,7 @@ function App() {
               {showLayerMenu && (
                 <div className="layer-menu dropdown-menu">
                   <div className="layer-menu-header">
-                    <span>Ajustes de Capas</span>
+                    <span>Capas</span>
                     <div style={{display:'flex', gap:'4px'}}>
                       <button className="btn btn-tiny" onClick={() => {
                         const newConfigs = {...layerConfigs};
@@ -269,7 +269,7 @@ function App() {
               {showImageMenu && (
                 <div className="image-menu dropdown-menu">
                   <div className="layer-menu-header">
-                    <span>Galería ({stats.images})</span>
+                    <span>Galería</span>
                     <span style={{fontSize:'0.7rem', color:'#888'}}>ESC para cerrar</span>
                   </div>
                   <div className="image-gallery">
