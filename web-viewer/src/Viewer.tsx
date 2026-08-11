@@ -409,7 +409,8 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
         height: "100%", 
         overflow: "hidden",
         position: "relative", 
-        cursor: isDragging ? "grabbing" : (isRightDragging ? "ns-resize" : "grab") 
+        cursor: isDragging ? "grabbing" : (isRightDragging ? "ns-resize" : "grab"),
+        touchAction: "none"
       }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}

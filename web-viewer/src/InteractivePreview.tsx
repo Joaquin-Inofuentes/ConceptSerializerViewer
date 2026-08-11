@@ -181,7 +181,8 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
          cursor: isDragging ? "grabbing" : (isRightDragging ? "ns-resize" : "grab"),
          display: 'block',
          padding: 0,
-         overflow: 'hidden'
+         overflow: 'hidden',
+         touchAction: "none"
       }}
     >
       <div 
