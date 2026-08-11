@@ -249,18 +249,23 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     
+    let hasStrokes = false;
     docCache.strokes.forEach(stroke => {
+      hasStrokes = true;
       if (stroke.minX < minX) minX = stroke.minX;
       if (stroke.minY < minY) minY = stroke.minY;
       if (stroke.maxX > maxX) maxX = stroke.maxX;
       if (stroke.maxY > maxY) maxY = stroke.maxY;
     });
-    docCache.images.forEach(img => {
-      if (img.minX < minX) minX = img.minX;
-      if (img.minY < minY) minY = img.minY;
-      if (img.maxX > maxX) maxX = img.maxX;
-      if (img.maxY > maxY) maxY = img.maxY;
-    });
+    
+    if (!hasStrokes) {
+      docCache.images.forEach(img => {
+        if (img.minX < minX) minX = img.minX;
+        if (img.minY < minY) minY = img.minY;
+        if (img.maxX > maxX) maxX = img.maxX;
+        if (img.maxY > maxY) maxY = img.maxY;
+      });
+    }
 
     if (minX === Infinity) return;
 
