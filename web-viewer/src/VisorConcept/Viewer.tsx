@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import type { Document } from "./parser";
 
 export interface LayerConfig {
@@ -13,7 +13,11 @@ interface ViewerProps {
   onImagesLoaded?: (images: Record<string, string>) => void;
 }
 
-export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer, onImagesLoaded }) => {
+export interface ViewerHandle {
+  exportDrawing: (format: 'png' | 'jpg' | 'pdf') => Promise<void>;
+}
+
+export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs, isolatedLayer, onImagesLoaded }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -21,6 +25,128 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
   const [zoom, setZoom] = useState(1);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [images, setImages] = useState<Record<string, CanvasImageSource>>({});
+
+  useImperativeHandle(ref, () => ({
+    exportDrawing: async (format: 'png' | 'jpg' | 'pdf') => {
+      if (!doc) return;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      
+      doc.layers.forEach(layer => {
+        const config = layerConfigs[layer.id];
+        if (config && !config.visible) return;
+        if (isolatedLayer && isolatedLayer !== layer.id) return;
+        
+        layer.strokes.forEach(stroke => {
+          stroke.points.forEach(pt => {
+             if (pt.x < minX) minX = pt.x;
+             if (pt.y < minY) minY = pt.y;
+             if (pt.x > maxX) maxX = pt.x;
+             if (pt.y > maxY) maxY = pt.y;
+          });
+        });
+        layer.images.forEach(img => {
+            const tx = img.transform[12];
+            const ty = img.transform[13];
+            const w = img.width || 500;
+            const h = img.height || 500;
+            if (tx < minX) minX = tx;
+            if (ty < minY) minY = ty;
+            if (tx + w > maxX) maxX = tx + w;
+            if (ty + h > maxY) maxY = ty + h;
+        });
+      });
+
+      if (minX === Infinity) {
+        alert("El lienzo está vacío u oculto.");
+        return;
+      }
+
+      const padding = 20;
+      minX -= padding;
+      minY -= padding;
+      maxX += padding;
+      maxY += padding;
+
+      const width = maxX - minX;
+      const height = maxY - minY;
+
+      const exportCanvas = document.createElement("canvas");
+      exportCanvas.width = width;
+      exportCanvas.height = height;
+      const ctx = exportCanvas.getContext("2d");
+      if (!ctx) return;
+
+      if (format === 'jpg' || format === 'pdf') {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+      }
+
+      ctx.save();
+      ctx.translate(-minX, -minY);
+
+      const sortedLayers = [...doc.layers].sort((a, b) => a.index - b.index);
+
+      for (const layer of sortedLayers) {
+        if (isolatedLayer && isolatedLayer !== layer.id) continue;
+        const config = layerConfigs[layer.id];
+        if (config && !config.visible) continue;
+        
+        const layerOpacity = config ? config.opacity : 1.0;
+
+        for (const img of layer.images) {
+          ctx.save();
+          ctx.globalAlpha = layerOpacity;
+          const m = img.transform;
+          if (m && m.length === 16) {
+             ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
+          }
+          const imageObj = images[img.resourceId];
+          if (imageObj) {
+             if (img.width && img.height) {
+               ctx.drawImage(imageObj, 0, 0, img.width, img.height);
+             } else {
+               ctx.drawImage(imageObj, 0, 0);
+             }
+          }
+          ctx.restore();
+        }
+
+        for (const stroke of layer.strokes) {
+          if (stroke.points.length === 0) continue;
+          ctx.beginPath();
+          ctx.strokeStyle = stroke.color.hex;
+          ctx.lineJoin = "round";
+          ctx.lineCap = "round";
+          ctx.lineWidth = stroke.width || 1.5;
+          ctx.globalAlpha = stroke.color.a * layerOpacity;
+          ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+          for (let i = 1; i < stroke.points.length; i++) {
+            ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+          }
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+
+      const dataUrl = exportCanvas.toDataURL(`image/${format === 'jpg' ? 'jpeg' : 'png'}`, 1.0);
+
+      if (format === 'pdf') {
+        const jsPDF = (await import('jspdf')).default;
+        const pdf = new jsPDF({
+          orientation: width > height ? 'landscape' : 'portrait',
+          unit: 'px',
+          format: [width, height]
+        });
+        pdf.addImage(dataUrl, 'JPEG', 0, 0, width, height);
+        pdf.save('export.pdf');
+      } else {
+        const link = document.createElement('a');
+        link.download = `export.${format}`;
+        link.href = dataUrl;
+        link.click();
+      }
+    }
+  }));
 
   useEffect(() => {
     const updateSize = () => {
@@ -453,4 +579,4 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
       )}
     </div>
   );
-};
+});

@@ -146,6 +146,8 @@ body {
   background: white;
   border-radius: 4px;
   cursor: pointer;
+  color: var(--text-main);
+  white-space: nowrap;
 }
 .btn-tiny:hover {
   background: #f1f3f5;
@@ -169,10 +171,19 @@ body {
   font-size: 0.85rem;
 }
 
+.layer-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .layer-actions {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  flex-shrink: 0;
 }
 
 .opacity-slider {

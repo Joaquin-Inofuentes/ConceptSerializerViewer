@@ -2,9 +2,9 @@ import { useState, useRef, useEffect } from 'react';
 import { parseConceptsFile } from './parser';
 import type { Document } from './parser';
 import { Viewer } from './Viewer';
-import type { LayerConfig } from './Viewer';
+import type { LayerConfig, ViewerHandle } from './Viewer';
 import { InteractivePreview } from './InteractivePreview';
-import { Eye, EyeOff, Lock, Filter, Image as ImageIcon, X } from 'lucide-react';
+import { Eye, EyeOff, Lock, Filter, Image as ImageIcon, X, Download } from 'lucide-react';
 import './App.css';
 
 interface ViewerProps {
@@ -25,6 +25,7 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
   // UI State
   const [showLayerMenu, setShowLayerMenu] = useState(false);
   const [showImageMenu, setShowImageMenu] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
   
   // Image Thumbnails & Preview State
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
@@ -32,12 +33,15 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
 
   const layerMenuRef = useRef<HTMLDivElement>(null);
   const imageMenuRef = useRef<HTMLDivElement>(null);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  const viewerRef = useRef<ViewerHandle>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setShowLayerMenu(false);
         setShowImageMenu(false);
+        setShowExportMenu(false);
         setPreviewImage(null);
       }
     };
@@ -55,8 +59,11 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
       if (imageMenuRef.current && !imageMenuRef.current.contains(e.target as Node)) {
         setShowImageMenu(false);
       }
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setShowExportMenu(false);
+      }
     };
-    if (showLayerMenu || showImageMenu) {
+    if (showLayerMenu || showImageMenu || showExportMenu) {
       document.addEventListener('mousedown', handleClickOutside, true);
       document.addEventListener('touchstart', handleClickOutside, true);
     }
@@ -64,7 +71,7 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
       document.removeEventListener('mousedown', handleClickOutside, true);
       document.removeEventListener('touchstart', handleClickOutside, true);
     };
-  }, [showLayerMenu, showImageMenu, previewImage]);
+  }, [showLayerMenu, showImageMenu, showExportMenu, previewImage]);
 
   useEffect(() => {
     const load = async () => {
@@ -145,6 +152,29 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
 
       {/* Bottom Right: Tools */}
       <div className="floating-tools">
+        <div className="dropdown-container" ref={exportMenuRef}>
+          <button 
+            className={`btn-tool ${showExportMenu ? 'active-glow' : ''}`}
+            onClick={() => { setShowExportMenu(!showExportMenu); setShowLayerMenu(false); setShowImageMenu(false); }}
+            title="Exportar"
+          >
+            <Download size={20} />
+          </button>
+          
+          {showExportMenu && (
+            <div className="dropdown-menu" style={{ minWidth: '150px' }}>
+              <div className="layer-menu-header">
+                <span>Exportar</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', padding: '0.5rem' }}>
+                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('pdf')}>📄 PDF (Recortado)</button>
+                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('jpg')}>🖼 JPG (Fondo Blanco)</button>
+                <button className="btn btn-tiny" style={{ padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('png')}>💠 PNG (Sin fondo)</button>
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="dropdown-container" ref={layerMenuRef}>
           <button 
             className={`btn-tool ${showLayerMenu ? 'active-glow' : ''}`}
@@ -179,7 +209,7 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
               <div className="layer-list">
                 {doc.layers.map((l, i) => (
                   <div key={l.id} className={`layer-item ${isolatedLayer === l.id ? 'isolated' : ''}`}>
-                    <div className="layer-info" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div className="layer-info">
                         <span className="layer-name">Capa {i+1}</span>
                         <span style={{ fontSize: '0.75rem', color: '#888' }}>
                           ({l.strokes.length + l.images.length} elem)
@@ -255,6 +285,7 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
       <main className="main-content">
         <div className="canvas-wrapper">
           <Viewer 
+            ref={viewerRef}
             doc={doc} 
             layerConfigs={layerConfigs} 
             isolatedLayer={isolatedLayer} 
