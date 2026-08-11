@@ -322,6 +322,7 @@ body {
   border: 4px dashed var(--primary);
   margin: 1rem;
   border-radius: 12px;
+  pointer-events: none;
 }
 .drag-overlay h2 {
   color: var(--primary);

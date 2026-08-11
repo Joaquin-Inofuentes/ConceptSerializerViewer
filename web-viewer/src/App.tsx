@@ -20,6 +20,7 @@ function App() {
   const [showLayerMenu, setShowLayerMenu] = useState(false);
   const [showImageMenu, setShowImageMenu] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const dragCounter = useRef(0);
   const layerMenuRef = useRef<HTMLDivElement>(null);
   const imageMenuRef = useRef<HTMLDivElement>(null);
 
@@ -115,18 +116,27 @@ function App() {
     setIsolatedLayer(prev => prev === id ? null : id);
   };
 
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounter.current++;
+    if (!doc) setIsDragging(true);
+  };
+
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
-    if (!doc) setIsDragging(true);
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
-    setIsDragging(false);
+    dragCounter.current--;
+    if (dragCounter.current === 0) {
+      setIsDragging(false);
+    }
   };
 
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
+    dragCounter.current = 0;
     setIsDragging(false);
     const file = e.dataTransfer.files?.[0];
     if (!file || !file.name.endsWith('.concepts')) {
@@ -149,6 +159,7 @@ function App() {
   return (
     <div 
       className="app-container" 
+      onDragEnter={handleDragEnter}
       onDragOver={handleDragOver} 
       onDragLeave={handleDragLeave} 
       onDrop={handleDrop}
