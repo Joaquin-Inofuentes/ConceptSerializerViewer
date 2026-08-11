@@ -13,8 +13,9 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
   const [isDragging, setIsDragging] = useState(false);
   const [isRightDragging, setIsRightDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   const [rightDragStartPos, setRightDragStartPos] = useState({ x: 0, y: 0 });
+  const [dragStartZoom, setDragStartZoom] = useState(1);
+  const [dragStartPan, setDragStartPan] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -29,8 +30,9 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 2) {
        setIsRightDragging(true);
-       setLastMousePos({ x: e.clientX, y: e.clientY });
        setRightDragStartPos({ x: e.clientX, y: e.clientY });
+       setDragStartZoom(zoom);
+       setDragStartPan(pan);
     } else if (e.button === 0) {
        // Only start dragging if we clicked the container, or we want to allow dragging everywhere
        setIsDragging(true);
@@ -40,13 +42,12 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (isRightDragging) {
-       const dx = e.clientX - lastMousePos.x;
-       const dy = e.clientY - lastMousePos.y;
-       setLastMousePos({ x: e.clientX, y: e.clientY });
+       const totalDx = e.clientX - rightDragStartPos.x;
+       const totalDy = e.clientY - rightDragStartPos.y;
        
-       const zoomDelta = dx - dy; 
-       const zoomFactor = 1 + (zoomDelta * 0.01);
-       let newZoom = zoom * zoomFactor;
+       const zoomDelta = totalDx - totalDy; 
+       const zoomFactor = Math.exp(zoomDelta * 0.005);
+       let newZoom = dragStartZoom * zoomFactor;
        newZoom = Math.max(0.01, Math.min(newZoom, 100));
 
        const rect = containerRef.current?.getBoundingClientRect();
@@ -57,8 +58,8 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
        const centerX = screenX - rect.width / 2;
        const centerY = screenY - rect.height / 2;
 
-       const newPanX = centerX - (centerX - pan.x) * (newZoom / zoom);
-       const newPanY = centerY - (centerY - pan.y) * (newZoom / zoom);
+       const newPanX = centerX - (centerX - dragStartPan.x) * (newZoom / dragStartZoom);
+       const newPanY = centerY - (centerY - dragStartPan.y) * (newZoom / dragStartZoom);
 
        setZoom(newZoom);
        setPan({ x: newPanX, y: newPanY });

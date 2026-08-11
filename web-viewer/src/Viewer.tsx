@@ -19,9 +19,7 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
 
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const [size, setSize] = useState({ width: 800, height: 600 });
+  const [size, setSize] = useState({ width: 0, height: 0 });
   const [images, setImages] = useState<Record<string, CanvasImageSource>>({});
 
   useEffect(() => {
@@ -34,33 +32,65 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
       }
     };
     updateSize();
+    const currentContainer = containerRef.current;
     window.addEventListener("resize", updateSize);
-    return () => window.removeEventListener("resize", updateSize);
+    return () => {
+      if (!currentContainer) return;
+      window.removeEventListener('resize', updateSize);
+    };
   }, []);
+
+  // Zoom to fit bounds on load
+  useEffect(() => {
+    if (!doc || !containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    
+    doc.layers.forEach(layer => {
+      layer.strokes.forEach(stroke => {
+        stroke.points.forEach(pt => {
+           if (pt.x < minX) minX = pt.x;
+           if (pt.y < minY) minY = pt.y;
+           if (pt.x > maxX) maxX = pt.x;
+           if (pt.y > maxY) maxY = pt.y;
+        });
+      });
+      layer.images.forEach(img => {
+          const tx = img.transform[12];
+          const ty = img.transform[13];
+          if (tx < minX) minX = tx;
+          if (ty < minY) minY = ty;
+          if (tx > maxX) maxX = tx;
+          if (ty > maxY) maxY = ty;
+      });
+    });
+
+    if (minX === Infinity) return; // Empty doc
+
+    const contentWidth = maxX - minX;
+    const contentHeight = maxY - minY;
+    
+    const pad = 40;
+    const availWidth = rect.width - pad * 2;
+    const availHeight = rect.height - pad * 2;
+
+    if (contentWidth > 0 && contentHeight > 0) {
+        let newZoom = Math.min(availWidth / contentWidth, availHeight / contentHeight);
+        newZoom = Math.max(0.1, Math.min(newZoom, 5)); // Bound zoom
+
+        const cx = (minX + maxX) / 2;
+        const cy = (minY + maxY) / 2;
+
+        setZoom(newZoom);
+        setPan({ x: rect.width / 2 - cx * newZoom, y: rect.height / 2 - cy * newZoom });
+    }
+  }, [doc, size]);
 
   useEffect(() => {
     if (!doc) return;
     
-    const padding = 50;
-    const { bbox } = doc;
-    const docWidth = bbox.maxX - bbox.minX;
-    const docHeight = bbox.maxY - bbox.minY;
-    
-    if (docWidth > 0 && docHeight > 0 && size.width > 0) {
-      const scaleX = (size.width - padding * 2) / docWidth;
-      const scaleY = (size.height - padding * 2) / docHeight;
-      const initialZoom = Math.min(scaleX, scaleY);
-      setZoom(initialZoom);
-      
-      const docCenterX = bbox.minX + docWidth / 2;
-      const docCenterY = bbox.minY + docHeight / 2;
-      
-      setPan({
-        x: size.width / 2 - docCenterX * initialZoom,
-        y: size.height / 2 - docCenterY * initialZoom,
-      });
-    }
-
     const loadedImgs: Record<string, CanvasImageSource> = {};
     let pending = 0;
     
@@ -143,34 +173,33 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
     ctx.scale(zoom, zoom);
 
     // Draw dynamic background grid
-    // --- DRAW BACKGROUND GRID IN SCREEN SPACE ---
-    const gridSize = 50 * zoom;
+    const gridSize = 50;
     ctx.strokeStyle = '#e0e0e0';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 1 / zoom;
     
-    const offsetX = (size.width / 2 + pan.x) % gridSize;
-    const offsetY = (size.height / 2 + pan.y) % gridSize;
+    const offsetX = (pan.x) % (gridSize * zoom);
+    const offsetY = (pan.y) % (gridSize * zoom);
 
     ctx.beginPath();
-    for (let x = offsetX - gridSize; x < size.width + gridSize; x += gridSize) {
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, size.height);
+    for (let x = offsetX - gridSize * zoom; x < size.width; x += gridSize * zoom) {
+      ctx.moveTo(x / zoom - pan.x / zoom, 0 / zoom - pan.y / zoom);
+      ctx.lineTo(x / zoom - pan.x / zoom, size.height / zoom - pan.y / zoom);
     }
-    for (let y = offsetY - gridSize; y < size.height + gridSize; y += gridSize) {
-      ctx.moveTo(0, y);
-      ctx.lineTo(size.width, y);
+    for (let y = offsetY - gridSize * zoom; y < size.height; y += gridSize * zoom) {
+      ctx.moveTo(0 / zoom - pan.x / zoom, y / zoom - pan.y / zoom);
+      ctx.lineTo(size.width / zoom - pan.x / zoom, y / zoom - pan.y / zoom);
     }
     ctx.stroke();
 
-    // --- APPLY WORLD TRANSFORM ---
+    ctx.restore();
+
     ctx.save();
-    ctx.translate(size.width / 2 + pan.x, size.height / 2 + pan.y);
+    ctx.translate(pan.x, pan.y);
     ctx.scale(zoom, zoom);
 
     const sortedLayers = [...doc.layers].sort((a, b) => a.index - b.index);
 
     for (const layer of sortedLayers) {
-      // Check isolation and visibility
       if (isolatedLayer && isolatedLayer !== layer.id) continue;
       
       const config = layerConfigs[layer.id];
@@ -178,16 +207,13 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
       
       const layerOpacity = config ? config.opacity : 1.0;
 
-      // Draw Images
       for (const img of layer.images) {
         ctx.save();
         ctx.globalAlpha = layerOpacity;
-        
         const m = img.transform;
         if (m && m.length === 16) {
            ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
         }
-
         const imageObj = images[img.resourceId];
         if (imageObj) {
            if (img.width && img.height) {
@@ -199,18 +225,14 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
         ctx.restore();
       }
 
-      // Draw Strokes
       for (const stroke of layer.strokes) {
         if (stroke.points.length === 0) continue;
-        
         ctx.beginPath();
         ctx.strokeStyle = stroke.color.hex;
         ctx.lineJoin = "round";
         ctx.lineCap = "round";
         ctx.lineWidth = stroke.width || 1.5;
-        
         ctx.globalAlpha = stroke.color.a * layerOpacity;
-
         ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
         for (let i = 1; i < stroke.points.length; i++) {
           ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
@@ -222,15 +244,20 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
 
   }, [doc, pan, zoom, size, images, layerConfigs, isolatedLayer]);
 
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+
   const [isRightDragging, setIsRightDragging] = useState(false);
-  const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   const [rightDragStartPos, setRightDragStartPos] = useState({ x: 0, y: 0 });
+  const [dragStartZoom, setDragStartZoom] = useState(1);
+  const [dragStartPan, setDragStartPan] = useState({ x: 0, y: 0 });
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 2) {
        setIsRightDragging(true);
-       setLastMousePos({ x: e.clientX, y: e.clientY });
        setRightDragStartPos({ x: e.clientX, y: e.clientY });
+       setDragStartZoom(zoom);
+       setDragStartPan(pan);
     } else if (e.button === 0) {
        setIsDragging(true);
        setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
@@ -239,26 +266,24 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (isRightDragging) {
-       const dx = e.clientX - lastMousePos.x;
-       const dy = e.clientY - lastMousePos.y;
-       setLastMousePos({ x: e.clientX, y: e.clientY });
+       const totalDx = e.clientX - rightDragStartPos.x;
+       const totalDy = e.clientY - rightDragStartPos.y;
        
-       const zoomDelta = dx - dy; 
-       const zoomFactor = 1 + (zoomDelta * 0.01);
-       let newZoom = zoom * zoomFactor;
+       const zoomDelta = totalDx - totalDy; 
+       const zoomFactor = Math.exp(zoomDelta * 0.005);
+       let newZoom = dragStartZoom * zoomFactor;
        newZoom = Math.max(0.01, Math.min(newZoom, 100));
 
        const rect = containerRef.current?.getBoundingClientRect();
        if (!rect) return;
-       // ALWAYS use the initial click position as the zoom anchor
        const screenX = rightDragStartPos.x - rect.left;
        const screenY = rightDragStartPos.y - rect.top;
 
-       const centerX = screenX - rect.width / 2;
-       const centerY = screenY - rect.height / 2;
+       const centerX = screenX;
+       const centerY = screenY;
 
-       const newPanX = centerX - (centerX - pan.x) * (newZoom / zoom);
-       const newPanY = centerY - (centerY - pan.y) * (newZoom / zoom);
+       const newPanX = centerX - (centerX - dragStartPan.x) * (newZoom / dragStartZoom);
+       const newPanY = centerY - (centerY - dragStartPan.y) * (newZoom / dragStartZoom);
 
        setZoom(newZoom);
        setPan({ x: newPanX, y: newPanY });
@@ -288,8 +313,8 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
     
-    const centerX = screenX - rect.width / 2;
-    const centerY = screenY - rect.height / 2;
+    const centerX = screenX;
+    const centerY = screenY;
     
     let newZoom = zoom * factor;
     newZoom = Math.max(0.01, Math.min(newZoom, 100));
