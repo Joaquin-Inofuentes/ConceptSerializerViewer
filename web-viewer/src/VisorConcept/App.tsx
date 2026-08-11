@@ -141,9 +141,8 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
 
   return (
     <div className="app-container">
-      {/* Top Left: Filename */}
       <div className="filename-display">
-        {fileName}
+        {fileName.replace('.concepts', '')}
       </div>
 
       {/* Top Right: Close Button */}
