@@ -45,8 +45,10 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
        const totalDx = e.clientX - rightDragStartPos.x;
        const totalDy = e.clientY - rightDragStartPos.y;
        
-       const zoomDelta = totalDx - totalDy; 
-       const zoomFactor = Math.exp(zoomDelta * 0.005);
+       const distance = Math.sqrt(totalDx * totalDx + totalDy * totalDy);
+       const sign = (totalDx - totalDy) >= 0 ? 1 : -1;
+       const zoomDelta = sign * distance; 
+       const zoomFactor = Math.exp(zoomDelta * 0.015);
        let newZoom = dragStartZoom * zoomFactor;
        newZoom = Math.max(0.01, Math.min(newZoom, 100));
 
