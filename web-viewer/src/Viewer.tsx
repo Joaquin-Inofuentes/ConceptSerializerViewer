@@ -40,8 +40,7 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
     };
   }, []);
 
-  // Zoom to fit bounds on load
-  useEffect(() => {
+  const fitToBounds = () => {
     if (!doc || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
@@ -86,6 +85,11 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
         setZoom(newZoom);
         setPan({ x: rect.width / 2 - cx * newZoom, y: rect.height / 2 - cy * newZoom });
     }
+  };
+
+  // Zoom to fit bounds on load
+  useEffect(() => {
+    fitToBounds();
   }, [doc, size]);
 
   useEffect(() => {
@@ -326,6 +330,77 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
     setPan({ x: newPanX, y: newPanY });
   };
 
+  const [touchDistStart, setTouchDistStart] = useState<number | null>(null);
+  const [lastTap, setLastTap] = useState(0);
+  const [tapCount, setTapCount] = useState(0);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      const now = Date.now();
+      if (now - lastTap < 300) {
+        const newCount = tapCount + 1;
+        setTapCount(newCount);
+        if (newCount >= 3) {
+           fitToBounds();
+           setTapCount(0);
+        }
+      } else {
+        setTapCount(1);
+      }
+      setLastTap(now);
+
+      setIsDragging(true);
+      setDragStart({ x: e.touches[0].clientX - pan.x, y: e.touches[0].clientY - pan.y });
+    } else if (e.touches.length === 2) {
+      setIsDragging(false);
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      setTouchDistStart(Math.sqrt(dx * dx + dy * dy));
+      setDragStartZoom(zoom);
+      setDragStartPan(pan);
+      
+      const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      setRightDragStartPos({ x: cx, y: cy });
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 1 && isDragging) {
+      setPan({
+        x: e.touches[0].clientX - dragStart.x,
+        y: e.touches[0].clientY - dragStart.y,
+      });
+    } else if (e.touches.length === 2 && touchDistStart !== null) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const currentDist = Math.sqrt(dx * dx + dy * dy);
+      
+      const zoomFactor = currentDist / touchDistStart;
+      let newZoom = dragStartZoom * zoomFactor;
+      newZoom = Math.max(0.01, Math.min(newZoom, 100));
+
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const screenX = rightDragStartPos.x - rect.left;
+      const screenY = rightDragStartPos.y - rect.top;
+
+      const centerX = screenX;
+      const centerY = screenY;
+
+      const newPanX = centerX - (centerX - dragStartPan.x) * (newZoom / dragStartZoom);
+      const newPanY = centerY - (centerY - dragStartPan.y) * (newZoom / dragStartZoom);
+
+      setZoom(newZoom);
+      setPan({ x: newPanX, y: newPanY });
+    }
+  };
+
+  const handleTouchEnd = () => {
+    setIsDragging(false);
+    setTouchDistStart(null);
+  };
+
   return (
     <div 
       ref={containerRef}
@@ -341,6 +416,10 @@ export const Viewer: React.FC<ViewerProps> = ({ doc, layerConfigs, isolatedLayer
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
       onWheel={handleWheel}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchEnd}
       onContextMenu={(e) => e.preventDefault()}
     >
       <canvas
