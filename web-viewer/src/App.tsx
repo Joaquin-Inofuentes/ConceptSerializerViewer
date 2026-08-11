@@ -43,7 +43,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
+    const handleClickOutside = (e: MouseEvent | TouchEvent) => {
       if (previewImage) return; // Prevent closing dropdowns when interacting with preview
       
       if (layerMenuRef.current && !layerMenuRef.current.contains(e.target as Node)) {
@@ -55,8 +55,12 @@ function App() {
     };
     if (showLayerMenu || showImageMenu) {
       document.addEventListener('mousedown', handleClickOutside, true);
+      document.addEventListener('touchstart', handleClickOutside, true);
     }
-    return () => document.removeEventListener('mousedown', handleClickOutside, true);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside, true);
+      document.removeEventListener('touchstart', handleClickOutside, true);
+    };
   }, [showLayerMenu, showImageMenu, previewImage]);
 
   const initDoc = (parsedDoc: Document) => {
@@ -180,10 +184,6 @@ function App() {
       )}
       {/* Ultra Minimalist Topbar */}
       <header className="topbar">
-        <div className="topbar-title">
-          Visor de concepts
-        </div>
-        
         {doc && stats ? (
           <div className="stats">
             <div className="dropdown-container" ref={layerMenuRef}>
