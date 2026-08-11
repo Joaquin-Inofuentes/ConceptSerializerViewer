@@ -21,10 +21,10 @@ const puppeteer = require('puppeteer');
     await page.click('.btn-primary');
     
     console.log("Waiting for document to load...");
-    await page.waitForSelector('.stats', { timeout: 10000 });
+    await page.waitForSelector('.btn-tool', { timeout: 10000 });
     
     console.log("Document loaded! Testing Layer button on Desktop...");
-    const buttons = await page.$$('.btn-dropdown');
+    const buttons = await page.$$('.btn-tool');
     
     // The first dropdown button should be layers
     await buttons[0].click();
@@ -58,7 +58,7 @@ const puppeteer = require('puppeteer');
     
     console.log("Testing Layer button on Mobile...");
     // Need to use tap for mobile
-    const layerBtn = await page.$('.dropdown-container:nth-child(1) .btn-dropdown');
+    const layerBtn = await page.$('.dropdown-container:nth-child(1) .btn-tool');
     const layerBox = await layerBtn.boundingBox();
     await page.touchscreen.tap(layerBox.x + layerBox.width/2, layerBox.y + layerBox.height/2);
     
@@ -72,7 +72,7 @@ const puppeteer = require('puppeteer');
     console.log("Layer menu closed successfully on Mobile.");
     
     console.log("Testing Image button on Mobile...");
-    const imageBtn = await page.$('.dropdown-container:nth-child(2) .btn-dropdown');
+    const imageBtn = await page.$('.dropdown-container:nth-child(2) .btn-tool');
     const imageBox = await imageBtn.boundingBox();
     await page.touchscreen.tap(imageBox.x + imageBox.width/2, imageBox.y + imageBox.height/2);
     
