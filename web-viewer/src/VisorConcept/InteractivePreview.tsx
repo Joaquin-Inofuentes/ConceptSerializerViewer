@@ -308,9 +308,9 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
                 <span>Exportar</span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', padding: '0.5rem' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', marginBottom: '8px', cursor: 'pointer' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', marginBottom: '8px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
                   <input type="checkbox" checked={exportZoomAll} onChange={(e) => setExportZoomAll(e.target.checked)} />
-                  Recorte (Zoom All)
+                  Completo
                 </label>
                 <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => exportDrawing('pdf', exportZoomAll)}>📄 PDF</button>
                 <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => exportDrawing('jpg', exportZoomAll)}>🖼 JPG</button>
