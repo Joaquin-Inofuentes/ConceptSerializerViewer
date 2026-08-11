@@ -31,6 +31,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
       if (!doc) return;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       
+      let hasStrokes = false;
       doc.layers.forEach(layer => {
         const config = layerConfigs[layer.id];
         if (config && !config.visible) return;
@@ -38,23 +39,33 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
         
         layer.strokes.forEach(stroke => {
           stroke.points.forEach(pt => {
+             hasStrokes = true;
              if (pt.x < minX) minX = pt.x;
              if (pt.y < minY) minY = pt.y;
              if (pt.x > maxX) maxX = pt.x;
              if (pt.y > maxY) maxY = pt.y;
           });
         });
-        layer.images.forEach(img => {
-            const tx = img.transform[12];
-            const ty = img.transform[13];
-            const w = img.width || 500;
-            const h = img.height || 500;
-            if (tx < minX) minX = tx;
-            if (ty < minY) minY = ty;
-            if (tx + w > maxX) maxX = tx + w;
-            if (ty + h > maxY) maxY = ty + h;
-        });
       });
+
+      // Si no hay trazos dibujados, usamos los límites de las imágenes como fallback
+      if (!hasStrokes) {
+        doc.layers.forEach(layer => {
+          const config = layerConfigs[layer.id];
+          if (config && !config.visible) return;
+          if (isolatedLayer && isolatedLayer !== layer.id) return;
+          layer.images.forEach(img => {
+              const tx = img.transform[12];
+              const ty = img.transform[13];
+              const w = img.width || 500;
+              const h = img.height || 500;
+              if (tx < minX) minX = tx;
+              if (ty < minY) minY = ty;
+              if (tx + w > maxX) maxX = tx + w;
+              if (ty + h > maxY) maxY = ty + h;
+          });
+        });
+      }
 
       if (minX === Infinity) {
         alert("El lienzo está vacío u oculto.");

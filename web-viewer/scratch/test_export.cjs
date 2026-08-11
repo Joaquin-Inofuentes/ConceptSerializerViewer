@@ -40,36 +40,30 @@ const os = require('os');
     if (btn) btn.click();
   });
   
-  console.log("Waiting for document to load...");
   await page.waitForSelector('.btn-tool', { timeout: 10000 });
   
+  // Let's monkey patch HTMLCanvasElement.prototype.toDataURL to log the size!
+  await page.evaluate(() => {
+    const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(...args) {
+      console.log(`[CANVAS EXPORT] width: ${this.width}, height: ${this.height}`);
+      return originalToDataURL.apply(this, args);
+    };
+  });
+
+  page.on('console', msg => console.log('BROWSER:', msg.text()));
+
   console.log("Testing Export button...");
   const buttons = await page.$$('.btn-tool');
-  const exportBtn = buttons[0]; // Export is the first one
+  const exportBtn = buttons[0]; 
   await exportBtn.click();
   
   await page.waitForSelector('.dropdown-menu', { timeout: 3000 });
-  console.log("Export menu opened successfully.");
-  
   const exportOptions = await page.$$('.dropdown-menu .btn-tiny');
-  
-  console.log("Testing PDF export...");
-  await exportOptions[0].click(); // PDF
+  await exportOptions[2].click(); // PNG
   await new Promise(r => setTimeout(r, 2000));
   
-  console.log("Testing JPG export...");
-  await exportBtn.click();
-  await page.waitForSelector('.dropdown-menu', { timeout: 3000 });
-  const exportOptions2 = await page.$$('.dropdown-menu .btn-tiny');
-  await exportOptions2[1].click(); // JPG
-  await new Promise(r => setTimeout(r, 2000));
-  
-  console.log("Testing PNG export...");
-  await exportBtn.click();
-  await page.waitForSelector('.dropdown-menu', { timeout: 3000 });
-  const exportOptions3 = await page.$$('.dropdown-menu .btn-tiny');
-  await exportOptions3[2].click(); // PNG
-  await new Promise(r => setTimeout(r, 2000));
+  await browser.close();
   
   const files = fs.readdirSync(downloadPath);
   console.log("Downloaded files:", files);

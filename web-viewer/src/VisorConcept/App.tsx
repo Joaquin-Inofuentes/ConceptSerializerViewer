@@ -167,9 +167,9 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
                 <span>Exportar</span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', padding: '0.5rem' }}>
-                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('pdf')}>📄 PDF (Recortado)</button>
-                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('jpg')}>🖼 JPG (Fondo Blanco)</button>
-                <button className="btn btn-tiny" style={{ padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('png')}>💠 PNG (Sin fondo)</button>
+                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('pdf')}>📄 PDF</button>
+                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('jpg')}>🖼 JPG</button>
+                <button className="btn btn-tiny" style={{ padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('png')}>💠 PNG</button>
               </div>
             </div>
           )}
