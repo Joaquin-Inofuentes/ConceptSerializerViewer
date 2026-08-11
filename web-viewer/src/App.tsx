@@ -4,7 +4,7 @@ import type { Document } from './parser';
 import { Viewer } from './Viewer';
 import type { LayerConfig } from './Viewer';
 import { InteractivePreview } from './InteractivePreview';
-import { Upload, Eye, EyeOff, Lock } from 'lucide-react';
+import { Upload, Eye, EyeOff, Lock, Filter, Image as ImageIcon, X } from 'lucide-react';
 import './App.css';
 
 function App() {
@@ -190,8 +190,9 @@ function App() {
               <button 
                 className={`btn btn-dropdown ${showLayerMenu ? 'active' : ''}`}
                 onClick={() => setShowLayerMenu(!showLayerMenu)}
+                title={`Capas: ${stats.layers}`}
               >
-                Capas : {stats.layers}
+                <Filter size={18} />
               </button>
               
               {showLayerMenu && (
@@ -255,17 +256,14 @@ function App() {
                 </div>
               )}
             </div>
-            
-            <div className="btn btn-dropdown" style={{cursor: 'default'}}>
-              Trazos : {stats.strokes}
-            </div>
 
             <div className="dropdown-container" ref={imageMenuRef}>
               <button 
                 className={`btn btn-dropdown ${showImageMenu ? 'active' : ''}`}
                 onClick={() => setShowImageMenu(!showImageMenu)}
+                title={`Imágenes: ${stats.images}`}
               >
-                Imágenes : {stats.images}
+                <ImageIcon size={18} />
               </button>
               
               {showImageMenu && (
@@ -296,7 +294,7 @@ function App() {
           </div>
         ) : <div className="stats-spacer"></div>}
 
-        <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
+        <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto', alignItems: 'center' }}>
           {!doc ? (
              <>
                <label className="btn">
@@ -308,8 +306,8 @@ function App() {
                </button>
              </>
           ) : (
-             <button className="btn" onClick={() => setDoc(null)}>
-               Cerrar
+             <button className="icon-btn" onClick={() => setDoc(null)} title="Cerrar documento" style={{ color: 'var(--error)' }}>
+               <X size={24} />
              </button>
           )}
         </div>
