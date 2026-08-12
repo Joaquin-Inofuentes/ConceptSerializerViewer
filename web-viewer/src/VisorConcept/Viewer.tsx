@@ -310,7 +310,14 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
               const header = await blob.slice(0, 5).text();
               if (header === "%PDF-") {
                  const pdfjsLib = await import('pdfjs-dist');
-                 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+                 // Worker same-origin: los navegadores bloquean crear un Worker
+                 // desde otro origen (ej. un CDN) aunque el CORS este bien, es
+                 // una restriccion aparte. Se usa el worker local empaquetado
+                 // con pdfjs-dist en vez de bajarlo de cdnjs.
+                 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+                   'pdfjs-dist/build/pdf.worker.min.mjs',
+                   import.meta.url
+                 ).toString();
                  const url = URL.createObjectURL(blob);
                  const pdf = await pdfjsLib.getDocument({ url }).promise;
                  const page = await pdf.getPage(1);

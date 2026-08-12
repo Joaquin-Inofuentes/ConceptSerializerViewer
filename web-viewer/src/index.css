@@ -26,3 +26,12 @@ body {
   width: 100%;
   margin: 0 auto;
 }
+
+.viewer-hero {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: #ffffff;
+  overflow: hidden;
+  transform-origin: center center;
+}

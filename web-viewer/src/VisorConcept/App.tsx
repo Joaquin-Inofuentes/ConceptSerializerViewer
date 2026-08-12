@@ -4,6 +4,7 @@ import type { Document } from './parser';
 import { Viewer } from './Viewer';
 import type { LayerConfig, ViewerHandle } from './Viewer';
 import { InteractivePreview } from './InteractivePreview';
+import { logDescarga } from '../Gallery/analytics';
 import { Eye, EyeOff, Lock, Filter, Image as ImageIcon, X, Download } from 'lucide-react';
 import './App.css';
 
@@ -171,9 +172,9 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
                   <input type="checkbox" checked={exportZoomAll} onChange={(e) => setExportZoomAll(e.target.checked)} />
                   Completo
                 </label>
-                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('pdf', exportZoomAll)}>📄 PDF</button>
-                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('jpg', exportZoomAll)}>🖼 JPG</button>
-                <button className="btn btn-tiny" style={{ padding: '8px' }} onClick={() => viewerRef.current?.exportDrawing('png', exportZoomAll)}>💠 PNG</button>
+                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => { viewerRef.current?.exportDrawing('pdf', exportZoomAll); logDescarga('lienzo', 'pdf', [], fileName); }}>📄 PDF</button>
+                <button className="btn btn-tiny" style={{ marginBottom: '4px', padding: '8px' }} onClick={() => { viewerRef.current?.exportDrawing('jpg', exportZoomAll); logDescarga('lienzo', 'jpg', [], fileName); }}>🖼 JPG</button>
+                <button className="btn btn-tiny" style={{ padding: '8px' }} onClick={() => { viewerRef.current?.exportDrawing('png', exportZoomAll); logDescarga('lienzo', 'png', [], fileName); }}>💠 PNG</button>
               </div>
             </div>
           )}
@@ -298,7 +299,7 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
         </div>
 
         {previewImage && (
-          <InteractivePreview src={previewImage} onClose={() => setPreviewImage(null)} />
+          <InteractivePreview src={previewImage} fileName={fileName} onClose={() => setPreviewImage(null)} />
         )}
       </main>
     </div>

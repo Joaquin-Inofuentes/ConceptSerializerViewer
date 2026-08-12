@@ -1,12 +1,14 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Download } from 'lucide-react';
+import { logDescarga } from '../Gallery/analytics';
 
 interface InteractivePreviewProps {
   src: string;
+  fileName?: string;
   onClose: () => void;
 }
 
-export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onClose }) => {
+export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fileName, onClose }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -80,6 +82,7 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, onC
       link.href = dataUrl;
       link.click();
     }
+    logDescarga('foto', format, [], fileName);
   };
 
   useEffect(() => {

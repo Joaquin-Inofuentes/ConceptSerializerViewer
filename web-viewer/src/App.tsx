@@ -1,85 +1,98 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { ConceptViewer } from './VisorConcept';
-import { Upload } from 'lucide-react';
+import { Gallery } from './Gallery/Gallery';
+import { logCerrar } from './Gallery/analytics';
 import './index.css';
 
+interface FileData {
+  buffer: ArrayBuffer;
+  name: string;
+  originRect: DOMRect | null;
+  driveFileId: string | null;
+}
+
+const EASE_IOS: [number, number, number, number] = [0.16, 1, 0.3, 1];
+
 function App() {
-  const [fileData, setFileData] = useState<{ buffer: ArrayBuffer; name: string } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [fileData, setFileData] = useState<FileData | null>(null);
+  const heroRef = useRef<HTMLDivElement>(null);
+  // AnimatePresence congela las props del elemento saliente mientras anima
+  // el cierre, asi que un segundo click en "cerrar" durante ese fade puede
+  // volver a disparar el mismo onClose (con el mismo fileData ya cerrado).
+  // Este flag evita registrar el evento "cerrar" dos veces para el mismo
+  // archivo abierto.
+  const closedRef = useRef(false);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setLoading(true);
-    setError(null);
-    try {
-      const buffer = await file.arrayBuffer();
-      setFileData({ buffer, name: file.name });
-    } catch (err: any) {
-      setError(err.message || "Error al leer el archivo");
-    } finally {
-      setLoading(false);
-    }
+  const openFile = (
+    buffer: ArrayBuffer,
+    name: string,
+    originRect: DOMRect | null = null,
+    driveFileId: string | null = null
+  ) => {
+    closedRef.current = false;
+    setFileData({ buffer, name, originRect, driveFileId });
   };
 
-  const loadExample = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch('/Dibujo12.concepts');
-      if (!response.ok) throw new Error("Failed to fetch example file.");
-      const buffer = await response.arrayBuffer();
-      setFileData({ buffer, name: 'Dibujo12.concepts' });
-    } catch (err: any) {
-      setError(err.message || "Error al cargar el archivo de ejemplo");
-    } finally {
-      setLoading(false);
-    }
+  const closeFile = () => {
+    if (closedRef.current) return;
+    closedRef.current = true;
+    if (fileData) logCerrar(fileData.driveFileId, fileData.name);
+    setFileData(null);
   };
 
-  if (fileData) {
-    return (
-      <ConceptViewer 
-        fileBuffer={fileData.buffer} 
-        fileName={fileData.name} 
-        onClose={() => setFileData(null)} 
-      />
-    );
+  // Arranca el "hero" del mismo tamaño/posicion que la tarjeta clickeada
+  // (efecto de expansion tipo iOS); si no hay origen (ej. subida manual),
+  // solo hace fade.
+  let initialTransform: Record<string, number | string> = { opacity: 0 };
+  if (fileData?.originRect) {
+    const r = fileData.originRect;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    initialTransform = {
+      opacity: 0.5,
+      x: r.left + r.width / 2 - vw / 2,
+      y: r.top + r.height / 2 - vh / 2,
+      scaleX: Math.max(r.width / vw, 0.05),
+      scaleY: Math.max(r.height / vh, 0.05),
+    };
   }
 
   return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', gap: '20px',
-      fontFamily: 'sans-serif', backgroundColor: '#f8f9fa'
-    }}>
-      <h1 style={{color: '#333'}}>ConceptSerializer Viewer</h1>
-      
-      <div style={{ display: 'flex', gap: '15px' }}>
-        <label style={{
-          display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer',
-          padding: '10px 20px', background: '#fff', border: '1px solid #dee2e6', borderRadius: '8px',
-          boxShadow: '0 2px 5px rgba(0,0,0,0.05)', fontWeight: 500, color: '#333'
-        }}>
-          <Upload size={18} /> Subir archivo .concepts
-          <input type="file" accept=".concepts" onChange={handleFileUpload} hidden />
-        </label>
-        
-        <button 
-          onClick={loadExample} 
-          disabled={loading}
-          style={{
-            padding: '10px 20px', background: '#0d6efd', color: '#fff', border: 'none', borderRadius: '8px',
-            cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 500, opacity: loading ? 0.7 : 1
-          }}
-        >
-          {loading ? 'Cargando...' : 'Probar Ejemplo'}
-        </button>
-      </div>
-
-      {error && <div style={{color: 'red', marginTop: '10px'}}>{error}</div>}
-    </div>
+    <>
+      <Gallery
+        hidden={!!fileData}
+        onOpen={openFile}
+        onUpload={(buffer, name) => openFile(buffer, name, null)}
+      />
+      <AnimatePresence>
+        {fileData && (
+          <motion.div
+            key="viewer-hero"
+            ref={heroRef}
+            className="viewer-hero"
+            initial={initialTransform}
+            animate={{ opacity: 1, x: 0, y: 0, scaleX: 1, scaleY: 1 }}
+            exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.4, ease: EASE_IOS } }}
+            transition={{ duration: 0.9, ease: EASE_IOS }}
+            onAnimationComplete={() => {
+              // Una vez asentado, sacamos el transform inline: si queda un
+              // transform (aunque sea identidad) en este contenedor, se
+              // convierte en containing block de los descendientes
+              // position:fixed (ej. el preview fullscreen de imagenes),
+              // rompiendo su posicionamiento relativo a la ventana real.
+              if (heroRef.current) heroRef.current.style.transform = '';
+            }}
+          >
+            <ConceptViewer
+              fileBuffer={fileData.buffer}
+              fileName={fileData.name}
+              onClose={closeFile}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 
