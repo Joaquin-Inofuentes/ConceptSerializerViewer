@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY, THUMBNAIL_SIZE } from "../config";
+import type { DriveFolderRef, DriveFile } from "./driveClient";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -47,4 +48,45 @@ export async function upsertThumbnail(row: {
     updated_at: new Date().toISOString(),
   });
   if (error) console.error("Error subiendo thumbnail a Supabase:", error);
+}
+
+export interface FolderCacheRow {
+  folder_id: string;
+  name: string;
+  subfolders: DriveFolderRef[];
+  files: DriveFile[];
+  updated_at: string;
+}
+
+/**
+ * Trae TODO el arbol de carpetas cacheado en un solo query (son solo ids y
+ * nombres, liviano). Con esto la Gallery puede navegar entre carpetas ya
+ * visitadas sin volver a pegarle a Drive cada vez.
+ */
+export async function fetchAllFolderCache(): Promise<Map<string, FolderCacheRow>> {
+  const map = new Map<string, FolderCacheRow>();
+  const { data, error } = await supabase.from("drive_folder_cache").select("*");
+  if (error) {
+    console.error("Error leyendo cache de carpetas:", error);
+    return map;
+  }
+  (data || []).forEach((row) => map.set(row.folder_id, row as FolderCacheRow));
+  return map;
+}
+
+/** Guarda (o actualiza) el listado de una carpeta puntual en el cache. */
+export async function upsertFolderCache(
+  folderId: string,
+  name: string,
+  subfolders: DriveFolderRef[],
+  files: DriveFile[]
+): Promise<void> {
+  const { error } = await supabase.from("drive_folder_cache").upsert({
+    folder_id: folderId,
+    name,
+    subfolders,
+    files,
+    updated_at: new Date().toISOString(),
+  });
+  if (error) console.error("Error guardando cache de carpeta:", error);
 }

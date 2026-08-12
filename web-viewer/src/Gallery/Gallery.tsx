@@ -5,8 +5,9 @@ import {
   FileText, Image as ImageIcon, FolderOpen, Folder, Home, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { listDriveFolder, downloadDriveFile } from "./driveClient";
-import type { DriveFolderRef } from "./driveClient";
-import { fetchCachedThumbnails, upsertThumbnail } from "./supabaseClient";
+import type { DriveFolderRef, DriveListing } from "./driveClient";
+import { fetchCachedThumbnails, upsertThumbnail, fetchAllFolderCache, upsertFolderCache } from "./supabaseClient";
+import type { FolderCacheRow } from "./supabaseClient";
 import { renderThumbnailDataUrl } from "./thumbnail";
 import { renderDocumentCanvas, exportSectionsAsPdf, exportSectionsAsZip } from "./exportRender";
 import type { ExportSection } from "./exportRender";
@@ -104,6 +105,11 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
   const foldersRef = useRef<DriveFolderRef[]>([]);
   const loadedOnceRef = useRef(false);
   const toastTimerRef = useRef<number | null>(null);
+  // Arbol de carpetas ya visitadas/crawleadas (solo ids/nombres), traido
+  // entero de Supabase una vez al montar. Mientras una carpeta este aca,
+  // entrar/salir de ella es instantaneo: no hace falta pegarle a Drive.
+  const folderTreeCacheRef = useRef<Map<string, FolderCacheRow>>(new Map());
+  const folderTreeLoadedRef = useRef(false);
 
   useEffect(() => {
     itemsRef.current = items;
@@ -159,8 +165,14 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
   // parpadear lo que ya estaba mostrandose; si el listado nuevo es
   // identico al anterior (mismos ids de carpetas y archivos) se avisa con
   // un cartelito en vez de re-renderizar todo en silencio.
+  //
+  // El listado en si (subcarpetas + archivos, solo nombres) primero se
+  // busca en el arbol cacheado de Supabase: si ya esta ahi, se muestra al
+  // instante sin pegarle a Drive. Solo se pega a Drive en vivo si la
+  // carpeta nunca se cacheo, o si es un refresh explicito — y en ese caso
+  // el resultado se vuelve a cachear para la proxima.
   const loadFolder = useCallback(
-    async (folderId: string, opts: { isRefresh?: boolean } = {}) => {
+    async (folderId: string, folderName: string, opts: { isRefresh?: boolean } = {}) => {
       const isRefresh = !!opts.isRefresh;
       if (isRefresh) {
         setRefreshing(true);
@@ -171,7 +183,21 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
       }
       setListError(null);
       try {
-        const listing = await listDriveFolder(folderId);
+        const cached = !isRefresh ? folderTreeCacheRef.current.get(folderId) : undefined;
+        let listing: DriveListing;
+        if (cached) {
+          listing = { folders: cached.subfolders, files: cached.files };
+        } else {
+          listing = await listDriveFolder(folderId);
+          folderTreeCacheRef.current.set(folderId, {
+            folder_id: folderId,
+            name: folderName,
+            subfolders: listing.folders,
+            files: listing.files,
+            updated_at: new Date().toISOString(),
+          });
+          void upsertFolderCache(folderId, folderName, listing.folders, listing.files);
+        }
 
         if (isRefresh) {
           const prevFolderIds = new Set(foldersRef.current.map((f) => f.id));
@@ -240,7 +266,13 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
   useEffect(() => {
     if (loadedOnceRef.current) return;
     loadedOnceRef.current = true;
-    loadFolder(ROOT_CRUMB.id);
+    (async () => {
+      if (!folderTreeLoadedRef.current) {
+        folderTreeCacheRef.current = await fetchAllFolderCache();
+        folderTreeLoadedRef.current = true;
+      }
+      loadFolder(ROOT_CRUMB.id, ROOT_CRUMB.name);
+    })();
   }, [loadFolder]);
 
   // La seleccion (archivos y/o carpetas enteras) se mantiene a proposito al
@@ -248,7 +280,8 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
   // descargarlas juntas.
   const goToStack = (nextStack: FolderCrumb[]) => {
     setFolderStack(nextStack);
-    loadFolder(nextStack[nextStack.length - 1].id);
+    const target = nextStack[nextStack.length - 1];
+    loadFolder(target.id, target.name);
   };
 
   const navigateInto = (folder: DriveFolderRef) => {
@@ -265,7 +298,7 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
 
   const handleRefresh = () => {
     if (refreshing || listLoading) return;
-    loadFolder(currentFolder.id, { isRefresh: true });
+    loadFolder(currentFolder.id, currentFolder.name, { isRefresh: true });
   };
 
   const ensureBuffer = async (id: string): Promise<ArrayBuffer> => {
