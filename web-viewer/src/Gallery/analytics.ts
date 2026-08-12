@@ -31,7 +31,8 @@ export function logDescarga(
   origen: DescargaOrigen,
   formato: string,
   archivoIds: string[],
-  archivoNombre?: string | null
+  archivoNombre?: string | null,
+  carpetaId?: string | null
 ) {
   void registrarEvento("descargar", {
     origen,
@@ -40,5 +41,6 @@ export function logDescarga(
     archivo_id: archivoIds.length === 1 ? archivoIds[0] : null,
     archivo_nombre: archivoNombre ?? null,
     cantidad_archivos: archivoIds.length,
+    carpeta_id: carpetaId ?? null,
   });
 }

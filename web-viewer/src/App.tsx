@@ -2,7 +2,9 @@ import { useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ConceptViewer } from './VisorConcept';
 import { Gallery } from './Gallery/Gallery';
+import { NamePrompt } from './Gallery/NamePrompt';
 import { logCerrar } from './Gallery/analytics';
+import { getUserName, setUserName } from './Gallery/userIdentity';
 import './index.css';
 
 interface FileData {
@@ -16,7 +18,13 @@ const EASE_IOS: [number, number, number, number] = [0.16, 1, 0.3, 1];
 
 function App() {
   const [fileData, setFileData] = useState<FileData | null>(null);
+  const [userName, setUserNameState] = useState<string | null>(() => getUserName());
   const heroRef = useRef<HTMLDivElement>(null);
+
+  const submitUserName = (name: string) => {
+    setUserName(name);
+    setUserNameState(name);
+  };
   // AnimatePresence congela las props del elemento saliente mientras anima
   // el cierre, asi que un segundo click en "cerrar" durante ese fade puede
   // volver a disparar el mismo onClose (con el mismo fileData ya cerrado).
@@ -62,9 +70,11 @@ function App() {
     <>
       <Gallery
         hidden={!!fileData}
+        userName={userName}
         onOpen={openFile}
         onUpload={(buffer, name) => openFile(buffer, name, null)}
       />
+      {!userName && <NamePrompt onSubmit={submitUserName} />}
       <AnimatePresence>
         {fileData && (
           <motion.div

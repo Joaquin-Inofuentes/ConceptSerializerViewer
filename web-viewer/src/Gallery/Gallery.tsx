@@ -8,7 +8,9 @@ import { listDriveFolder, downloadDriveFile } from "./driveClient";
 import type { DriveFolderRef } from "./driveClient";
 import { fetchCachedThumbnails, upsertThumbnail } from "./supabaseClient";
 import { renderThumbnailDataUrl } from "./thumbnail";
-import { renderDocumentCanvas, exportSelectionAsPdf, exportSelectionAsZip } from "./exportRender";
+import { renderDocumentCanvas, exportSectionsAsPdf, exportSectionsAsZip } from "./exportRender";
+import type { ExportSection } from "./exportRender";
+import { gatherExportMetadata } from "./exportMetadata";
 import { logAbrir, logDescarga } from "./analytics";
 import { parseConceptsFile } from "../VisorConcept/parser";
 import { DRIVE_FOLDER_ID } from "../config";
@@ -32,8 +34,15 @@ interface FolderCrumb {
   name: string;
 }
 
+interface SelectedRef {
+  kind: "file" | "folder";
+  id: string;
+  name: string;
+}
+
 interface GalleryProps {
   hidden: boolean;
+  userName: string | null;
   onOpen: (buffer: ArrayBuffer, name: string, originRect: DOMRect | null, driveFileId: string) => void;
   onUpload: (buffer: ArrayBuffer, name: string) => void;
 }
@@ -71,7 +80,7 @@ async function runPool<T>(items: T[], limit: number, worker: (item: T) => Promis
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => next()));
 }
 
-export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
+export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
   const [folderStack, setFolderStack] = useState<FolderCrumb[]>([ROOT_CRUMB]);
   const [folders, setFolders] = useState<DriveFolderRef[]>([]);
   const [items, setItems] = useState<GalleryItem[]>([]);
@@ -79,9 +88,10 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
   const [listLoading, setListLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   const [selectionMode, setSelectionMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Map<string, SelectedRef>>(new Map());
   const [showFormatPicker, setShowFormatPicker] = useState(false);
   const [exportProgress, setExportProgress] = useState<{ done: number; total: number } | null>(null);
 
@@ -91,11 +101,22 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
   // dibujo cuya miniatura se acaba de generar en esta misma sesion).
   const bufferCacheRef = useRef<Map<string, ArrayBuffer>>(new Map());
   const itemsRef = useRef<GalleryItem[]>([]);
+  const foldersRef = useRef<DriveFolderRef[]>([]);
   const loadedOnceRef = useRef(false);
+  const toastTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
+  useEffect(() => {
+    foldersRef.current = folders;
+  }, [folders]);
+
+  const showToast = (message: string) => {
+    setToast(message);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 3000);
+  };
 
   const processItem = useCallback(async (file: { id: string; name: string }) => {
     setItems((prev) =>
@@ -135,7 +156,9 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
   // archivos, cruzando con el cache de Supabase para mostrar miniaturas ya
   // generadas al instante y solo procesar las que faltan. En un refresh no
   // se limpia la grilla antes de tener la respuesta nueva, para no hacer
-  // parpadear lo que ya estaba mostrandose.
+  // parpadear lo que ya estaba mostrandose; si el listado nuevo es
+  // identico al anterior (mismos ids de carpetas y archivos) se avisa con
+  // un cartelito en vez de re-renderizar todo en silencio.
   const loadFolder = useCallback(
     async (folderId: string, opts: { isRefresh?: boolean } = {}) => {
       const isRefresh = !!opts.isRefresh;
@@ -149,6 +172,21 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
       setListError(null);
       try {
         const listing = await listDriveFolder(folderId);
+
+        if (isRefresh) {
+          const prevFolderIds = new Set(foldersRef.current.map((f) => f.id));
+          const newFolderIds = new Set(listing.folders.map((f) => f.id));
+          const prevFileIds = new Set(itemsRef.current.map((it) => it.id));
+          const newFileIds = new Set(listing.files.map((f) => f.id));
+          const sameFolders =
+            prevFolderIds.size === newFolderIds.size && [...prevFolderIds].every((id) => newFolderIds.has(id));
+          const sameFiles =
+            prevFileIds.size === newFileIds.size && [...prevFileIds].every((id) => newFileIds.has(id));
+          if (sameFolders && sameFiles) {
+            showToast("No se encontraron cambios");
+          }
+        }
+
         setFolders(listing.folders);
 
         const cache = await fetchCachedThumbnails(listing.files.map((f) => f.id));
@@ -205,10 +243,11 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
     loadFolder(ROOT_CRUMB.id);
   }, [loadFolder]);
 
+  // La seleccion (archivos y/o carpetas enteras) se mantiene a proposito al
+  // navegar entre carpetas, para poder juntar cosas de varios lugares y
+  // descargarlas juntas.
   const goToStack = (nextStack: FolderCrumb[]) => {
     setFolderStack(nextStack);
-    setSelectionMode(false);
-    setSelectedIds(new Set());
     loadFolder(nextStack[nextStack.length - 1].id);
   };
 
@@ -256,33 +295,43 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
     }
   };
 
-  const toggleSelected = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+  const toggleSelected = (ref: SelectedRef) => {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (next.has(ref.id)) next.delete(ref.id);
+      else next.set(ref.id, ref);
       if (next.size === 0) setSelectionMode(false);
       return next;
     });
   };
 
-  const handleCheckboxClick = (e: React.MouseEvent, id: string) => {
+  const handleCheckboxClick = (e: React.MouseEvent, ref: SelectedRef) => {
     e.stopPropagation();
     if (!selectionMode) setSelectionMode(true);
-    toggleSelected(id);
+    toggleSelected(ref);
   };
 
   const handleCardActivate = (item: GalleryItem, el: HTMLElement) => {
     if (selectionMode) {
-      toggleSelected(item.id);
+      toggleSelected({ kind: "file", id: item.id, name: item.name });
     } else {
       handleOpen(item, el.getBoundingClientRect());
     }
   };
 
+  // A diferencia de un archivo (que en modo seleccion no tiene otra accion
+  // util al hacer click), una carpeta siempre tiene sentido abrirla — asi
+  // que el click del cuerpo SIEMPRE navega, este o no activo el modo
+  // seleccion; el checkbox (con su propio stopPropagation) es la unica
+  // forma de marcarla para descarga. Si no fuera asi, no habria manera de
+  // entrar a una carpeta nueva mientras se esta seleccionando en otra.
+  const handleFolderActivate = (folder: DriveFolderRef) => {
+    navigateInto(folder);
+  };
+
   const cancelSelection = () => {
     setSelectionMode(false);
-    setSelectedIds(new Set());
+    setSelected(new Map());
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -293,31 +342,73 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
     onUpload(buffer, file.name);
   };
 
+  // Baja recursivamente todos los archivos de una carpeta (y sus
+  // subcarpetas, sin limite de profundidad) para armar una seccion de
+  // descarga a partir de una carpeta seleccionada entera.
+  const collectFolderFiles = async (folderId: string): Promise<{ id: string; name: string }[]> => {
+    const listing = await listDriveFolder(folderId);
+    const direct = listing.files.map((f) => ({ id: f.id, name: cleanName(f.name) }));
+    const nested = await Promise.all(listing.folders.map((sub) => collectFolderFiles(sub.id)));
+    return direct.concat(nested.flat());
+  };
+
   const handleDownload = async (format: "pdf" | "jpg") => {
     setShowFormatPicker(false);
-    const selected = items.filter((it) => selectedIds.has(it.id));
-    if (selected.length === 0) return;
+    if (selected.size === 0) return;
 
-    setExportProgress({ done: 0, total: selected.length });
+    const refs = Array.from(selected.values());
+    const fileRefs = refs.filter((r) => r.kind === "file");
+    const folderRefs = refs.filter((r) => r.kind === "folder");
+
     try {
-      const entries: { name: string; canvas: HTMLCanvasElement }[] = [];
-      for (const item of selected) {
-        const buffer = await ensureBuffer(item.id);
-        const doc = await parseConceptsFile(buffer);
-        const canvas = await renderDocumentCanvas(doc);
-        entries.push({ name: item.name, canvas });
-        setExportProgress((prev) => (prev ? { ...prev, done: prev.done + 1 } : prev));
+      const plan: { title: string | null; files: { id: string; name: string }[] }[] = [];
+      if (fileRefs.length > 0) {
+        plan.push({
+          title: folderRefs.length > 0 ? "Archivos seleccionados" : null,
+          files: fileRefs.map((r) => ({ id: r.id, name: r.name })),
+        });
       }
+      for (const folderRef of folderRefs) {
+        const files = await collectFolderFiles(folderRef.id);
+        plan.push({ title: folderRef.name, files });
+      }
+
+      const totalFiles = plan.reduce((n, s) => n + s.files.length, 0);
+      if (totalFiles === 0) {
+        setListError("La seleccion no tiene archivos para descargar.");
+        return;
+      }
+
+      setExportProgress({ done: 0, total: totalFiles });
+
+      const metadata = await gatherExportMetadata();
+
+      const sections: ExportSection[] = [];
+      for (const group of plan) {
+        const entries: { name: string; canvas: HTMLCanvasElement }[] = [];
+        for (const f of group.files) {
+          const buffer = await ensureBuffer(f.id);
+          const doc = await parseConceptsFile(buffer);
+          const canvas = await renderDocumentCanvas(doc);
+          entries.push({ name: f.name, canvas });
+          setExportProgress((prev) => (prev ? { ...prev, done: prev.done + 1 } : prev));
+        }
+        sections.push({ title: group.title, entries });
+      }
+
       if (format === "pdf") {
-        await exportSelectionAsPdf(entries);
+        await exportSectionsAsPdf(sections, metadata);
       } else {
-        await exportSelectionAsZip(entries);
+        await exportSectionsAsZip(sections, metadata);
       }
+
+      const allIds = plan.flatMap((s) => s.files.map((f) => f.id));
       logDescarga(
         "galeria",
         format,
-        selected.map((s) => s.id),
-        selected.length === 1 ? selected[0].name : undefined
+        allIds,
+        allIds.length === 1 ? plan[0].files[0].name : undefined,
+        currentFolder.id
       );
       // La seleccion se mantiene activa a proposito: asi se puede volver a
       // descargar la misma seleccion en el otro formato sin re-marcar todo.
@@ -332,13 +423,16 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
   const cachedCount = items.filter((it) => it.fromCache).length;
   const driveFolderUrl = `https://drive.google.com/drive/folders/${currentFolder.id}`;
   const isEmpty = !listLoading && folders.length === 0 && items.length === 0 && !listError;
+  const selectedCount = selected.size;
 
   return (
     <div className="gallery-page" style={hidden ? { display: "none" } : undefined}>
       <header className="gallery-header">
         <div>
           <h1>ConceptSerializer</h1>
-          <p className="gallery-subtitle">Dibujos disponibles en Drive</p>
+          <p className="gallery-subtitle">
+            {userName ? `Bienvenido ${userName}. Selecciona tu lienzo o carpeta.` : "Dibujos disponibles en Drive"}
+          </p>
         </div>
         <div className="gallery-header-actions">
           <a
@@ -426,27 +520,46 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
         <>
           {folders.length > 0 && (
             <div className="gallery-grid gallery-folders-grid">
-              {folders.map((folder, idx) => (
-                <button
-                  key={folder.id}
-                  className="gallery-card folder-card"
-                  style={{ animationDelay: `${Math.min(idx, 12) * 35}ms` }}
-                  onClick={() => navigateInto(folder)}
-                  title={folder.name}
-                >
-                  <div className="gallery-thumb folder-thumb">
-                    <Folder size={30} />
+              {folders.map((folder, idx) => {
+                const checked = selected.has(folder.id);
+                return (
+                  <div
+                    key={folder.id}
+                    className={`gallery-card folder-card ${checked ? "selected" : ""}`}
+                    style={{ animationDelay: `${Math.min(idx, 12) * 35}ms` }}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleFolderActivate(folder)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        handleFolderActivate(folder);
+                      }
+                    }}
+                    title={folder.name}
+                  >
+                    <button
+                      type="button"
+                      className={`gallery-checkbox ${checked ? "checked" : ""}`}
+                      onClick={(e) => handleCheckboxClick(e, { kind: "folder", id: folder.id, name: folder.name })}
+                      aria-label={checked ? "Deseleccionar carpeta" : "Seleccionar carpeta"}
+                    >
+                      {checked ? <CheckCircle2 size={20} /> : <Circle size={20} />}
+                    </button>
+                    <div className="gallery-thumb folder-thumb">
+                      <Folder size={30} />
+                    </div>
+                    <div className="gallery-name">{folder.name}</div>
                   </div>
-                  <div className="gallery-name">{folder.name}</div>
-                </button>
-              ))}
+                );
+              })}
             </div>
           )}
 
           {items.length > 0 && (
             <div className="gallery-grid">
               {items.map((item, idx) => {
-                const checked = selectedIds.has(item.id);
+                const checked = selected.has(item.id);
                 return (
                   <div
                     key={item.id}
@@ -467,7 +580,7 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
                     <button
                       type="button"
                       className={`gallery-checkbox ${checked ? "checked" : ""}`}
-                      onClick={(e) => handleCheckboxClick(e, item.id)}
+                      onClick={(e) => handleCheckboxClick(e, { kind: "file", id: item.id, name: item.name })}
                       aria-label={checked ? "Deseleccionar" : "Seleccionar"}
                     >
                       {checked ? <CheckCircle2 size={20} /> : <Circle size={20} />}
@@ -503,6 +616,20 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
       )}
 
       <AnimatePresence>
+        {toast && (
+          <motion.div
+            className="gallery-toast"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.4, ease: EASE_IOS }}
+          >
+            {toast}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {selectionMode && (
           <motion.div
             className="gallery-toolbar"
@@ -511,7 +638,7 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
             exit={{ opacity: 0, y: 16, scale: 0.96 }}
             transition={{ type: "spring", stiffness: 340, damping: 28 }}
           >
-            <span>{selectedIds.size} seleccionado{selectedIds.size === 1 ? "" : "s"}</span>
+            <span>{selectedCount} seleccionado{selectedCount === 1 ? "" : "s"}</span>
             <div className="gallery-toolbar-actions">
               <button className="gallery-toolbar-btn primary" onClick={() => setShowFormatPicker(true)}>
                 <Download size={15} /> Descargar
@@ -542,18 +669,18 @@ export function Gallery({ hidden, onOpen, onUpload }: GalleryProps) {
               exit={{ opacity: 0, scale: 0.94, y: 10 }}
               transition={{ type: "spring", stiffness: 320, damping: 26 }}
             >
-              <h3>Descargar {selectedIds.size} dibujo{selectedIds.size === 1 ? "" : "s"}</h3>
+              <h3>Descargar {selectedCount} elemento{selectedCount === 1 ? "" : "s"}</h3>
               <p>Elegi el formato de descarga.</p>
               <div className="gallery-modal-options">
                 <button className="gallery-modal-option" onClick={() => handleDownload("pdf")}>
                   <FileText size={20} />
                   <span>PDF</span>
-                  <small>Un solo PDF con todas las selecciones</small>
+                  <small>Un solo PDF con metadata y secciones por carpeta</small>
                 </button>
                 <button className="gallery-modal-option" onClick={() => handleDownload("jpg")}>
                   <ImageIcon size={20} />
                   <span>JPG</span>
-                  <small>Un .zip con un JPG por dibujo</small>
+                  <small>Un .zip con un JPG por dibujo (y subcarpetas)</small>
                 </button>
               </div>
               <button className="gallery-modal-cancel" onClick={() => setShowFormatPicker(false)}>
