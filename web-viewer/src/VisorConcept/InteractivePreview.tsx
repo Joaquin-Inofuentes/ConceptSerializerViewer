@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Download } from 'lucide-react';
 import { logDescarga } from '../Gallery/analytics';
+import { EXPORT_SCALE } from '../Gallery/renderCore';
 
 interface InteractivePreviewProps {
   src: string;
@@ -49,17 +50,22 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
     }
 
     const exportCanvas = document.createElement("canvas");
-    exportCanvas.width = exportWidth;
-    exportCanvas.height = exportHeight;
+    // Renderiza a EXPORT_SCALE (150 DPI) para que salga nitido, mismo
+    // criterio que el resto de los exports de la app.
+    exportCanvas.width = Math.round(exportWidth * EXPORT_SCALE);
+    exportCanvas.height = Math.round(exportHeight * EXPORT_SCALE);
     const ctx = exportCanvas.getContext("2d");
     if (!ctx) return;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
 
     if (format === 'jpg' || format === 'pdf') {
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, exportWidth, exportHeight);
+      ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
     }
 
     ctx.save();
+    ctx.scale(EXPORT_SCALE, EXPORT_SCALE);
     ctx.translate(translateX, translateY);
     ctx.scale(exportZoom, exportZoom);
     ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);

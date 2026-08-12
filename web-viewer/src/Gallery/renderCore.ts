@@ -1,5 +1,17 @@
 import type { Document } from "../VisorConcept/parser";
 
+// Las coordenadas del documento se asumen en px CSS (96 DPI, el estandar
+// web). Para que los PDF/JPG exportados salgan nitidos, todo export
+// renderiza el canvas a esta escala (mas pixeles reales) mientras el
+// tamaño logico de pagina/imagen queda igual. 150 DPI no alcanzaba para
+// leer texto fino (ej. un ticket fotografiado como fondo) porque las
+// imagenes se dibujan chicas dentro de un documento con un bbox tambien
+// chico — 600 DPI (el estandar para escaneos legibles/OCR) da suficiente
+// densidad de pixeles para que ese texto se pueda leer.
+export const EXPORT_DPI = 600;
+const BASE_DPI = 96;
+export const EXPORT_SCALE = EXPORT_DPI / BASE_DPI;
+
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
     promise,
@@ -7,10 +19,19 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+/** Cuanto mas grande el canvas final donde va a terminar dibujada esta
+ * imagen (en px reales), mas alto tiene que rasterizarse el PDF fuente —
+ * un multiplicador fijo de escala no alcanza si el PDF es chico en su
+ * propio espacio de pagina pero se dibuja grande en el documento. Se
+ * calcula el tamaño nativo (scale 1) y se sube la escala hasta cubrir el
+ * tamaño real de destino, con un piso (pdfRenderScale) y un techo (10x)
+ * para no generar canvases gigantes por error. */
 async function loadOneResource(
   resourceId: string,
   blob: Blob,
-  loaded: Record<string, CanvasImageSource>
+  loaded: Record<string, CanvasImageSource>,
+  pdfRenderScale: number,
+  targetSize?: { width: number; height: number }
 ): Promise<void> {
   const header = await blob.slice(0, 5).text();
   if (header === "%PDF-") {
@@ -28,7 +49,16 @@ async function loadOneResource(
     try {
       const pdf = await pdfjsLib.getDocument({ url }).promise;
       const page = await pdf.getPage(1);
-      const viewport = page.getViewport({ scale: 2.0 });
+      let scale = pdfRenderScale;
+      if (targetSize && targetSize.width > 0 && targetSize.height > 0) {
+        const native = page.getViewport({ scale: 1 });
+        const needed = Math.max(
+          targetSize.width / native.width,
+          targetSize.height / native.height
+        );
+        scale = Math.min(Math.max(needed, pdfRenderScale), 10);
+      }
+      const viewport = page.getViewport({ scale });
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
       if (ctx) {
@@ -54,13 +84,25 @@ async function loadOneResource(
 
 /** Carga todas las imagenes/PDFs embebidos del documento. Un recurso lento o
  * roto (ej. worker de PDF que no carga) no traba el resto: se omite tras el
- * timeout y sigue. */
-export async function loadResourceImages(doc: Document): Promise<Record<string, CanvasImageSource>> {
+ * timeout y sigue. `pdfRenderScale` es el piso de resolucion para un PDF
+ * embebido usado como "foto" (2.0 alcanza para pantalla). `targetSizes`
+ * (opcional, en px del canvas final) permite pedir mas resolucion cuando
+ * la imagen va a terminar dibujada grande — sin esto, un PDF fuente chico
+ * estirado a un tamaño grande sale pixelado sin importar cuanto DPI se le
+ * pida al canvas de salida, porque la fuente ya perdio el detalle. */
+export async function loadResourceImages(
+  doc: Document,
+  pdfRenderScale = 2.0,
+  targetSizes?: Record<string, { width: number; height: number }>
+): Promise<Record<string, CanvasImageSource>> {
   const loaded: Record<string, CanvasImageSource> = {};
   await Promise.all(
     Object.entries(doc.resources).map(async ([resourceId, blob]) => {
       try {
-        await withTimeout(loadOneResource(resourceId, blob, loaded), 8000);
+        await withTimeout(
+          loadOneResource(resourceId, blob, loaded, pdfRenderScale, targetSizes?.[resourceId]),
+          8000
+        );
       } catch (e) {
         console.error("Recurso omitido por timeout/error", resourceId, e);
       }

@@ -1,10 +1,47 @@
 import type { Document } from "../VisorConcept/parser";
-import { loadResourceImages, buildRenderPlan, drawItems } from "./renderCore";
+import { loadResourceImages, buildRenderPlan, drawItems, EXPORT_SCALE } from "./renderCore";
 
-/** Renderiza el documento completo (todas las capas) a un canvas encuadrado al contenido. */
-export async function renderDocumentCanvas(doc: Document): Promise<HTMLCanvasElement> {
-  const images = await loadResourceImages(doc);
+export interface RenderedCanvas {
+  canvas: HTMLCanvasElement;
+  /** Tamaño logico (sin el supersampling de EXPORT_SCALE) — es el que hay
+   * que usar para el tamaño de pagina/imagen del PDF, no canvas.width/height. */
+  logicalWidth: number;
+  logicalHeight: number;
+}
+
+/** Renderiza el documento completo (todas las capas) a un canvas encuadrado
+ * al contenido, a EXPORT_SCALE (150 DPI) para que salga nitido. */
+export async function renderDocumentCanvas(doc: Document): Promise<RenderedCanvas> {
   const plan = buildRenderPlan(doc);
+
+  // Cada recurso PDF embebido se rasteriza al tamaño real que va a ocupar
+  // en el canvas final (en px, ya multiplicado por EXPORT_SCALE), no a un
+  // multiplo fijo arbitrario — si el PDF fuente es chico en su propio
+  // espacio de pagina pero se dibuja grande en el documento, un multiplo
+  // fijo se queda corto y sale pixelado sin importar el DPI del canvas.
+  const targetSizes: Record<string, { width: number; height: number }> = {};
+  plan.items.forEach((item) => {
+    if (item.type === "image" && item.width && item.height) {
+      // item.width/height son el tamaño NATIVO de la imagen, no el tamaño
+      // dibujado — la matriz de transform (que puede achicar mucho, ej.
+      // encoger una foto a un lugar chico del documento) es la que define
+      // el tamaño real en pantalla/canvas. Sin esto se sobreestima cuanta
+      // resolucion hace falta.
+      const m = item.transform;
+      const scaleX = m && m.length === 16 ? Math.hypot(m[0], m[1]) : 1;
+      const scaleY = m && m.length === 16 ? Math.hypot(m[4], m[5]) : 1;
+      const w = item.width * scaleX * EXPORT_SCALE;
+      const h = item.height * scaleY * EXPORT_SCALE;
+      const prev = targetSizes[item.resourceId];
+      if (!prev || w * h > prev.width * prev.height) {
+        targetSizes[item.resourceId] = { width: w, height: h };
+      }
+    }
+  });
+  // Piso fijo de 2.0 (no *EXPORT_SCALE): targetSizes ya incluye EXPORT_SCALE
+  // en el tamaño pedido, multiplicar tambien el piso generaria canvases de
+  // PDF gigantes e innecesarios sin ganar nitidez real.
+  const images = await loadResourceImages(doc, 2.0, targetSizes);
 
   let { minX, minY, maxX, maxY } = plan;
   if (!plan.hasContent) {
@@ -13,25 +50,30 @@ export async function renderDocumentCanvas(doc: Document): Promise<HTMLCanvasEle
 
   const padding = 20;
   minX -= padding; minY -= padding; maxX += padding; maxY += padding;
-  const width = Math.max(1, Math.round(maxX - minX));
-  const height = Math.max(1, Math.round(maxY - minY));
+  const logicalWidth = Math.max(1, Math.round(maxX - minX));
+  const logicalHeight = Math.max(1, Math.round(maxY - minY));
 
   const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = Math.round(logicalWidth * EXPORT_SCALE);
+  canvas.height = Math.round(logicalHeight * EXPORT_SCALE);
   const ctx = canvas.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, width, height);
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.save();
+  ctx.scale(EXPORT_SCALE, EXPORT_SCALE);
   ctx.translate(-minX, -minY);
   drawItems(ctx, plan.items, images);
   ctx.restore();
-  return canvas;
+  return { canvas, logicalWidth, logicalHeight };
 }
 
 export interface ExportEntry {
   name: string;
   canvas: HTMLCanvasElement;
+  logicalWidth: number;
+  logicalHeight: number;
 }
 
 /** Un grupo de entries; title=null cuando son archivos sueltos (sin
@@ -69,57 +111,11 @@ function drawDividerPage(pdf: any, title: string) {
   pdf.line(PAGE_W * 0.3, PAGE_H / 2 + 20, PAGE_W * 0.7, PAGE_H / 2 + 20);
 }
 
-function drawMetadataPage(pdf: any, metadata: ExportMetadata, sections: ExportSection[]) {
-  pdf.setFillColor(255, 255, 255);
-  pdf.rect(0, 0, PAGE_W, PAGE_H, "F");
-  pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(22);
-  pdf.setTextColor(20, 20, 20);
-  pdf.text("Informacion de la exportacion", 50, 70);
-
-  pdf.setFont("helvetica", "normal");
-  pdf.setFontSize(13);
-  const totalFiles = sections.reduce((n, s) => n + s.entries.length, 0);
-  const lines = [
-    `Usuario: ${metadata.userName}`,
-    `Fecha: ${metadata.fecha}`,
-    `Hora: ${metadata.hora}`,
-    `IP: ${metadata.ip}`,
-    `Total de archivos: ${totalFiles}`,
-  ];
-  let y = 110;
-  lines.forEach((line) => {
-    pdf.text(line, 50, y);
-    y += 24;
-  });
-
-  y += 16;
-  pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(14);
-  pdf.text("Contenido", 50, y);
-  y += 24;
-  pdf.setFont("helvetica", "normal");
-  pdf.setFontSize(11);
-  sections.forEach((section) => {
-    if (y > PAGE_H - 60) return;
-    if (section.title) {
-      pdf.setFont("helvetica", "bold");
-      pdf.text(section.title, 50, y);
-      pdf.setFont("helvetica", "normal");
-      y += 18;
-    }
-    section.entries.forEach((entry) => {
-      if (y > PAGE_H - 60) return;
-      pdf.text(`- ${entry.name}`, section.title ? 66 : 50, y);
-      y += 16;
-    });
-  });
-}
-
 /** Arma un unico PDF con una pagina por dibujo. Si hay mas de una seccion
  * (o una seccion con nombre, ej. una carpeta descargada entera), antepone
  * una pagina divisoria por seccion a modo de titulo markdown "# Carpeta".
- * Siempre cierra con una pagina de metadata (usuario/fecha/hora/IP). */
+ * La metadata (usuario/fecha/hora/IP) va solo en las propiedades del PDF,
+ * no como una hoja extra. */
 export async function exportSectionsAsPdf(sections: ExportSection[], metadata: ExportMetadata): Promise<void> {
   const { default: JsPDF } = await import("jspdf");
   let pdf: any = null;
@@ -138,26 +134,27 @@ export async function exportSectionsAsPdf(sections: ExportSection[], metadata: E
       startPage(PAGE_W, PAGE_H, "portrait");
       drawDividerPage(pdf, section.title);
     }
-    section.entries.forEach(({ canvas }) => {
-      const orientation = canvas.width > canvas.height ? "landscape" : "portrait";
-      startPage(canvas.width, canvas.height, orientation);
+    section.entries.forEach(({ canvas, logicalWidth, logicalHeight }) => {
+      const orientation = logicalWidth > logicalHeight ? "landscape" : "portrait";
+      startPage(logicalWidth, logicalHeight, orientation);
       const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-      pdf.addImage(dataUrl, "JPEG", 0, 0, canvas.width, canvas.height);
+      // El source (canvas) tiene mas pixeles que logicalWidth/Height
+      // (EXPORT_SCALE, 150 DPI) — addImage lo encuadra al tamaño logico de
+      // pagina, asi que el resultado sale nitido en vez de pixelado.
+      pdf.addImage(dataUrl, "JPEG", 0, 0, logicalWidth, logicalHeight);
     });
   });
 
-  startPage(PAGE_W, PAGE_H, "portrait");
-  drawMetadataPage(pdf, metadata, sections);
+  const totalFiles = sections.reduce((n, s) => n + s.entries.length, 0);
 
   pdf.setProperties({
     title: "ConceptSerializer - Exportacion",
-    subject: `Exportado por ${metadata.userName}`,
+    subject: `Exportado por ${metadata.userName} el ${metadata.fecha} ${metadata.hora}`,
     author: metadata.userName,
-    keywords: `ip:${metadata.ip}`,
+    keywords: `ip:${metadata.ip}, archivos:${totalFiles}`,
     creator: "ConceptSerializer",
   });
 
-  const totalFiles = sections.reduce((n, s) => n + s.entries.length, 0);
   pdf.save(`concepts-${totalFiles}.pdf`);
 }
 

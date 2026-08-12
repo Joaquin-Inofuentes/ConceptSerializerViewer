@@ -59,15 +59,16 @@ function formatModified(modifiedAt: string | null, hasTime: boolean): string {
   if (!modifiedAt) return "";
   const d = new Date(modifiedAt);
   // Las fechas sin hora se guardan como medianoche UTC (el dia exacto que
-  // informa Drive); formatear en la zona local correria el dia hacia atras
-  // para usuarios en UTC negativo. Los timestamps con hora real si son un
-  // instante concreto y deben mostrarse en la zona del usuario.
-  const dateOpts: Intl.DateTimeFormatOptions = { day: "2-digit", month: "short", year: "numeric" };
-  if (!hasTime) dateOpts.timeZone = "UTC";
-  const datePart = d.toLocaleDateString("es-AR", dateOpts);
+  // informa Drive); leer los componentes en UTC evita que se corra un dia
+  // hacia atras para usuarios en UTC negativo. Los timestamps con hora real
+  // si son un instante concreto y deben mostrarse en la zona del usuario.
+  const day = String(hasTime ? d.getDate() : d.getUTCDate()).padStart(2, "0");
+  const month = String((hasTime ? d.getMonth() : d.getUTCMonth()) + 1).padStart(2, "0");
+  const datePart = `${day}/${month}`;
   if (!hasTime) return datePart;
-  const timePart = d.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
-  return `${datePart} · ${timePart}`;
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  return `${datePart} ${hours}:${minutes}hs`;
 }
 
 async function runPool<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
@@ -418,12 +419,12 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
 
       const sections: ExportSection[] = [];
       for (const group of plan) {
-        const entries: { name: string; canvas: HTMLCanvasElement }[] = [];
+        const entries: ExportSection["entries"] = [];
         for (const f of group.files) {
           const buffer = await ensureBuffer(f.id);
           const doc = await parseConceptsFile(buffer);
-          const canvas = await renderDocumentCanvas(doc);
-          entries.push({ name: f.name, canvas });
+          const rendered = await renderDocumentCanvas(doc);
+          entries.push({ name: f.name, ...rendered });
           setExportProgress((prev) => (prev ? { ...prev, done: prev.done + 1 } : prev));
         }
         sections.push({ title: group.title, entries });

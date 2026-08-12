@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo } from "react";
 import type { Document } from "./parser";
+import { EXPORT_SCALE } from "../Gallery/renderCore";
 
 export interface LayerConfig {
   visible: boolean;
@@ -154,17 +155,22 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
       }
 
       const exportCanvas = document.createElement("canvas");
-      exportCanvas.width = exportWidth;
-      exportCanvas.height = exportHeight;
+      // Renderiza a EXPORT_SCALE (150 DPI) para que el PDF/JPG/PNG salga
+      // nitido: mas pixeles reales por el mismo tamaño de contenido.
+      exportCanvas.width = Math.round(exportWidth * EXPORT_SCALE);
+      exportCanvas.height = Math.round(exportHeight * EXPORT_SCALE);
       const ctx = exportCanvas.getContext("2d");
       if (!ctx) return;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
 
       if (format === 'jpg' || format === 'pdf') {
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, exportWidth, exportHeight);
+        ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
       }
 
       ctx.save();
+      ctx.scale(EXPORT_SCALE, EXPORT_SCALE);
       ctx.translate(translateX, translateY);
       ctx.scale(exportZoom, exportZoom);
 
@@ -244,7 +250,12 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
 
   const fitToBounds = () => {
     if (!docCache || !containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
+    // clientWidth/clientHeight (no getBoundingClientRect): el contenedor
+    // esta dentro del "hero" que anima con scale/translate al abrir el
+    // dibujo, y getBoundingClientRect refleja ese tamaño visual transitorio
+    // (chico, a mitad de la animacion) en vez del tamaño real de layout,
+    // lo que encuadraba mal el zoom inicial.
+    const rect = { width: containerRef.current.clientWidth, height: containerRef.current.clientHeight };
     if (rect.width === 0 || rect.height === 0) return;
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -321,7 +332,22 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, layerConfigs
                  const url = URL.createObjectURL(blob);
                  const pdf = await pdfjsLib.getDocument({ url }).promise;
                  const page = await pdf.getPage(1);
-                 const viewport = page.getViewport({ scale: 2.0 });
+                 // img.width/height son el tamaño NATIVO, no el dibujado —
+                 // la matriz transform (que puede achicar mucho, ej. una
+                 // foto encogida a un lugar chico del documento) define el
+                 // tamaño real final. Sin esto se sobreestima la resolucion
+                 // necesaria. Esta misma imagen se reusa tanto para el
+                 // render en vivo como para exportDrawing, asi que tiene
+                 // que alcanzar para el caso mas exigente (el export).
+                 const nativeViewport = page.getViewport({ scale: 1 });
+                 const t = img.transform;
+                 const scaleX = t && t.length === 16 ? Math.hypot(t[0], t[1]) : 1;
+                 const scaleY = t && t.length === 16 ? Math.hypot(t[4], t[5]) : 1;
+                 const targetW = (img.width || nativeViewport.width) * scaleX * EXPORT_SCALE;
+                 const targetH = (img.height || nativeViewport.height) * scaleY * EXPORT_SCALE;
+                 const neededScale = Math.max(targetW / nativeViewport.width, targetH / nativeViewport.height);
+                 const renderScale = Math.min(Math.max(neededScale, 2.0), 10);
+                 const viewport = page.getViewport({ scale: renderScale });
                  const canvas = document.createElement("canvas");
                  const context = canvas.getContext("2d");
                  if (context) {
