@@ -1,13 +1,81 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>web-viewer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="Visor de dibujos .concepts de Concepts, con galeria de Google Drive." />
+    <title>ConceptSerializer — Visor de dibujos</title>
+
+    <!-- El primer dato que pide la app es el cache de carpetas de Supabase.
+         Abrir DNS+TLS por adelantado ahorra ~300-600 ms en 3G, que es tiempo
+         en el que la galeria ya podria estar mostrando contenido. -->
+    <link rel="preconnect" href="https://kuhcxzusnrttkywgalgk.supabase.co" crossorigin />
+    <link rel="dns-prefetch" href="https://kuhcxzusnrttkywgalgk.supabase.co" />
+
+    <!-- Skeleton estatico: se pinta con el HTML, sin esperar a que baje ni se
+         ejecute el JS. En un telefono de gama baja en 3G eso son ~2,5 s de
+         diferencia entre "pantalla en blanco" y "algo que se parece a la app".
+         React lo reemplaza al montar. -->
+    <style>
+      :root { color-scheme: light; }
+      html, body { margin: 0; padding: 0; background: #f8f9fa; }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: #212529;
+      }
+      #boot { padding: 2rem clamp(1rem, 5vw, 3rem); }
+      #boot h1 { font-size: 1.6rem; margin: 0 0 .35rem; letter-spacing: -0.02em; }
+      #boot p { margin: 0 0 1.75rem; color: #6c757d; font-size: .92rem; }
+      #boot .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(159px, 1fr));
+        gap: 1rem;
+      }
+      #boot .card {
+        border: 1px solid #dee2e6;
+        border-radius: 12px;
+        background: #fff;
+        padding: .75rem;
+      }
+      #boot .thumb {
+        aspect-ratio: 1;
+        border-radius: 8px;
+        background: linear-gradient(90deg, #eceef0 25%, #f4f6f8 37%, #eceef0 63%);
+        background-size: 400% 100%;
+        animation: bootShimmer 1.4s ease infinite;
+      }
+      #boot .line {
+        height: 10px;
+        margin-top: .6rem;
+        border-radius: 4px;
+        background: #eceef0;
+      }
+      @keyframes bootShimmer {
+        0% { background-position: 100% 50%; }
+        100% { background-position: 0 50%; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot .thumb { animation: none; }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot">
+        <h1>ConceptSerializer</h1>
+        <p>Cargando dibujos…</p>
+        <div class="grid">
+          <div class="card"><div class="thumb"></div><div class="line"></div></div>
+          <div class="card"><div class="thumb"></div><div class="line"></div></div>
+          <div class="card"><div class="thumb"></div><div class="line"></div></div>
+          <div class="card"><div class="thumb"></div><div class="line"></div></div>
+          <div class="card"><div class="thumb"></div><div class="line"></div></div>
+          <div class="card"><div class="thumb"></div><div class="line"></div></div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -19,9 +19,29 @@
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-client-info",
+  "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-client-info, range",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
+  // Sin esto el navegador no deja leer Content-Range/Content-Length desde JS
+  // (son headers no-simples en una respuesta cross-origin), y el lector de
+  // zip por rangos no puede saber el tamaño real del archivo.
+  "Access-Control-Expose-Headers": "content-range, content-length, accept-ranges, x-drive-total, x-drive-url",
 };
+
+// Hosts a los que este proxy acepta reenviar una URL ya resuelta (parametro
+// `u`). Sin esta lista blanca seria un proxy abierto: cualquiera podria pedir
+// que descargue una URL arbitraria usando nuestro edge function.
+const HOSTS_DRIVE = new Set(["drive.google.com", "drive.usercontent.google.com"]);
+
+function urlResueltaValida(u: string | null): string | null {
+  if (!u) return null;
+  try {
+    const parsed = new URL(u);
+    if (parsed.protocol !== "https:") return null;
+    return HOSTS_DRIVE.has(parsed.hostname) ? u : null;
+  } catch {
+    return null;
+  }
+}
 
 type EntradaDrive = {
   id: string;
@@ -146,6 +166,105 @@ function parsearFechaModificado(texto: string | null, ahora: Date): { iso: strin
   return { iso: null, hasTime: false };
 }
 
+// --- Descarga con interstitial ------------------------------------------
+// Drive no escanea por virus los archivos grandes (>~25 MB) y en vez del
+// archivo devuelve una pagina "Google Drive can't scan this file for
+// viruses" con un formulario de confirmacion. Antes esto se trataba como
+// error, asi que ~30% de los .concepts (los mas pesados, hasta 87 MB) eran
+// imposibles de abrir desde la app. El form trae la URL real de descarga
+// (drive.usercontent.google.com) mas los parametros id/export/confirm/uuid:
+// alcanza con reenviarlo tal cual.
+function urlDesdeInterstitial(html: string): string | null {
+  const form = /<form[^>]+id="download-form"[^>]+action="([^"]+)"/.exec(html);
+  if (!form) return null;
+  const action = form[1].replace(/&amp;/g, "&");
+  const params = new URLSearchParams();
+  const inputRe = /<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]*)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = inputRe.exec(html)) !== null) {
+    params.set(m[1], m[2].replace(/&amp;/g, "&"));
+  }
+  if (!params.has("id")) return null;
+  return `${action}?${params.toString()}`;
+}
+
+// Cache en memoria de la URL "confirmada" (drive.usercontent.google.com) de
+// los archivos que pasan por el interstitial. Sin esto, CADA pedido de rango
+// tendria que volver a bajar y parsear el HTML de confirmacion — y un archivo
+// grande se abre con decenas de rangos. La URL trae un uuid con vencimiento,
+// asi que se guarda por poco tiempo y se reintenta si deja de servir.
+const urlConfirmadaCache = new Map<string, { url: string; expira: number }>();
+const TTL_URL_CONFIRMADA = 5 * 60 * 1000;
+
+async function resolverUrlDescarga(fileId: string, forzarRefresco = false): Promise<string> {
+  const ahora = Date.now();
+  if (!forzarRefresco) {
+    const hit = urlConfirmadaCache.get(fileId);
+    if (hit && hit.expira > ahora) return hit.url;
+  }
+
+  const headers = { "User-Agent": "Mozilla/5.0" };
+  const directa = `https://drive.google.com/uc?export=download&id=${fileId}`;
+  // HEAD no sirve: Drive responde 200 text/html igual. Se pide el primer byte
+  // para ver que devuelve sin bajar el archivo entero.
+  const sonda = await fetch(directa, {
+    headers: { ...headers, Range: "bytes=0-0" },
+    signal: AbortSignal.timeout(30000),
+  });
+  const ct = sonda.headers.get("content-type") || "";
+  if (!ct.includes("text/html")) {
+    await sonda.body?.cancel();
+    urlConfirmadaCache.set(fileId, { url: directa, expira: ahora + TTL_URL_CONFIRMADA });
+    return directa;
+  }
+
+  const html = await sonda.text();
+  const confirmUrl = urlDesdeInterstitial(html);
+  if (!confirmUrl) throw new Error("Drive devolvio HTML sin formulario de confirmacion");
+  urlConfirmadaCache.set(fileId, { url: confirmUrl, expira: ahora + TTL_URL_CONFIRMADA });
+  return confirmUrl;
+}
+
+/**
+ * Descarga (completa o por rango) desde Drive. Verificado empiricamente:
+ * Drive honra `Range` tanto en la URL directa como en la confirmada del
+ * interstitial, devolviendo 206 + Content-Range correcto — incluso en el
+ * archivo de 262 MB. Eso es lo que permite abrir un dibujo bajando el 4% de
+ * sus bytes en vez de los 262 MB enteros.
+ */
+async function descargarDeDrive(
+  fileId: string,
+  range: string | null,
+  urlPrevia: string | null
+): Promise<{ res: Response; url: string }> {
+  const base = { "User-Agent": "Mozilla/5.0" };
+  const headers: Record<string, string> = range ? { ...base, Range: range } : base;
+
+  const pedir = async (url: string) => ({
+    res: await fetch(url, { headers, signal: AbortSignal.timeout(120000) }),
+    url,
+  });
+
+  // Camino rapido: el cliente ya sabe la URL directa (se la dimos en un
+  // rango anterior), asi que nos ahorramos re-resolver el interstitial —
+  // una ida y vuelta extra a Drive por CADA rango pedido.
+  let intento = urlPrevia
+    ? await pedir(urlPrevia)
+    : await pedir(await resolverUrlDescarga(fileId, false));
+
+  // Si vencio (Drive devuelve HTML o 4xx), se re-resuelve una vez.
+  if (!intento.res.ok || (intento.res.headers.get("content-type") || "").includes("text/html")) {
+    await intento.res.body?.cancel();
+    intento = await pedir(await resolverUrlDescarga(fileId, true));
+  }
+  if (!intento.res.ok) throw new Error(`Drive download ${intento.res.status}`);
+  if ((intento.res.headers.get("content-type") || "").includes("text/html")) {
+    throw new Error("Drive sigue devolviendo HTML despues de confirmar");
+  }
+  if (!intento.res.body) throw new Error("Drive no devolvio contenido");
+  return intento;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "GET") {
@@ -198,24 +317,40 @@ Deno.serve(async (req) => {
     if (action === "download") {
       const fileId = url.searchParams.get("fileId") || "";
       if (!fileId) throw new Error("falta fileId");
-      const upstream = await fetch(
-        `https://drive.google.com/uc?export=download&id=${fileId}`,
-        { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(30000) },
-      );
-      if (!upstream.ok || !upstream.body) {
-        throw new Error(`Drive download ${upstream.status}`);
-      }
-      const ct = upstream.headers.get("content-type") || "";
-      if (ct.includes("text/html")) {
-        // Drive devolvio la pagina de advertencia de virus/tamano en vez del archivo.
-        throw new Error("Drive devolvio HTML en vez del archivo (interstitial)");
+
+      // El rango puede venir por header (fetch normal) o por query param: el
+      // navegador NO deja setear Range a mano en algunos contextos y ademas
+      // por query se cachea mejor en el CDN.
+      const rangeParam = url.searchParams.get("range");
+      const range = req.headers.get("range") || (rangeParam ? `bytes=${rangeParam}` : null);
+      const urlPrevia = urlResueltaValida(url.searchParams.get("u"));
+
+      const { res: upstream, url: urlUsada } = await descargarDeDrive(fileId, range, urlPrevia);
+      const headers: Record<string, string> = {
+        ...CORS,
+        "Content-Type": "application/octet-stream",
+        "Cache-Control": "public, max-age=3600",
+        "Accept-Ranges": "bytes",
+        // El cliente la reenvia en los siguientes rangos para saltear la
+        // resolucion del interstitial.
+        "X-Drive-Url": urlUsada,
+      };
+      // Pasar el tamaño permite al cliente mostrar progreso de descarga en
+      // archivos grandes en vez de quedarse mudo varios segundos.
+      const len = upstream.headers.get("content-length");
+      if (len) headers["Content-Length"] = len;
+      const cr = upstream.headers.get("content-range");
+      if (cr) {
+        headers["Content-Range"] = cr;
+        // El total del archivo va tambien en un header propio: es lo que el
+        // lector de zip necesita para ubicar el indice al final, y asi no
+        // tiene que parsear Content-Range.
+        const total = /\/(\d+)$/.exec(cr);
+        if (total) headers["X-Drive-Total"] = total[1];
       }
       return new Response(upstream.body, {
-        headers: {
-          ...CORS,
-          "Content-Type": "application/octet-stream",
-          "Cache-Control": "public, max-age=3600",
-        },
+        status: upstream.status === 206 ? 206 : 200,
+        headers,
       });
     }
 

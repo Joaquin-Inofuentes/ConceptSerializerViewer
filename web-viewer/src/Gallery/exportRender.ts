@@ -1,5 +1,13 @@
 import type { Document } from "../VisorConcept/parser";
-import { loadResourceImages, buildRenderPlan, drawItems, EXPORT_SCALE } from "./renderCore";
+import {
+  loadResourceImages,
+  releaseResourceImages,
+  buildRenderPlan,
+  drawItems,
+  drawnSizes,
+  safeExportScale,
+} from "./renderCore";
+import { getBudgets } from "../device";
 
 export interface RenderedCanvas {
   canvas: HTMLCanvasElement;
@@ -14,35 +22,6 @@ export interface RenderedCanvas {
 export async function renderDocumentCanvas(doc: Document): Promise<RenderedCanvas> {
   const plan = buildRenderPlan(doc);
 
-  // Cada recurso PDF embebido se rasteriza al tamaño real que va a ocupar
-  // en el canvas final (en px, ya multiplicado por EXPORT_SCALE), no a un
-  // multiplo fijo arbitrario — si el PDF fuente es chico en su propio
-  // espacio de pagina pero se dibuja grande en el documento, un multiplo
-  // fijo se queda corto y sale pixelado sin importar el DPI del canvas.
-  const targetSizes: Record<string, { width: number; height: number }> = {};
-  plan.items.forEach((item) => {
-    if (item.type === "image" && item.width && item.height) {
-      // item.width/height son el tamaño NATIVO de la imagen, no el tamaño
-      // dibujado — la matriz de transform (que puede achicar mucho, ej.
-      // encoger una foto a un lugar chico del documento) es la que define
-      // el tamaño real en pantalla/canvas. Sin esto se sobreestima cuanta
-      // resolucion hace falta.
-      const m = item.transform;
-      const scaleX = m && m.length === 16 ? Math.hypot(m[0], m[1]) : 1;
-      const scaleY = m && m.length === 16 ? Math.hypot(m[4], m[5]) : 1;
-      const w = item.width * scaleX * EXPORT_SCALE;
-      const h = item.height * scaleY * EXPORT_SCALE;
-      const prev = targetSizes[item.resourceId];
-      if (!prev || w * h > prev.width * prev.height) {
-        targetSizes[item.resourceId] = { width: w, height: h };
-      }
-    }
-  });
-  // Piso fijo de 2.0 (no *EXPORT_SCALE): targetSizes ya incluye EXPORT_SCALE
-  // en el tamaño pedido, multiplicar tambien el piso generaria canvases de
-  // PDF gigantes e innecesarios sin ganar nitidez real.
-  const images = await loadResourceImages(doc, 2.0, targetSizes);
-
   let { minX, minY, maxX, maxY } = plan;
   if (!plan.hasContent) {
     minX = 0; minY = 0; maxX = 200; maxY = 200;
@@ -52,28 +31,74 @@ export async function renderDocumentCanvas(doc: Document): Promise<RenderedCanva
   minX -= padding; minY -= padding; maxX += padding; maxY += padding;
   const logicalWidth = Math.max(1, Math.round(maxX - minX));
   const logicalHeight = Math.max(1, Math.round(maxY - minY));
+  // Escala real del export: EXPORT_SCALE salvo que a 600 DPI el canvas no
+  // entre en los limites del navegador (dibujo muy grande), en cuyo caso se
+  // baja lo justo — antes eso daba directamente una hoja en blanco.
+  const scale = safeExportScale(logicalWidth, logicalHeight);
+
+  // Cada recurso embebido se rasteriza al tamaño REAL en px que va a ocupar
+  // en este canvas (tamaño dibujado x escala del export), no a un multiplo
+  // fijo: un multiplo fijo se queda corto si el recurso se dibuja grande, y
+  // desperdicia decenas de megapixeles si se dibuja chico.
+  const dibujado = drawnSizes(doc);
+  const targets: Record<string, { width: number; height: number }> = {};
+  Object.entries(dibujado).forEach(([id, size]) => {
+    targets[id] = { width: size.width * scale, height: size.height * scale };
+  });
+  const budgets = getBudgets();
+  const images = await loadResourceImages(doc, {
+    targets,
+    quality: 1,
+    maxPixels: Math.min(40_000_000, budgets.maxExportPixels),
+    maxTotalPixels: budgets.maxExportPixels,
+    minSide: 256,
+    timeoutMs: 60000,
+    sinCache: true,
+  });
 
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(logicalWidth * EXPORT_SCALE);
-  canvas.height = Math.round(logicalHeight * EXPORT_SCALE);
+  canvas.width = Math.round(logicalWidth * scale);
+  canvas.height = Math.round(logicalHeight * scale);
   const ctx = canvas.getContext("2d")!;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.save();
-  ctx.scale(EXPORT_SCALE, EXPORT_SCALE);
+  ctx.scale(scale, scale);
   ctx.translate(-minX, -minY);
   drawItems(ctx, plan.items, images);
   ctx.restore();
+  releaseResourceImages(images);
+  // El documento NO se cierra aca a proposito: "renderizar" no deberia
+  // invalidar el documento que te pasaron. Cerrarlo es responsabilidad de
+  // quien lo abrio (ver `handleDownload` en Gallery.tsx).
   return { canvas, logicalWidth, logicalHeight };
 }
 
 export interface ExportEntry {
   name: string;
-  canvas: HTMLCanvasElement;
+  /** JPEG ya codificado. NO se guarda el canvas: en una descarga de 20
+   * dibujos, retener 20 canvases de export (decenas de MB cada uno) es
+   * cientos de MB vivos a la vez y en un telefono mata la pestaña. El JPEG
+   * de la misma pagina pesa ~1 MB. */
+  dataUrl: string;
   logicalWidth: number;
   logicalHeight: number;
+}
+
+/** Renderiza y codifica de una, liberando el canvas enseguida. Es lo que hay
+ * que usar para armar varias paginas sin acumular memoria. */
+export async function renderDocumentEntry(
+  doc: Document,
+  name: string,
+  calidad = 0.92
+): Promise<ExportEntry> {
+  const { canvas, logicalWidth, logicalHeight } = await renderDocumentCanvas(doc);
+  const dataUrl = canvas.toDataURL("image/jpeg", calidad);
+  canvas.width = 0;
+  canvas.height = 0;
+  return { name, dataUrl, logicalWidth, logicalHeight };
 }
 
 /** Un grupo de entries; title=null cuando son archivos sueltos (sin
@@ -134,13 +159,12 @@ export async function exportSectionsAsPdf(sections: ExportSection[], metadata: E
       startPage(PAGE_W, PAGE_H, "portrait");
       drawDividerPage(pdf, section.title);
     }
-    section.entries.forEach(({ canvas, logicalWidth, logicalHeight }) => {
+    section.entries.forEach(({ dataUrl, logicalWidth, logicalHeight }) => {
       const orientation = logicalWidth > logicalHeight ? "landscape" : "portrait";
       startPage(logicalWidth, logicalHeight, orientation);
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-      // El source (canvas) tiene mas pixeles que logicalWidth/Height
-      // (EXPORT_SCALE, 150 DPI) — addImage lo encuadra al tamaño logico de
-      // pagina, asi que el resultado sale nitido en vez de pixelado.
+      // El JPEG tiene mas pixeles que logicalWidth/Height (EXPORT_SCALE) —
+      // addImage lo encuadra al tamaño logico de pagina, asi que el resultado
+      // sale nitido en vez de pixelado.
       pdf.addImage(dataUrl, "JPEG", 0, 0, logicalWidth, logicalHeight);
     });
   });
@@ -169,7 +193,7 @@ export async function exportSectionsAsZip(sections: ExportSection[], metadata: E
   sections.forEach((section) => {
     const target = section.title ? zip.folder(section.title) || zip : zip;
     const usedNames = new Set<string>();
-    section.entries.forEach(({ name, canvas }) => {
+    section.entries.forEach(({ name, dataUrl }) => {
       let fileName = `${name}.jpg`;
       let n = 2;
       while (usedNames.has(fileName)) {
@@ -177,7 +201,6 @@ export async function exportSectionsAsZip(sections: ExportSection[], metadata: E
         n++;
       }
       usedNames.add(fileName);
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
       target.file(fileName, dataUrl.split(",")[1], { base64: true });
     });
   });

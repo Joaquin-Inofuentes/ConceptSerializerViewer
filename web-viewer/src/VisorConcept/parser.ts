@@ -1,5 +1,6 @@
-import JSZip from "jszip";
 import { decode, ExtensionCodec } from "@msgpack/msgpack";
+import { ZipArchive, BufferSource, FileSource, RemoteSource } from "./zip";
+import type { ZipSource } from "./zip";
 
 export interface BBox {
   minX: number;
@@ -43,7 +44,33 @@ export interface Layer {
 export interface Document {
   layers: Layer[];
   bbox: BBox;
-  resources: Record<string, Blob>;
+  /**
+   * Ids de los recursos efectivamente COLOCADOS en alguna capa, del mas
+   * chico al mas grande (asi lo que se puede mostrar antes se muestra
+   * antes). Un .concepts guarda todos los adjuntos que se usaron alguna vez
+   * — el dibujo de 262 MB trae 96 PDFs y solo 19 estan en el lienzo — asi
+   * que esta lista es MUCHO mas corta que el contenido del zip.
+   */
+  resourceIds: string[];
+  /** Tamaño comprimido de cada recurso, para poder priorizar y estimar. */
+  resourceSizes: Record<string, number>;
+  /**
+   * Materializa un recurso a demanda. En un archivo remoto esto dispara un
+   * rango HTTP; en uno local, una lectura del buffer. Devuelve null si el
+   * recurso no esta en el zip (referencia rota).
+   */
+  loadResource(id: string): Promise<Blob | null>;
+  /**
+   * Trae por adelantado los bytes de varios recursos en pocas requests (los
+   * recursos estan contiguos en el archivo). Sin esto se gasta una ida y
+   * vuelta HTTP por recurso: 19 planos = 19 viajes de ~1,1 s cada uno.
+   * Es una optimizacion: si falla, `loadResource` igual funciona.
+   */
+  prefetchResources(ids: string[]): Promise<void>;
+  /** Suelta el archivo/las conexiones. Idempotente. */
+  close(): void;
+  /** Total de bytes del archivo (para diagnostico y metricas). */
+  totalBytes: number;
 }
 
 const extensionCodec = new ExtensionCodec();
@@ -118,44 +145,83 @@ function rgbaToHex(r: number, g: number, b: number, a: number) {
   return `#${hexR}${hexG}${hexB}${hexA}`;
 }
 
-export async function parseConceptsFile(fileBuffer: ArrayBuffer): Promise<Document> {
-  const zip = await JSZip.loadAsync(fileBuffer);
-  
-  const resources: Record<string, Blob> = {};
-  
-  if (zip.file("resource.pack")) {
-    const resData = await zip.file("resource.pack")!.async("uint8array");
-    const rp = decode(resData, { extensionCodec }) as any;
-    const mapa = (Array.isArray(rp) && rp.length > 1) ? rp[1] : {};
-    
-    // Fallback iteration
-    if (mapa) {
-        let keys = Object.keys(mapa);
-        for (const k of keys) {
-            const ruuid = k;
-            const filename = Object.keys(zip.files).find(n => n.replace(/-/g, "").includes(ruuid.replace(/-/g, "")));
-            if (filename) {
-                const fileBlob = await zip.file(filename)!.async("blob");
-                resources[ruuid] = fileBlob;
-            }
-        }
-    }
+/**
+ * Devuelve la vista previa que la propia app Concepts deja adentro del
+ * archivo (`thumb.jpg`), si esta. Es una imagen de 640x1024 renderizada por
+ * Concepts: se ve mejor que cualquier cosa que podamos dibujar nosotros y
+ * sale por dos ordenes de magnitud menos de trabajo — no hay que decodificar
+ * el arbol del documento ni rasterizar los PDFs embebidos (que cuestan ~1,5 s
+ * cada uno sin importar a que tamaño se los pida).
+ */
+export async function readEmbeddedThumbnail(
+  fuente: ArrayBuffer | ZipSource
+): Promise<Blob | null> {
+  try {
+    const zip = await ZipArchive.open(fuente as ZipSource);
+    const nombre = zip.names().find((n) => /(^|\/)thumb\.jpe?g$/i.test(n));
+    if (!nombre) return null;
+    return await zip.readBlob(nombre, "image/jpeg");
+  } catch {
+    return null;
   }
+}
 
-  if (!zip.file("tree.pack")) {
+/** Miniatura embebida leyendo por rangos: en vez de bajar el archivo entero
+ * (262 MB) para sacar una imagen de 192 px, baja el indice + el thumb.jpg
+ * (~110 KB en el peor caso, 2400x menos datos). */
+export async function readEmbeddedThumbnailRemote(
+  url: string,
+  headers: Record<string, string> = {}
+): Promise<Blob | null> {
+  try {
+    const source = await RemoteSource.open(url, headers);
+    return await readEmbeddedThumbnail(source);
+  } catch {
+    return null;
+  }
+}
+
+export interface ParseOptions {
+  /** Se llama con los bytes transferidos, para medir el ahorro real. */
+  onBytes?: (n: number) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * FASE 1 del parseo: decodifica el arbol del documento (trazos, capas y la
+ * ubicacion de las imagenes) leyendo SOLO `tree.pack`. Los recursos pesados
+ * (fotos, PDFs) no se tocan: quedan disponibles via `doc.loadResource(id)`.
+ *
+ * Medido sobre la carpeta real: `tree.pack` pesa 0,79 MB en el dibujo de
+ * 262,9 MB y vive en el offset 0 del zip, asi que los trazos se pueden
+ * mostrar bajando ~1 MB en vez de 262.
+ */
+export async function parseConceptsSource(
+  fuente: ZipSource,
+  opts: ParseOptions = {}
+): Promise<Document> {
+  void opts;
+  return documentoDesdeZip(await ZipArchive.open(fuente), fuente);
+}
+
+async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Document> {
+  const nombreTree = zip.has("tree.pack")
+    ? "tree.pack"
+    : zip.names().find((n) => /(^|\/)tree\.pack$/.test(n));
+  if (!nombreTree) {
     throw new Error("No se encontró tree.pack en el archivo.");
   }
-  const treeData = await zip.file("tree.pack")!.async("uint8array");
+  const treeData = await zip.read(nombreTree);
   const tree = decode(treeData, { extensionCodec }) as any;
 
   const docData = Array.isArray(tree) && tree.length > 1 ? tree[1] : tree;
-  
+
   const layers: Layer[] = [];
   const globalBbox: BBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
 
   if (Array.isArray(docData)) {
     const docCapas = docData.find(x => Array.isArray(x) && x.length > 0 && x.every(c => Array.isArray(c) && c.length > 0 && c[0] === 1));
-    
+
     if (docCapas) {
       docCapas.forEach((capa: any, index: number) => {
         layers.push(procesarCapa(capa, index, globalBbox));
@@ -169,7 +235,169 @@ export async function parseConceptsFile(fileBuffer: ArrayBuffer): Promise<Docume
     }
   }
 
-  return { layers, bbox: globalBbox, resources };
+  const { ids, sizes, porId } = mapearRecursos(zip, layers);
+
+  const cacheBlobs = new Map<string, Blob>();
+  let cerrado = false;
+
+  const doc: Document = {
+    layers,
+    bbox: globalBbox,
+    resourceIds: ids,
+    resourceSizes: sizes,
+    totalBytes: fuente.size,
+    async loadResource(id: string) {
+      if (cerrado) return null;
+      const hit = cacheBlobs.get(id);
+      if (hit) return hit;
+      const nombre = porId.get(id);
+      if (!nombre) return null;
+      try {
+        const blob = await zip.readBlob(nombre);
+        if (cerrado) return null;
+        cacheBlobs.set(id, blob);
+        return blob;
+      } catch (e) {
+        console.error("No se pudo leer el recurso", id, nombre, e);
+        return null;
+      }
+    },
+    async prefetchResources(ids: string[]) {
+      if (cerrado) return;
+      const nombres = ids.map((id) => porId.get(id)).filter((n): n is string => !!n);
+      if (nombres.length === 0) return;
+      try {
+        await zip.prefetch(nombres);
+      } catch {
+        // Es solo un adelanto; si falla, cada recurso se pide por su cuenta.
+      }
+    },
+    close() {
+      cerrado = true;
+      cacheBlobs.clear();
+      if (fuente instanceof RemoteSource) fuente.liberar();
+    },
+  };
+  return doc;
+}
+
+/**
+ * Archivo .concepts abierto UNA sola vez, del que se pueden sacar tanto la
+ * vista previa como el documento.
+ *
+ * Importa porque leer el indice del zip cuesta una ida y vuelta HTTP (~1,7 s
+ * a traves del proxy de Drive): abrir dos lectores distintos —uno para el
+ * thumbnail y otro para parsear— pagaba ese costo dos veces, y ademas volvia
+ * a pedir bytes que ya estaban en el cache de bloques del primero.
+ */
+export interface ConceptsFile {
+  /** Vista previa embebida (thumb.jpg). null si el archivo no la trae. */
+  thumbnail(): Promise<Blob | null>;
+  /** Documento completo (trazos + capas). Los recursos siguen a demanda. */
+  parse(): Promise<Document>;
+  close(): void;
+  totalBytes: number;
+}
+
+export async function openConceptsSource(fuente: ZipSource): Promise<ConceptsFile> {
+  const zip = await ZipArchive.open(fuente);
+  return {
+    totalBytes: fuente.size,
+    async thumbnail() {
+      const nombre = zip.names().find((n) => /(^|\/)thumb\.jpe?g$/i.test(n));
+      if (!nombre) return null;
+      try {
+        return await zip.readBlob(nombre, "image/jpeg");
+      } catch {
+        return null;
+      }
+    },
+    parse: () => documentoDesdeZip(zip, fuente),
+    close() {
+      if (fuente instanceof RemoteSource) fuente.liberar();
+    },
+  };
+}
+
+/** Abre un archivo remoto (por rangos) una sola vez. */
+export async function openConceptsRemote(
+  url: string,
+  headers: Record<string, string> = {},
+  opts: ParseOptions & { size?: number } = {}
+): Promise<ConceptsFile> {
+  const source = await RemoteSource.open(url, headers, {
+    size: opts.size,
+    signal: opts.signal,
+    onBytes: opts.onBytes,
+  });
+  return openConceptsSource(source);
+}
+
+/** Abre un archivo local elegido por el usuario (sin cargarlo entero). */
+export async function openConceptsLocal(file: File): Promise<ConceptsFile> {
+  return openConceptsSource(new FileSource(file));
+}
+
+/** Compat: parsear desde un ArrayBuffer ya en memoria. */
+export async function parseConceptsFile(fileBuffer: ArrayBuffer): Promise<Document> {
+  return parseConceptsSource(new BufferSource(fileBuffer));
+}
+
+/** Parsear un archivo local elegido por el usuario, sin cargarlo entero. */
+export async function parseConceptsLocalFile(file: File): Promise<Document> {
+  return parseConceptsSource(new FileSource(file));
+}
+
+/**
+ * Parsear un archivo REMOTO leyendo por rangos HTTP. Es el camino normal de
+ * la app: baja el indice del zip + tree.pack (~1 MB) y despues cada recurso
+ * colocado a demanda.
+ */
+export async function parseConceptsRemote(
+  url: string,
+  headers: Record<string, string> = {},
+  opts: ParseOptions & { size?: number } = {}
+): Promise<Document> {
+  const source = await RemoteSource.open(url, headers, {
+    size: opts.size,
+    signal: opts.signal,
+    onBytes: opts.onBytes,
+  });
+  return parseConceptsSource(source, opts);
+}
+
+/**
+ * Resuelve, para cada recurso COLOCADO en una capa, cual entrada del zip le
+ * corresponde. El mapeo id -> archivo se hace por nombre
+ * (resources/<uuid>.<ext>) comparando el uuid sin guiones, que es como venia
+ * haciendose. No materializa nada: solo arma el indice.
+ */
+function mapearRecursos(zip: ZipArchive, layers: Layer[]) {
+  const usados = new Set<string>();
+  layers.forEach((l) => l.images.forEach((img) => img.resourceId && usados.add(img.resourceId)));
+
+  const porId = new Map<string, string>();
+  const sizes: Record<string, number> = {};
+  if (usados.size === 0) return { ids: [] as string[], sizes, porId };
+
+  // Un solo recorrido de las entradas, indexadas por nombre normalizado: con
+  // 96 entradas y 19 recursos, el doble for anidado que habia antes hacia
+  // casi 2000 comparaciones de strings largos.
+  const normalizadas = zip.names().map((n) => ({ real: n, norm: n.replace(/-/g, "") }));
+
+  for (const uuid of usados) {
+    const plano = uuid.replace(/-/g, "");
+    const hit = normalizadas.find((n) => n.norm.includes(plano));
+    if (!hit) continue;
+    porId.set(uuid, hit.real);
+    sizes[uuid] = zip.get(hit.real)?.compressedSize ?? 0;
+  }
+
+  // De menor a mayor: los recursos chicos se rasterizan y aparecen antes, asi
+  // el lienzo se va completando en vez de quedarse vacio esperando al PDF de
+  // 20 MB.
+  const ids = [...porId.keys()].sort((a, b) => (sizes[a] || 0) - (sizes[b] || 0));
+  return { ids, sizes, porId };
 }
 
 function procesarCapa(nodo: any, idx: number, globalBbox: BBox): Layer {

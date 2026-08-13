@@ -1,4 +1,6 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+/* La fuente se define en src/fonts.css (self-hosted, subset latin). Antes
+   estaba aca como @import a Google Fonts: render-blocking y contra dos
+   origenes externos. */
 
 :root {
   --bg-color: #f8f9fa;
@@ -19,7 +21,7 @@
 }
 
 body {
-  font-family: 'Inter', sans-serif;
+  font-family: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   background-color: var(--bg-canvas);
   color: var(--text-main);
   min-height: 100vh;
@@ -273,6 +275,82 @@ body {
   transform: translate(-50%, -50%);
   text-align: center;
   color: var(--text-muted);
+}
+
+/* Vista previa que trae el propio .concepts, mostrada mientras se decodifica
+   el documento. Se lee por rangos (~110 KB incluso en el dibujo de 262 MB),
+   asi que aparece en menos de un segundo: el usuario reconoce su dibujo de
+   entrada en vez de mirar un spinner sobre fondo vacio. Va desaturada y con
+   blur suave para que se lea como "todavia cargando" y no como el resultado
+   final. */
+.viewer-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fafafa;
+  overflow: hidden;
+}
+/* Cuando la vista previa se muestra ENCIMA del lienzo ya dibujado (mientras
+   cargan las fotos), no debe tapar los controles ni comerse los gestos. */
+.viewer-placeholder-overlay {
+  background: #ffffff;
+  pointer-events: none;
+  z-index: 20;
+  animation: fadeIn 0.3s ease-out both;
+}
+
+.viewer-placeholder-img {
+  max-width: 82%;
+  max-height: 82%;
+  object-fit: contain;
+  filter: blur(1.5px) saturate(0.75);
+  opacity: 0.72;
+  animation: placeholderPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes placeholderPulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 0.82; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viewer-placeholder-img { animation: none; }
+}
+
+/* Los trazos aparecen enseguida; las fotos/PDFs embebidos tardan un poco
+   mas. Este cartelito evita que el lienzo parezca incompleto mientras tanto. */
+.viewer-loading-badge {
+  position: absolute;
+  left: 50%;
+  bottom: 1.25rem;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.9rem;
+  border-radius: 999px;
+  background: rgba(20, 20, 22, 0.82);
+  color: #fff;
+  font-size: 0.8rem;
+  letter-spacing: 0.01em;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  z-index: 50;
+  animation: fadeIn 0.25s ease-out both;
+}
+.viewer-loading-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4da3ff;
+  animation: pulseDot 1s ease-in-out infinite;
+}
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 0.35; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.15); }
 }
 .error-state {
   position: absolute;

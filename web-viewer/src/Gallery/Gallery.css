@@ -3,7 +3,7 @@
   width: 100%;
   background: var(--bg-color, #f8f9fa);
   color: var(--text-main, #212529);
-  font-family: "Inter", sans-serif;
+  font-family: "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   padding: 2rem clamp(1rem, 5vw, 3rem) 3rem;
   animation: fadeIn 0.15s ease-out forwards;
 }
@@ -311,9 +311,21 @@
   inset: 0;
   background: rgba(255, 255, 255, 0.65);
   display: flex;
+  flex-direction: column;
+  gap: 4px;
   align-items: center;
   justify-content: center;
   color: var(--primary, #0d6efd);
+}
+
+/* Avance de descarga: estos dibujos pueden pesar cientos de MB y sin esto la
+   tarjeta se queda girando sin decir nada. */
+.gallery-thumb-progress {
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--primary, #0d6efd);
+  letter-spacing: 0.02em;
 }
 
 .gallery-name {

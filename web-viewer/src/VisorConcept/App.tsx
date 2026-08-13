@@ -1,23 +1,35 @@
 import { useState, useRef, useEffect } from 'react';
-import { parseConceptsFile } from './parser';
+import { openConceptsRemote, openConceptsLocal } from './parser';
 import type { Document } from './parser';
 import { Viewer } from './Viewer';
 import type { LayerConfig, ViewerHandle } from './Viewer';
 import { InteractivePreview } from './InteractivePreview';
 import { logDescarga } from '../Gallery/analytics';
+import { driveFileUrl, driveAuthHeaders } from '../Gallery/driveClient';
+import type { FileSourceRef } from '../App';
 import { Eye, EyeOff, Lock, Filter, Image as ImageIcon, X, Download } from 'lucide-react';
 import './App.css';
 
 interface ViewerProps {
-  fileBuffer: ArrayBuffer;
-  fileName: string;
+  source: FileSourceRef;
   onClose: () => void;
 }
 
-export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
+export function ConceptViewer({ source, onClose }: ViewerProps) {
+  const fileName = source.name;
+  const fileId = source.kind === 'remote' ? source.fileId : null;
   const [doc, setDoc] = useState<Document | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<{ layers: number; strokes: number; images: number } | null>(null);
+  // Vista previa que Concepts guarda dentro del archivo. Se muestra apenas
+  // llega (~110 KB por rangos, menos de un segundo) mientras se decodifica el
+  // documento: el usuario ve SU dibujo enseguida en vez de un lienzo vacio.
+  const [placeholder, setPlaceholder] = useState<string | null>(null);
+  // Los trazos se ven enseguida; las fotos/PDFs embebidos tardan un poco mas
+  // en rasterizarse. Se avisa en vez de dejar el lienzo a medio dibujar sin
+  // explicacion.
+  const [recursosListos, setRecursosListos] = useState(false);
+  const [progresoRecursos, setProgresoRecursos] = useState<{ listos: number; total: number } | null>(null);
 
   // Layer State
   const [layerConfigs, setLayerConfigs] = useState<Record<string, LayerConfig>>({});
@@ -76,29 +88,84 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
   }, [showLayerMenu, showImageMenu, showExportMenu, previewImage]);
 
   useEffect(() => {
-    const load = async () => {
+    setRecursosListos(false);
+    setProgresoRecursos(null);
+    setPlaceholder(null);
+    setDoc(null);
+    setStats(null);
+    setError(null);
+    let cancelado = false;
+    let docCreado: Document | null = null;
+    let urlPlaceholder: string | null = null;
+
+    (async () => {
+      // El archivo se abre UNA sola vez y de ahi salen las dos cosas: la
+      // vista previa y el documento. Abrir dos lectores pagaba dos veces la
+      // lectura del indice del zip, que a traves del proxy de Drive es una
+      // ida y vuelta de ~1,7 s.
+      let archivo: Awaited<ReturnType<typeof openConceptsRemote>>;
       try {
-        const parsedDoc = await parseConceptsFile(fileBuffer);
-        setDoc(parsedDoc);
+        archivo =
+          source.kind === 'remote'
+            ? await openConceptsRemote(driveFileUrl(source.fileId), driveAuthHeaders())
+            : await openConceptsLocal(source.file);
+      } catch (err: any) {
+        if (!cancelado) setError(err?.message || 'No se pudo abrir el archivo');
+        return;
+      }
+      if (cancelado) {
+        archivo.close();
+        return;
+      }
+
+      // 1) Vista previa embebida primero: son ~110 KB y da feedback inmediato
+      //    incluso en el dibujo de 262 MB.
+      try {
+        const blob = await archivo.thumbnail();
+        if (blob && !cancelado) {
+          urlPlaceholder = URL.createObjectURL(blob);
+          setPlaceholder(urlPlaceholder);
+        }
+      } catch {
+        // Sin vista previa se sigue igual, solo que sin placeholder.
+      }
+
+      // 2) El documento (trazos y capas): solo tree.pack, ~1 MB.
+      try {
+        const parsedDoc = await archivo.parse();
+        if (cancelado) {
+          parsedDoc.close();
+          return;
+        }
+        docCreado = parsedDoc;
+
         let strokesCount = 0;
         let imagesCount = 0;
         const initialConfigs: Record<string, LayerConfig> = {};
-        
+
         parsedDoc.layers.forEach(l => {
           strokesCount += l.strokes.length;
           imagesCount += l.images.length;
           initialConfigs[l.id] = { visible: true, opacity: 1.0 };
         });
-        
+
         setLayerConfigs(initialConfigs);
         setIsolatedLayer(null);
         setStats({ layers: parsedDoc.layers.length, strokes: strokesCount, images: imagesCount });
+        setDoc(parsedDoc);
       } catch (err: any) {
-        setError(err.message || "Error al cargar el archivo");
+        if (!cancelado) setError(err.message || "Error al cargar el archivo");
       }
+    })();
+
+    return () => {
+      cancelado = true;
+      // Cerrar el documento suelta el archivo y las conexiones de rango. Sin
+      // esto, abrir y cerrar dibujos pesados va dejando fuentes vivas.
+      docCreado?.close();
+      if (urlPlaceholder) URL.revokeObjectURL(urlPlaceholder);
     };
-    load();
-  }, [fileBuffer]);
+  }, [source]);
 
   const toggleLayerVisibility = (id: string) => {
     setLayerConfigs(prev => ({
@@ -131,10 +198,21 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
   }
 
   if (!doc || !stats) {
+    // Mientras se decodifica el documento se muestra la vista previa que trae
+    // el propio archivo: el usuario reconoce su dibujo de inmediato en vez de
+    // mirar un spinner sobre fondo vacio.
     return (
       <div className="app-container">
-        <div className="empty-state">
-          <div className="spin-slow">Cargando...</div>
+        <div className="filename-display">{fileName.replace('.concepts', '')}</div>
+        <button className="btn-close-viewer" onClick={onClose} title="Cerrar documento">
+          <X size={20} />
+        </button>
+        <div className="viewer-placeholder">
+          {placeholder && <img src={placeholder} alt="" className="viewer-placeholder-img" />}
+          <div className="viewer-loading-badge">
+            <span className="viewer-loading-dot" />
+            Abriendo dibujo…
+          </div>
         </div>
       </div>
     );
@@ -252,9 +330,17 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
         </div>
 
         <div className="dropdown-container" ref={imageMenuRef}>
-          <button 
+          <button
             className={`btn-tool ${showImageMenu ? 'active-glow' : ''}`}
-            onClick={() => { setShowImageMenu(!showImageMenu); setShowLayerMenu(false); }}
+            onClick={() => {
+              const abriendo = !showImageMenu;
+              setShowImageMenu(abriendo);
+              setShowLayerMenu(false);
+              // Las previews se generan recien aca: es un loop de toDataURL
+              // en el hilo principal que en gama baja cuesta cientos de ms, y
+              // la mayoria de los usuarios nunca abre este menu.
+              if (abriendo) void (window as any).__conceptsPedirPreviews?.();
+            }}
             title={`Imágenes: ${stats.images}`}
           >
             <ImageIcon size={20} />
@@ -267,7 +353,7 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
                 <span style={{fontSize:'0.7rem', color:'#888'}}>ESC para cerrar</span>
               </div>
               <div className="image-gallery">
-                {Object.entries(doc.resources).length > 0 ? Object.entries(doc.resources).map(([id]) => {
+                {doc.resourceIds.length > 0 ? doc.resourceIds.map((id) => {
                   const url = imageUrls[id];
                   return (
                     <div key={id} className="gallery-item" onClick={() => url && setPreviewImage(url)}>
@@ -289,13 +375,36 @@ export function ConceptViewer({ fileBuffer, fileName, onClose }: ViewerProps) {
 
       <main className="main-content">
         <div className="canvas-wrapper">
-          <Viewer 
+          <Viewer
             ref={viewerRef}
-            doc={doc} 
-            layerConfigs={layerConfigs} 
-            isolatedLayer={isolatedLayer} 
+            doc={doc}
+            fileId={fileId}
+            layerConfigs={layerConfigs}
+            isolatedLayer={isolatedLayer}
             onImagesLoaded={(urls) => setImageUrls(urls)}
+            onResourcesReady={() => setRecursosListos(true)}
+            onResourceProgress={(listos, total) => setProgresoRecursos({ listos, total })}
           />
+          {/* La vista previa se mantiene hasta que aparece la PRIMERA imagen,
+              no hasta que se decodifica el documento. En estos dibujos los
+              trazos son anotaciones finas sobre los planos, asi que mostrar
+              solo los trazos daba un lienzo practicamente vacio durante toda
+              la carga de las fotos (medido: ~28 s en el dibujo de 262 MB).
+              Con esto el usuario ve su dibujo completo todo el tiempo, y el
+              lienzo real lo reemplaza cuando ya tiene contenido. */}
+          {placeholder && doc.resourceIds.length > 0 && !recursosListos && !(progresoRecursos && progresoRecursos.listos > 0) && (
+            <div className="viewer-placeholder viewer-placeholder-overlay">
+              <img src={placeholder} alt="" className="viewer-placeholder-img" />
+            </div>
+          )}
+          {!recursosListos && doc.resourceIds.length > 0 && (
+            <div className="viewer-loading-badge">
+              <span className="viewer-loading-dot" />
+              {progresoRecursos
+                ? `Cargando imágenes ${progresoRecursos.listos}/${doc.resourceIds.length}…`
+                : `Cargando ${doc.resourceIds.length} imagen${doc.resourceIds.length === 1 ? "" : "es"}…`}
+            </div>
+          )}
         </div>
 
         {previewImage && (

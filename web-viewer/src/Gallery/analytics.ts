@@ -1,4 +1,4 @@
-import { supabase } from "./supabaseClient";
+import { insertEvento } from "./supabaseClient";
 
 export type DescargaOrigen = "galeria" | "lienzo" | "foto";
 
@@ -7,16 +7,7 @@ export type DescargaOrigen = "galeria" | "lienzo" | "foto";
 const SESION_ID = crypto.randomUUID();
 
 async function registrarEvento(evento: "abrir" | "cerrar" | "descargar", campos: Record<string, unknown>) {
-  try {
-    const { error } = await supabase.from("visor_eventos").insert({
-      evento,
-      sesion_id: SESION_ID,
-      ...campos,
-    });
-    if (error) console.error("Error registrando metrica de uso:", error);
-  } catch (e) {
-    console.error("Error registrando metrica de uso:", e);
-  }
+  await insertEvento({ evento, sesion_id: SESION_ID, ...campos });
 }
 
 export function logAbrir(archivoId: string, archivoNombre: string, carpetaId: string) {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { motion } from "motion/react";
+import { m } from "motion/react";
 import "./Gallery.css";
 
 interface NamePromptProps {
@@ -16,14 +16,14 @@ export function NamePrompt({ onSubmit }: NamePromptProps) {
   };
 
   return (
-    <motion.div
+    <m.div
       className="gallery-modal-overlay"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.5, ease: EASE_IOS }}
       style={{ zIndex: 500 }}
     >
-      <motion.div
+      <m.div
         className="gallery-modal"
         initial={{ opacity: 0, scale: 0.92, y: 16 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -48,8 +48,8 @@ export function NamePrompt({ onSubmit }: NamePromptProps) {
         <button className="gallery-modal-cancel" onClick={() => onSubmit("Invitado")}>
           Continuar sin nombre
         </button>
-      </motion.div>
-    </motion.div>
+      </m.div>
+    </m.div>
   );
 }
 

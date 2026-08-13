@@ -1,23 +1,39 @@
-import { useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
-import { ConceptViewer } from './VisorConcept';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { AnimatePresence, LazyMotion, domAnimation, m } from 'motion/react';
 import { Gallery } from './Gallery/Gallery';
 import { NamePrompt } from './Gallery/NamePrompt';
 import { logCerrar } from './Gallery/analytics';
 import { getUserName, setUserName } from './Gallery/userIdentity';
+import { DEMO_FILE_ID, DEMO_FILE_NAME } from './config';
+import { applyTierFromUrl } from './device';
 import './index.css';
 
-interface FileData {
-  buffer: ArrayBuffer;
-  name: string;
-  originRect: DOMRect | null;
-  driveFileId: string | null;
-}
+// El visor (parser + zip + pdf.js + jspdf) se carga recien cuando se abre un
+// dibujo: la galeria sola no lo necesita, y en 3G son ~200 KB que retrasaban
+// la primera pantalla sin motivo.
+const ConceptViewer = lazy(() =>
+  import('./VisorConcept').then((m) => ({ default: m.ConceptViewer }))
+);
+
+/**
+ * De donde salen los bytes del dibujo abierto.
+ *
+ * `remote` NO trae los bytes: solo el id. El visor los lee por rangos HTTP a
+ * medida que los necesita. Antes aca vivia un ArrayBuffer con el archivo
+ * entero — 262 MB retenidos todo el tiempo que el dibujo estuviera abierto,
+ * que en un telefono de 1 GB es motivo suficiente para que Android mate la
+ * pestaña.
+ */
+export type FileSourceRef =
+  | { kind: 'remote'; fileId: string; name: string; originRect: DOMRect | null }
+  | { kind: 'local'; file: File; name: string; originRect: DOMRect | null };
 
 const EASE_IOS: [number, number, number, number] = [0.16, 1, 0.3, 1];
 
+applyTierFromUrl();
+
 function App() {
-  const [fileData, setFileData] = useState<FileData | null>(null);
+  const [fileData, setFileData] = useState<FileSourceRef | null>(null);
   const [userName, setUserNameState] = useState<string | null>(() => getUserName());
   const heroRef = useRef<HTMLDivElement>(null);
 
@@ -32,22 +48,37 @@ function App() {
   // archivo abierto.
   const closedRef = useRef(false);
 
-  const openFile = (
-    buffer: ArrayBuffer,
-    name: string,
-    originRect: DOMRect | null = null,
-    driveFileId: string | null = null
-  ) => {
+  const openRemote = (fileId: string, name: string, originRect: DOMRect | null = null) => {
     closedRef.current = false;
-    setFileData({ buffer, name, originRect, driveFileId });
+    setFileData({ kind: 'remote', fileId, name, originRect });
+  };
+
+  const openLocal = (file: File, name: string) => {
+    closedRef.current = false;
+    setFileData({ kind: 'local', file, name, originRect: null });
   };
 
   const closeFile = () => {
     if (closedRef.current) return;
     closedRef.current = true;
-    if (fileData) logCerrar(fileData.driveFileId, fileData.name);
+    if (fileData) logCerrar(fileData.kind === 'remote' ? fileData.fileId : null, fileData.name);
     setFileData(null);
   };
+
+  // Atajo para abrir un dibujo puntual sin navegar la galeria:
+  //   ?demo          -> el dibujo mas pesado de la carpeta (peor caso)
+  //   ?file=<id>     -> cualquier archivo de Drive por id
+  // Sirve para probar y para compartir un link directo a un dibujo.
+  const autoOpenRef = useRef(false);
+  useEffect(() => {
+    if (autoOpenRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const id = params.has('demo') ? DEMO_FILE_ID : params.get('file');
+    if (!id) return;
+    autoOpenRef.current = true;
+    const nombre = params.has('demo') ? DEMO_FILE_NAME : `${id}.concepts`;
+    openRemote(id, nombre, null);
+  }, []);
 
   // Arranca el "hero" del mismo tamaño/posicion que la tarjeta clickeada
   // (efecto de expansion tipo iOS); si no hay origen (ej. subida manual),
@@ -67,17 +98,21 @@ function App() {
   }
 
   return (
-    <>
+    // LazyMotion + `m` en vez de `motion`: el componente `motion` arrastra
+    // TODAS las features de animacion (drag, layout, gestos, scroll) aunque
+    // aca solo se usen fades y springs simples. Con domAnimation el bundle
+    // baja ~20 KB gzip, que en 3G es tiempo de arranque real.
+    <LazyMotion features={domAnimation} strict>
       <Gallery
         hidden={!!fileData}
         userName={userName}
-        onOpen={openFile}
-        onUpload={(buffer, name) => openFile(buffer, name, null)}
+        onOpen={openRemote}
+        onUpload={openLocal}
       />
       {!userName && <NamePrompt onSubmit={submitUserName} />}
       <AnimatePresence>
         {fileData && (
-          <motion.div
+          <m.div
             key="viewer-hero"
             ref={heroRef}
             className="viewer-hero"
@@ -94,15 +129,21 @@ function App() {
               if (heroRef.current) heroRef.current.style.transform = '';
             }}
           >
-            <ConceptViewer
-              fileBuffer={fileData.buffer}
-              fileName={fileData.name}
-              onClose={closeFile}
-            />
-          </motion.div>
+            <Suspense
+              fallback={
+                <div className="app-container">
+                  <div className="empty-state">
+                    <div className="spin-slow">Cargando visor…</div>
+                  </div>
+                </div>
+              }
+            >
+              <ConceptViewer source={fileData} onClose={closeFile} />
+            </Suspense>
+          </m.div>
         )}
       </AnimatePresence>
-    </>
+    </LazyMotion>
   );
 }
 

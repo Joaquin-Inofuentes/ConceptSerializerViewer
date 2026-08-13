@@ -1,7 +1,7 @@
-import { listDriveFolder, downloadDriveFile } from "./driveClient";
+import { listDriveFolder, driveFileUrl, driveAuthHeaders } from "./driveClient";
 import { upsertFolderCache, upsertThumbnail } from "./supabaseClient";
-import { renderThumbnailDataUrl } from "./thumbnail";
-import { parseConceptsFile } from "../VisorConcept/parser";
+import { renderThumbnailDataUrl, thumbnailFromRemote } from "./thumbnail";
+import { parseConceptsRemote } from "../VisorConcept/parser";
 import { DRIVE_FOLDER_ID } from "../config";
 
 export interface CrawlProgress {
@@ -34,14 +34,28 @@ export async function crawlAndCacheEverything(
       progress.currentFile = file.name;
       onProgress?.({ ...progress });
       try {
-        const buffer = await downloadDriveFile(file.id);
-        const doc = await parseConceptsFile(buffer);
-        const thumbnail = await renderThumbnailDataUrl(doc);
+        const url = driveFileUrl(file.id);
+        const headers = driveAuthHeaders();
+        // Igual que la galeria: primero la vista previa embebida por rangos
+        // (~110 KB), y solo si el archivo no la trae se dibuja el documento.
+        // Antes esto bajaba cada archivo entero — 3,57 GB para recorrer la
+        // carpeta completa.
+        let thumbnail = await thumbnailFromRemote(url, headers);
+        let bytesFuente = 0;
+        if (!thumbnail) {
+          const doc = await parseConceptsRemote(url, headers);
+          try {
+            thumbnail = await renderThumbnailDataUrl(doc);
+            bytesFuente = doc.totalBytes;
+          } finally {
+            doc.close();
+          }
+        }
         await upsertThumbnail({
           drive_file_id: file.id,
           file_name: file.name,
           thumbnail_base64: thumbnail,
-          source_size_bytes: buffer.byteLength,
+          source_size_bytes: bytesFuente,
         });
       } catch (e) {
         console.error("Error regenerando thumbnail", file.id, file.name, e);

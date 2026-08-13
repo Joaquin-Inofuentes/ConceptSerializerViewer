@@ -1,19 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, m } from "motion/react";
 import {
   Upload, RefreshCw, AlertTriangle, CheckCircle2, Circle, Download, X,
   FileText, Image as ImageIcon, FolderOpen, Folder, Home, ChevronLeft, ChevronRight,
 } from "lucide-react";
-import { listDriveFolder, downloadDriveFile } from "./driveClient";
+import { listDriveFolder, driveFileUrl, driveAuthHeaders } from "./driveClient";
 import type { DriveFolderRef, DriveListing } from "./driveClient";
 import { fetchCachedThumbnails, upsertThumbnail, fetchAllFolderCache, upsertFolderCache } from "./supabaseClient";
 import type { FolderCacheRow } from "./supabaseClient";
-import { renderThumbnailDataUrl } from "./thumbnail";
-import { renderDocumentCanvas, exportSectionsAsPdf, exportSectionsAsZip } from "./exportRender";
+import { thumbnailDeArchivo } from "./thumbnail";
+import { renderDocumentEntry, exportSectionsAsPdf, exportSectionsAsZip } from "./exportRender";
 import type { ExportSection } from "./exportRender";
 import { gatherExportMetadata } from "./exportMetadata";
 import { logAbrir, logDescarga } from "./analytics";
-import { parseConceptsFile } from "../VisorConcept/parser";
+import { openConceptsRemote, parseConceptsRemote } from "../VisorConcept/parser";
 import { DRIVE_FOLDER_ID } from "../config";
 import "./Gallery.css";
 
@@ -44,8 +44,8 @@ interface SelectedRef {
 interface GalleryProps {
   hidden: boolean;
   userName: string | null;
-  onOpen: (buffer: ArrayBuffer, name: string, originRect: DOMRect | null, driveFileId: string) => void;
-  onUpload: (buffer: ArrayBuffer, name: string) => void;
+  onOpen: (fileId: string, name: string, originRect: DOMRect | null) => void;
+  onUpload: (file: File, name: string) => void;
 }
 
 const EASE_IOS: [number, number, number, number] = [0.16, 1, 0.3, 1];
@@ -89,7 +89,9 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
   const [listError, setListError] = useState<string | null>(null);
   const [listLoading, setListLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [openingId, setOpeningId] = useState<string | null>(null);
+  // Ya no hay estado de "abriendo": la apertura es inmediata (no se baja
+  // nada aca) y el progreso real de carga lo muestra el visor, que es donde
+  // ocurre.
   const [toast, setToast] = useState<string | null>(null);
 
   const [selectionMode, setSelectionMode] = useState(false);
@@ -99,9 +101,10 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
 
   const currentFolder = folderStack[folderStack.length - 1];
 
-  // Cachea en memoria los bytes ya descargados (evita re-bajar al abrir un
-  // dibujo cuya miniatura se acaba de generar en esta misma sesion).
-  const bufferCacheRef = useRef<Map<string, ArrayBuffer>>(new Map());
+  // Ya no hay cache de buffers: los archivos NO se bajan enteros. Tanto la
+  // miniatura como la apertura leen por rangos HTTP solo lo que necesitan
+  // (110 KB y ~1 MB respectivamente, contra 262 MB del archivo mas pesado),
+  // asi que no hay nada grande que valga la pena retener en memoria.
   const itemsRef = useRef<GalleryItem[]>([]);
   const foldersRef = useRef<DriveFolderRef[]>([]);
   const loadedOnceRef = useRef(false);
@@ -130,13 +133,19 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
       prev.map((it) => (it.id === file.id ? { ...it, status: "processing", error: undefined } : it))
     );
     try {
-      let buffer = bufferCacheRef.current.get(file.id);
-      if (!buffer) {
-        buffer = await downloadDriveFile(file.id);
-        bufferCacheRef.current.set(file.id, buffer);
+      // Camino rapido: usar la vista previa que Concepts ya dejo adentro del
+      // archivo, leida POR RANGOS. Redibujar el documento desde cero cuesta
+      // segundos (cada PDF embebido tarda ~1,5 s en pdf.js aunque la salida
+      // sea de 32 px) y ademas obligaba a bajar el archivo entero: 262 MB
+      // para producir una imagen de 192 px. Ahora son ~110 KB.
+      const archivo = await openConceptsRemote(driveFileUrl(file.id), driveAuthHeaders());
+      let thumbnail: string;
+      let bytesFuente: number;
+      try {
+        ({ dataUrl: thumbnail, bytesFuente } = await thumbnailDeArchivo(archivo));
+      } finally {
+        archivo.close();
       }
-      const doc = await parseConceptsFile(buffer);
-      const thumbnail = await renderThumbnailDataUrl(doc);
       setItems((prev) =>
         prev.map((it) =>
           it.id === file.id ? { ...it, thumbnail, status: "ready", fromCache: false } : it
@@ -146,7 +155,7 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
         drive_file_id: file.id,
         file_name: file.name,
         thumbnail_base64: thumbnail,
-        source_size_bytes: buffer.byteLength,
+        source_size_bytes: bytesFuente,
       });
     } catch (err: any) {
       setItems((prev) =>
@@ -302,31 +311,14 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
     loadFolder(currentFolder.id, currentFolder.name, { isRefresh: true });
   };
 
-  const ensureBuffer = async (id: string): Promise<ArrayBuffer> => {
-    let buffer = bufferCacheRef.current.get(id);
-    if (!buffer) {
-      buffer = await downloadDriveFile(id);
-      bufferCacheRef.current.set(id, buffer);
-    }
-    return buffer;
-  };
-
-  const handleOpen = async (item: GalleryItem, originRect: DOMRect | null) => {
-    if (openingId || item.status === "processing") return;
-    setOpeningId(item.id);
-    try {
-      const buffer = await ensureBuffer(item.id);
-      logAbrir(item.id, item.name, currentFolder.id);
-      onOpen(buffer, item.name, originRect, item.id);
-    } catch (err: any) {
-      setItems((prev) =>
-        prev.map((it) =>
-          it.id === item.id ? { ...it, status: "error", error: err?.message || "No se pudo abrir" } : it
-        )
-      );
-    } finally {
-      setOpeningId(null);
-    }
+  // Abrir es inmediato: no se baja nada aca. El visor lee por rangos lo que
+  // necesita (vista previa al instante, despues tree.pack, despues los
+  // recursos visibles). Antes esto bajaba el archivo entero — hasta 262 MB —
+  // antes de mostrar absolutamente nada.
+  const handleOpen = (item: GalleryItem, originRect: DOMRect | null) => {
+    if (item.status === "processing") return;
+    logAbrir(item.id, item.name, currentFolder.id);
+    onOpen(item.id, item.name, originRect);
   };
 
   const toggleSelected = (ref: SelectedRef) => {
@@ -368,12 +360,13 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
     setSelected(new Map());
   };
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    const buffer = await file.arrayBuffer();
-    onUpload(buffer, file.name);
+    // Se pasa el File, no sus bytes: File.slice() es perezoso, asi que un
+    // .concepts de 262 MB elegido a mano tampoco entra entero a memoria.
+    onUpload(file, file.name);
   };
 
   // Baja recursivamente todos los archivos de una carpeta (y sus
@@ -421,10 +414,15 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
       for (const group of plan) {
         const entries: ExportSection["entries"] = [];
         for (const f of group.files) {
-          const buffer = await ensureBuffer(f.id);
-          const doc = await parseConceptsFile(buffer);
-          const rendered = await renderDocumentCanvas(doc);
-          entries.push({ name: f.name, ...rendered });
+          // Secuencial y codificando a JPEG apenas se renderiza: mantener
+          // varios canvases de export vivos a la vez son cientos de MB.
+          // renderDocumentEntry libera el canvas antes de seguir.
+          const doc = await parseConceptsRemote(driveFileUrl(f.id), driveAuthHeaders());
+          try {
+            entries.push(await renderDocumentEntry(doc, f.name));
+          } finally {
+            doc.close();
+          }
           setExportProgress((prev) => (prev ? { ...prev, done: prev.done + 1 } : prev));
         }
         sections.push({ title: group.title, entries });
@@ -597,7 +595,7 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
                 return (
                   <div
                     key={item.id}
-                    className={`gallery-card ${openingId === item.id ? "opening" : ""} ${checked ? "selected" : ""}`}
+                    className={`gallery-card ${checked ? "selected" : ""}`}
                     style={{ animationDelay: `${Math.min(idx, 12) * 35}ms` }}
                     role="button"
                     tabIndex={0}
@@ -608,7 +606,6 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
                         handleCardActivate(item, e.currentTarget);
                       }
                     }}
-                    aria-disabled={!!openingId}
                     title={item.name}
                   >
                     <button
@@ -630,7 +627,7 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
                       ) : (
                         <div className="skeleton-shimmer" />
                       )}
-                      {(item.status === "processing" || openingId === item.id) && (
+                      {item.status === "processing" && (
                         <div className="gallery-thumb-overlay">
                           <RefreshCw size={16} className="spin-slow" />
                         </div>
@@ -651,7 +648,7 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
 
       <AnimatePresence>
         {toast && (
-          <motion.div
+          <m.div
             className="gallery-toast"
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -659,13 +656,13 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
             transition={{ duration: 0.4, ease: EASE_IOS }}
           >
             {toast}
-          </motion.div>
+          </m.div>
         )}
       </AnimatePresence>
 
       <AnimatePresence>
         {selectionMode && (
-          <motion.div
+          <m.div
             className="gallery-toolbar"
             initial={{ opacity: 0, y: 24, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -681,13 +678,13 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
                 <X size={16} />
               </button>
             </div>
-          </motion.div>
+          </m.div>
         )}
       </AnimatePresence>
 
       <AnimatePresence>
         {showFormatPicker && (
-          <motion.div
+          <m.div
             className="gallery-modal-overlay"
             onClick={() => setShowFormatPicker(false)}
             initial={{ opacity: 0 }}
@@ -695,7 +692,7 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.4, ease: EASE_IOS }}
           >
-            <motion.div
+            <m.div
               className="gallery-modal"
               onClick={(e) => e.stopPropagation()}
               initial={{ opacity: 0, scale: 0.92, y: 16 }}
@@ -720,21 +717,21 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
               <button className="gallery-modal-cancel" onClick={() => setShowFormatPicker(false)}>
                 Cancelar
               </button>
-            </motion.div>
-          </motion.div>
+            </m.div>
+          </m.div>
         )}
       </AnimatePresence>
 
       <AnimatePresence>
         {exportProgress && (
-          <motion.div
+          <m.div
             className="gallery-modal-overlay"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.4, ease: EASE_IOS }}
           >
-            <motion.div
+            <m.div
               className="gallery-modal"
               initial={{ opacity: 0, scale: 0.92 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -743,8 +740,8 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
             >
               <RefreshCw size={20} className="spin-slow" />
               <p>Preparando descarga: {exportProgress.done} de {exportProgress.total}</p>
-            </motion.div>
-          </motion.div>
+            </m.div>
+          </m.div>
         )}
       </AnimatePresence>
     </div>

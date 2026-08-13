@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Archivos .concepts bajados de Drive por scripts/crawl-drive.mjs (cientos de MB)
+.cache
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
