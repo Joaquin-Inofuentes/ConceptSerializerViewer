@@ -10,6 +10,19 @@ import puppeteer from "puppeteer";
 
 const CACHE_DIR = path.resolve(".cache/concepts");
 const BASE = (process.env.BASE_URL || "http://localhost:5173").replace(/\/+$/, "");
+
+// Esta auditoria importa un modulo .ts suelto (scripts/browser/...), que solo
+// existe servido por Vite en desarrollo. Apuntarla a produccion no falla de
+// forma visible: no audita NADA y el resumen queda en "0 deformados", que se
+// lee como exito. Se corta de entrada para que no pueda enganar.
+if (!/localhost|127\.0\.0\.1/.test(BASE)) {
+  console.error(
+    `Esta auditoria solo corre contra el dev server (BASE_URL=${BASE}).\n` +
+      `El archivo .concepts y pdf.js son los mismos, asi que el resultado vale igual:\n` +
+      `  npm --prefix web-viewer run dev   y despues   node scripts/audit-imagenes.mjs`
+  );
+  process.exit(1);
+}
 const K =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt1aGN4enVzbnJ0dGt5d2dhbGdrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU5NTk5MzQsImV4cCI6MjEwMTUzNTkzNH0.BX2x5jCTR_S68gEcDenwaU3vFBKU4wDyBmmpnPc4ORQ";
 const FN = "https://kuhcxzusnrttkywgalgk.supabase.co/functions/v1/concepts-drive";
