@@ -2,17 +2,8 @@
    estaba aca como @import a Google Fonts: render-blocking y contra dos
    origenes externos. */
 
-:root {
-  --bg-color: #f8f9fa;
-  --bg-canvas: #ffffff;
-  --text-main: #212529;
-  --text-muted: #6c757d;
-  --border-color: #dee2e6;
-  --primary: #0d6efd;
-  --primary-hover: #0b5ed7;
-  --error: #dc3545;
-  --glow: rgba(13, 110, 253, 0.4);
-}
+/* Los tokens del tema viven en src/index.css: ese CSS se carga siempre,
+   mientras que este viaja con el visor (lazy) y la galeria se pinta antes. */
 
 * {
   box-sizing: border-box;
@@ -48,7 +39,7 @@ body {
   left: 10px;
   font-size: 0.75rem;
   font-weight: 500;
-  color: #000;
+  color: var(--text-main);
   background: transparent;
   pointer-events: none;
   z-index: 50;
@@ -60,7 +51,7 @@ body {
   right: 10px;
   background: transparent;
   border: none;
-  color: #888;
+  color: var(--text-muted);
   cursor: pointer;
   z-index: 50;
   padding: 4px;
@@ -71,8 +62,8 @@ body {
   justify-content: center;
 }
 .btn-close-viewer:hover {
-  background: rgba(0,0,0,0.05);
-  color: #333;
+  background: var(--bg-color);
+  color: var(--text-main);
 }
 
 .floating-tools {
@@ -86,7 +77,7 @@ body {
 }
 
 .btn-tool {
-  background: white;
+  background: var(--bg-elevado);
   border: 1px solid var(--border-color);
   color: var(--text-main);
   width: 44px;
@@ -97,10 +88,10 @@ body {
   justify-content: center;
   cursor: pointer;
   transition: all 0.1s ease;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  box-shadow: var(--sombra);
 }
 .btn-tool:hover {
-  background: #f1f3f5;
+  background: var(--bg-color);
   transform: scale(1.05);
 }
 .active-glow {
@@ -121,10 +112,10 @@ body {
   bottom: 100%;
   right: 50px;
   margin-bottom: 0px;
-  background: white;
+  background: var(--bg-elevado);
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+  box-shadow: var(--sombra);
   min-width: 250px;
   z-index: 100;
   padding: 0.5rem 0;
@@ -145,14 +136,14 @@ body {
   font-size: 0.7rem;
   padding: 0.2rem 0.4rem;
   border: 1px solid var(--border-color);
-  background: white;
+  background: var(--bg-elevado);
   border-radius: 4px;
   cursor: pointer;
   color: var(--text-main);
   white-space: nowrap;
 }
 .btn-tiny:hover {
-  background: #f1f3f5;
+  background: var(--bg-color);
 }
 
 .layer-item {
@@ -165,7 +156,7 @@ body {
   background: var(--bg-color);
 }
 .layer-item.isolated {
-  background: #e7f1ff;
+  background: var(--glow);
 }
 
 .layer-name {
@@ -204,7 +195,7 @@ body {
   color: var(--text-muted);
 }
 .icon-btn:hover {
-  background: #e9ecef;
+  background: var(--bg-color);
   color: var(--text-main);
 }
 .active-icon {
@@ -229,7 +220,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f8f9fa;
+  background: var(--bg-color);
   cursor: pointer;
   transition: transform 0.1s ease, border-color 0.1s ease;
 }
@@ -289,13 +280,13 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #fafafa;
+  background: var(--bg-canvas);
   overflow: hidden;
 }
 /* Cuando la vista previa se muestra ENCIMA del lienzo ya dibujado (mientras
    cargan las fotos), no debe tapar los controles ni comerse los gestos. */
 .viewer-placeholder-overlay {
-  background: #ffffff;
+  background: var(--bg-canvas);
   pointer-events: none;
   z-index: 20;
   animation: fadeIn 0.3s ease-out both;
@@ -317,6 +308,81 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .viewer-placeholder-img { animation: none; }
+}
+
+/* Barra de carga: fase + porcentaje REAL + tiempo estimado. El porcentaje se
+   calcula sobre los bytes que de verdad hay que traer (que se conocen apenas
+   se lee el indice del zip), no sobre el tamaño del archivo — de los 262 MB
+   del dibujo mas pesado se bajan 12. */
+.viewer-carga {
+  position: absolute;
+  left: 50%;
+  bottom: 1.25rem;
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 2rem));
+  padding: 0.7rem 0.9rem;
+  border-radius: 14px;
+  background: var(--carga-fondo);
+  color: var(--carga-texto);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  z-index: 60;
+  animation: fadeIn 0.25s ease-out both;
+  font-variant-numeric: tabular-nums;
+}
+
+.viewer-carga-cabecera {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.viewer-carga-fase { white-space: nowrap; }
+.viewer-carga-detalle {
+  color: var(--carga-tenue);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viewer-carga-pct { margin-left: auto; font-weight: 600; }
+
+.viewer-carga-riel {
+  position: relative;
+  height: 5px;
+  margin: 0.55rem 0 0.4rem;
+  border-radius: 999px;
+  background: var(--carga-riel);
+  overflow: hidden;
+}
+.viewer-carga-relleno {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--carga-barra);
+  transition: width 0.25s ease-out;
+}
+/* Mientras no se pueda calcular un porcentaje honesto, la barra se mueve sin
+   afirmar un avance concreto. */
+.viewer-carga-riel.indeterminada .viewer-carga-relleno {
+  width: 35%;
+  animation: cargaIndeterminada 1.1s ease-in-out infinite;
+}
+@keyframes cargaIndeterminada {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(320%); }
+}
+
+.viewer-carga-pie {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.72rem;
+  color: var(--carga-tenue);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viewer-carga-riel.indeterminada .viewer-carga-relleno { animation: none; }
 }
 
 /* Los trazos aparecen enseguida; las fotos/PDFs embebidos tardan un poco
@@ -359,7 +425,7 @@ body {
   transform: translate(-50%, -50%);
   text-align: center;
   color: var(--error);
-  background: #fff;
+  background: var(--bg-elevado);
   padding: 2rem;
   border-radius: 8px;
   box-shadow: 0 4px 20px rgba(0,0,0,0.1);

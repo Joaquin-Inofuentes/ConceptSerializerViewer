@@ -2,6 +2,7 @@ import type { Document, ConceptsFile } from "../VisorConcept/parser";
 import { readEmbeddedThumbnail, readEmbeddedThumbnailRemote } from "../VisorConcept/parser";
 import { BufferSource } from "../VisorConcept/zip";
 import { THUMBNAIL_SIZE } from "../config";
+import type { RecursoRasterizado } from "./renderCore";
 import {
   loadResourceImages,
   releaseResourceImages,
@@ -166,7 +167,7 @@ export async function renderThumbnailDataUrl(
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, superSample, superSample);
 
-  let images: Record<string, CanvasImageSource> = {};
+  let images: Record<string, RecursoRasterizado> = {};
 
   if (plan.hasContent) {
     let { minX, minY, maxX, maxY } = plan;

@@ -1,11 +1,14 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, LazyMotion, domAnimation, m } from 'motion/react';
 import { Gallery } from './Gallery/Gallery';
 import { NamePrompt } from './Gallery/NamePrompt';
 import { logCerrar } from './Gallery/analytics';
 import { getUserName, setUserName } from './Gallery/userIdentity';
+import { registrarAbierto } from './Gallery/recientes';
 import { DEMO_FILE_ID, DEMO_FILE_NAME } from './config';
 import { applyTierFromUrl } from './device';
+import { temaGuardado, aplicarTema } from './theme';
+import { construirRuta, leerRuta, irA, aSlug } from './rutas';
 import './index.css';
 
 // El visor (parser + zip + pdf.js + jspdf) se carga recien cuando se abre un
@@ -25,17 +28,25 @@ const ConceptViewer = lazy(() =>
  * pestaña.
  */
 export type FileSourceRef =
-  | { kind: 'remote'; fileId: string; name: string; originRect: DOMRect | null }
-  | { kind: 'local'; file: File; name: string; originRect: DOMRect | null };
+  | { kind: 'remote'; fileId: string; name: string; originRect: DOMRect | null; ruta: string[] }
+  | { kind: 'local'; file: File; name: string; originRect: DOMRect | null; ruta: string[] };
 
 const EASE_IOS: [number, number, number, number] = [0.16, 1, 0.3, 1];
 
 applyTierFromUrl();
+// El script inline de index.html ya puso data-theme antes de pintar; esto
+// sincroniza el estado por si el HTML se sirvio cacheado sin el script.
+aplicarTema(temaGuardado());
 
 function App() {
   const [fileData, setFileData] = useState<FileSourceRef | null>(null);
   const [userName, setUserNameState] = useState<string | null>(() => getUserName());
   const heroRef = useRef<HTMLDivElement>(null);
+
+  // Ruta con la que arranco la pagina: son los slugs de la URL. El ultimo
+  // puede ser un archivo, y de eso se encarga la galeria al resolverla.
+  const [rutaInicial] = useState<string[]>(() => leerRuta());
+  const rutaCarpetaRef = useRef<string[]>([]);
 
   const submitUserName = (name: string) => {
     setUserName(name);
@@ -48,27 +59,54 @@ function App() {
   // archivo abierto.
   const closedRef = useRef(false);
 
-  const openRemote = (fileId: string, name: string, originRect: DOMRect | null = null) => {
-    closedRef.current = false;
-    setFileData({ kind: 'remote', fileId, name, originRect });
-  };
+  // Espejo sincrono de `fileData` para consultarlo desde callbacks sin
+  // volverlos a crear. Hace falta de verdad: la galeria avisa su ruta cuando
+  // termina de cargar una carpeta, que es DESPUES de que el dibujo se abrio,
+  // y sin este guardia ese aviso pisaba la URL del dibujo dejandola en "/".
+  const hayDibujoRef = useRef(false);
 
-  const openLocal = (file: File, name: string) => {
-    closedRef.current = false;
-    setFileData({ kind: 'local', file, name, originRect: null });
-  };
+  const openRemote = useCallback(
+    (fileId: string, name: string, originRect: DOMRect | null = null, ruta: string[] = []) => {
+      closedRef.current = false;
+      hayDibujoRef.current = true;
+      setFileData({ kind: 'remote', fileId, name, originRect, ruta });
+      // La URL pasa a apuntar al dibujo, asi el link se puede compartir.
+      irA(construirRuta(ruta, name));
+      void registrarAbierto({ id: fileId, nombre: name, ruta, slug: construirRuta(ruta, name) });
+    },
+    []
+  );
 
-  const closeFile = () => {
+  const openLocal = useCallback((file: File, name: string) => {
+    closedRef.current = false;
+    setFileData({ kind: 'local', file, name, originRect: null, ruta: [] });
+  }, []);
+
+  useEffect(() => {
+    hayDibujoRef.current = !!fileData;
+  }, [fileData]);
+
+  const closeFile = useCallback(() => {
     if (closedRef.current) return;
     closedRef.current = true;
-    if (fileData) logCerrar(fileData.kind === 'remote' ? fileData.fileId : null, fileData.name);
-    setFileData(null);
-  };
+    hayDibujoRef.current = false;
+    setFileData((actual) => {
+      if (actual) logCerrar(actual.kind === 'remote' ? actual.fileId : null, actual.name);
+      return null;
+    });
+    // Al cerrar se vuelve a la carpeta donde estaba la galeria.
+    irA(construirRuta(rutaCarpetaRef.current));
+  }, []);
 
-  // Atajo para abrir un dibujo puntual sin navegar la galeria:
+  const alCambiarRutaCarpeta = useCallback((ruta: string[]) => {
+    rutaCarpetaRef.current = ruta;
+    // Con un dibujo abierto manda la ruta del dibujo, no la de la carpeta.
+    if (!hayDibujoRef.current) irA(construirRuta(ruta), true);
+  }, []);
+
+  // Atajos para abrir un dibujo puntual sin navegar la galeria:
   //   ?demo          -> el dibujo mas pesado de la carpeta (peor caso)
   //   ?file=<id>     -> cualquier archivo de Drive por id
-  // Sirve para probar y para compartir un link directo a un dibujo.
   const autoOpenRef = useRef(false);
   useEffect(() => {
     if (autoOpenRef.current) return;
@@ -77,7 +115,22 @@ function App() {
     if (!id) return;
     autoOpenRef.current = true;
     const nombre = params.has('demo') ? DEMO_FILE_NAME : `${id}.concepts`;
-    openRemote(id, nombre, null);
+    openRemote(id, nombre, null, []);
+  }, [openRemote]);
+
+  // Boton "atras" del navegador: si la URL vuelve a una carpeta, se cierra el
+  // dibujo. Sin esto, atras cambiaba la URL pero dejaba el visor abierto.
+  useEffect(() => {
+    const alVolver = () => {
+      const partes = leerRuta();
+      setFileData((actual) => {
+        if (!actual) return actual;
+        const sigueEnElDibujo = partes[partes.length - 1] === aSlug(actual.name);
+        return sigueEnElDibujo ? actual : null;
+      });
+    };
+    window.addEventListener('popstate', alVolver);
+    return () => window.removeEventListener('popstate', alVolver);
   }, []);
 
   // Arranca el "hero" del mismo tamaño/posicion que la tarjeta clickeada
@@ -108,6 +161,8 @@ function App() {
         userName={userName}
         onOpen={openRemote}
         onUpload={openLocal}
+        rutaInicial={rutaInicial}
+        onRutaCambio={alCambiarRutaCarpeta}
       />
       {!userName && <NamePrompt onSubmit={submitUserName} />}
       <AnimatePresence>

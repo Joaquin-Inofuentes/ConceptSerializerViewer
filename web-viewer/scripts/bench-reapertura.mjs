@@ -46,7 +46,7 @@ async function abrir(browser, f, etiqueta) {
 
   let msTodo = null;
   try {
-    await page.waitForFunction(() => !document.querySelector(".viewer-loading-badge"), { timeout: 240000 });
+    await page.waitForFunction(() => !document.querySelector(".viewer-carga"), { timeout: 240000 });
     msTodo = Date.now() - t0;
   } catch {
     /* no termino */

@@ -1,18 +1,55 @@
 import { useState, useRef, useEffect } from 'react';
 import { openConceptsRemote, openConceptsLocal } from './parser';
 import type { Document } from './parser';
+import { SeguidorProgreso, TEXTO_FASE, formatearRestante, formatearMB } from './progreso';
+import type { EstadoProgreso } from './progreso';
 import { Viewer } from './Viewer';
 import type { LayerConfig, ViewerHandle } from './Viewer';
 import { InteractivePreview } from './InteractivePreview';
 import { logDescarga } from '../Gallery/analytics';
 import { driveFileUrl, driveAuthHeaders } from '../Gallery/driveClient';
 import type { FileSourceRef } from '../App';
-import { Eye, EyeOff, Lock, Filter, Image as ImageIcon, X, Download } from 'lucide-react';
+import { Eye, EyeOff, Lock, Filter, Image as ImageIcon, X, Download, Maximize2 } from 'lucide-react';
 import './App.css';
 
 interface ViewerProps {
   source: FileSourceRef;
   onClose: () => void;
+}
+
+/**
+ * Barra de carga con fase, porcentaje real y tiempo estimado.
+ *
+ * El porcentaje sale de los bytes que de verdad hay que traer (se conocen
+ * apenas se lee el indice del zip). Mientras no se sepa, la barra va
+ * indeterminada en vez de mostrar un numero inventado.
+ */
+function BarraCarga({ progreso }: { progreso: EstadoProgreso | null }) {
+  if (!progreso || progreso.fase === 'listo') return null;
+  const pct = progreso.porcentaje;
+  const restante = formatearRestante(progreso.segundosRestantes);
+
+  return (
+    <div className="viewer-carga" role="status" aria-live="polite">
+      <div className="viewer-carga-cabecera">
+        <span className="viewer-loading-dot" />
+        <span className="viewer-carga-fase">{TEXTO_FASE[progreso.fase]}</span>
+        {progreso.detalle && <span className="viewer-carga-detalle">{progreso.detalle}</span>}
+        {pct !== null && <span className="viewer-carga-pct">{Math.round(pct)}%</span>}
+      </div>
+      <div className={`viewer-carga-riel ${pct === null ? 'indeterminada' : ''}`}>
+        <div className="viewer-carga-relleno" style={pct === null ? undefined : { width: `${pct}%` }} />
+      </div>
+      <div className="viewer-carga-pie">
+        <span>
+          {formatearMB(progreso.bytesRecibidos)}
+          {progreso.bytesEsperados ? ` de ${formatearMB(progreso.bytesEsperados)}` : ''}
+          {progreso.velocidadKBs ? ` · ${progreso.velocidadKBs} kB/s` : ''}
+        </span>
+        {restante && <span>faltan {restante}</span>}
+      </div>
+    </div>
+  );
 }
 
 export function ConceptViewer({ source, onClose }: ViewerProps) {
@@ -30,6 +67,8 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
   // explicacion.
   const [recursosListos, setRecursosListos] = useState(false);
   const [progresoRecursos, setProgresoRecursos] = useState<{ listos: number; total: number } | null>(null);
+  const [progreso, setProgreso] = useState<EstadoProgreso | null>(null);
+  const seguidorRef = useRef<SeguidorProgreso | null>(null);
 
   // Layer State
   const [layerConfigs, setLayerConfigs] = useState<Record<string, LayerConfig>>({});
@@ -98,6 +137,12 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
     let docCreado: Document | null = null;
     let urlPlaceholder: string | null = null;
 
+    const seguidor = new SeguidorProgreso((e) => {
+      if (!cancelado) setProgreso(e);
+    });
+    seguidorRef.current = seguidor;
+    seguidor.cambiarFase('abriendo');
+
     (async () => {
       // El archivo se abre UNA sola vez y de ahi salen las dos cosas: la
       // vista previa y el documento. Abrir dos lectores pagaba dos veces la
@@ -107,7 +152,9 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
       try {
         archivo =
           source.kind === 'remote'
-            ? await openConceptsRemote(driveFileUrl(source.fileId), driveAuthHeaders())
+            ? await openConceptsRemote(driveFileUrl(source.fileId), driveAuthHeaders(), {
+                onBytes: (n) => seguidor.sumarBytes(n),
+              })
             : await openConceptsLocal(source.file);
       } catch (err: any) {
         if (!cancelado) setError(err?.message || 'No se pudo abrir el archivo');
@@ -120,6 +167,7 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
 
       // 1) Vista previa embebida primero: son ~110 KB y da feedback inmediato
       //    incluso en el dibujo de 262 MB.
+      seguidor.cambiarFase('descargando', 'vista previa');
       try {
         const blob = await archivo.thumbnail();
         if (blob && !cancelado) {
@@ -131,6 +179,7 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
       }
 
       // 2) El documento (trazos y capas): solo tree.pack, ~1 MB.
+      seguidor.cambiarFase('procesando', 'trazos y capas');
       try {
         const parsedDoc = await archivo.parse();
         if (cancelado) {
@@ -138,6 +187,10 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
           return;
         }
         docCreado = parsedDoc;
+        // Recien aca se sabe cuantos bytes hacen falta DE VERDAD (el tamaño
+        // del archivo no sirve: de 262 MB se bajan 11). A partir de este
+        // punto el porcentaje es real.
+        seguidor.fijarEsperados(parsedDoc.bytesNecesarios);
 
         let strokesCount = 0;
         let imagesCount = 0;
@@ -153,6 +206,10 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
         setIsolatedLayer(null);
         setStats({ layers: parsedDoc.layers.length, strokes: strokesCount, images: imagesCount });
         setDoc(parsedDoc);
+        seguidor.cambiarFase(
+          parsedDoc.resourceIds.length > 0 ? 'descargando' : 'listo',
+          parsedDoc.resourceIds.length > 0 ? `0 de ${parsedDoc.resourceIds.length} imágenes` : null
+        );
       } catch (err: any) {
         if (!cancelado) setError(err.message || "Error al cargar el archivo");
       }
@@ -209,10 +266,7 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
         </button>
         <div className="viewer-placeholder">
           {placeholder && <img src={placeholder} alt="" className="viewer-placeholder-img" />}
-          <div className="viewer-loading-badge">
-            <span className="viewer-loading-dot" />
-            Abriendo dibujo…
-          </div>
+          <BarraCarga progreso={progreso} />
         </div>
       </div>
     );
@@ -231,6 +285,17 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
 
       {/* Bottom Right: Tools */}
       <div className="floating-tools">
+        {/* Encuadrar todo: vuelve a la vista completa del dibujo despues de
+            haberse acercado. Mismo estilo que el resto de las herramientas. */}
+        <button
+          className="btn-tool"
+          onClick={() => viewerRef.current?.zoomAll()}
+          title="Ver todo el dibujo"
+          aria-label="Ver todo el dibujo"
+        >
+          <Maximize2 size={20} />
+        </button>
+
         <div className="dropdown-container" ref={exportMenuRef}>
           <button 
             className={`btn-tool ${showExportMenu ? 'active-glow' : ''}`}
@@ -382,8 +447,14 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
             layerConfigs={layerConfigs}
             isolatedLayer={isolatedLayer}
             onImagesLoaded={(urls) => setImageUrls(urls)}
-            onResourcesReady={() => setRecursosListos(true)}
-            onResourceProgress={(listos, total) => setProgresoRecursos({ listos, total })}
+            onResourcesReady={() => {
+              setRecursosListos(true);
+              seguidorRef.current?.cambiarFase('listo');
+            }}
+            onResourceProgress={(listos, total) => {
+              setProgresoRecursos({ listos, total });
+              seguidorRef.current?.cambiarFase('dibujando', `${listos} de ${total} imágenes`);
+            }}
           />
           {/* La vista previa se mantiene hasta que aparece la PRIMERA imagen,
               no hasta que se decodifica el documento. En estos dibujos los
@@ -397,14 +468,7 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
               <img src={placeholder} alt="" className="viewer-placeholder-img" />
             </div>
           )}
-          {!recursosListos && doc.resourceIds.length > 0 && (
-            <div className="viewer-loading-badge">
-              <span className="viewer-loading-dot" />
-              {progresoRecursos
-                ? `Cargando imágenes ${progresoRecursos.listos}/${doc.resourceIds.length}…`
-                : `Cargando ${doc.resourceIds.length} imagen${doc.resourceIds.length === 1 ? "" : "es"}…`}
-            </div>
-          )}
+          {!recursosListos && doc.resourceIds.length > 0 && <BarraCarga progreso={progreso} />}
         </div>
 
         {previewImage && (

@@ -71,6 +71,14 @@ export interface Document {
   close(): void;
   /** Total de bytes del archivo (para diagnostico y metricas). */
   totalBytes: number;
+  /**
+   * Bytes que hay que transferir de verdad para mostrar el dibujo completo:
+   * el arbol del documento mas los recursos efectivamente colocados. Es la
+   * base del porcentaje de carga — sin esto habria que inventar un numero,
+   * porque el tamaño del archivo (262 MB) no tiene relacion con lo que se
+   * baja (11 MB).
+   */
+  bytesNecesarios: number;
 }
 
 const extensionCodec = new ExtensionCodec();
@@ -240,12 +248,16 @@ async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Do
   const cacheBlobs = new Map<string, Blob>();
   let cerrado = false;
 
+  const bytesRecursos = ids.reduce((n, id) => n + (sizes[id] || 0), 0);
+  const bytesTree = zip.get(nombreTree)?.compressedSize ?? 0;
+
   const doc: Document = {
     layers,
     bbox: globalBbox,
     resourceIds: ids,
     resourceSizes: sizes,
     totalBytes: fuente.size,
+    bytesNecesarios: bytesTree + bytesRecursos,
     async loadResource(id: string) {
       if (cerrado) return null;
       const hit = cacheBlobs.get(id);

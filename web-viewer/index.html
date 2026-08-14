@@ -18,31 +18,46 @@
          ejecute el JS. En un telefono de gama baja en 3G eso son ~2,5 s de
          diferencia entre "pantalla en blanco" y "algo que se parece a la app".
          React lo reemplaza al montar. -->
+    <!-- El tema se aplica ANTES de pintar nada: si esperara a React, un
+         usuario con tema oscuro veria un fogonazo blanco en cada carga. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("conceptserializer_tema");
+          document.documentElement.setAttribute("data-theme", t === "claro" ? "claro" : "oscuro");
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "oscuro");
+        }
+      })();
+    </script>
+
     <style>
-      :root { color-scheme: light; }
-      html, body { margin: 0; padding: 0; background: #f8f9fa; }
+      /* Oscuro por defecto; el atributo data-theme="claro" lo cambia. */
+      :root { color-scheme: dark; --boot-fondo: #0f1116; --boot-texto: #e7e9ee; --boot-tenue: #99a0b0; --boot-borde: #262a35; --boot-tarjeta: #191c24; --boot-sk1: #1d212b; --boot-sk2: #262b38; }
+      :root[data-theme="claro"] { color-scheme: light; --boot-fondo: #f8f9fa; --boot-texto: #212529; --boot-tenue: #6c757d; --boot-borde: #dee2e6; --boot-tarjeta: #ffffff; --boot-sk1: #eceef0; --boot-sk2: #f4f6f8; }
+      html, body { margin: 0; padding: 0; background: var(--boot-fondo); }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-        color: #212529;
+        color: var(--boot-texto);
       }
       #boot { padding: 2rem clamp(1rem, 5vw, 3rem); }
       #boot h1 { font-size: 1.6rem; margin: 0 0 .35rem; letter-spacing: -0.02em; }
-      #boot p { margin: 0 0 1.75rem; color: #6c757d; font-size: .92rem; }
+      #boot p { margin: 0 0 1.75rem; color: var(--boot-tenue); font-size: .92rem; }
       #boot .grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(159px, 1fr));
         gap: 1rem;
       }
       #boot .card {
-        border: 1px solid #dee2e6;
+        border: 1px solid var(--boot-borde);
         border-radius: 12px;
-        background: #fff;
+        background: var(--boot-tarjeta);
         padding: .75rem;
       }
       #boot .thumb {
         aspect-ratio: 1;
         border-radius: 8px;
-        background: linear-gradient(90deg, #eceef0 25%, #f4f6f8 37%, #eceef0 63%);
+        background: linear-gradient(90deg, var(--boot-sk1) 25%, var(--boot-sk2) 37%, var(--boot-sk1) 63%);
         background-size: 400% 100%;
         animation: bootShimmer 1.4s ease infinite;
       }
@@ -50,7 +65,7 @@
         height: 10px;
         margin-top: .6rem;
         border-radius: 4px;
-        background: #eceef0;
+        background: var(--boot-sk1);
       }
       @keyframes bootShimmer {
         0% { background-position: 100% 50%; }

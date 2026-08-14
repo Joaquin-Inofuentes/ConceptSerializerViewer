@@ -52,7 +52,7 @@ async function abrir(etiqueta) {
     { timeout: 180000 }
   );
   try {
-    await page.waitForFunction(() => !document.querySelector(".viewer-loading-badge"), { timeout: 240000 });
+    await page.waitForFunction(() => !document.querySelector(".viewer-carga"), { timeout: 240000 });
   } catch {
     /* sigue */
   }
@@ -64,7 +64,7 @@ async function abrir(etiqueta) {
   const idb = await page.evaluate(async () => {
     const abrirDb = () =>
       new Promise((res) => {
-        const req = indexedDB.open("concepts-raster", 1);
+        const req = indexedDB.open("concepts-raster", 2);
         req.onsuccess = () => res(req.result);
         req.onerror = () => res(null);
         req.onupgradeneeded = () => {

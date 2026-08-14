@@ -1,6 +1,6 @@
 import type { Document } from "../VisorConcept/parser";
 import { getBudgets, soportaOffscreen } from "../device";
-import { claveRaster, leerRaster, guardarRaster } from "./rasterCache";
+import { leerRaster, guardarRaster } from "./rasterCache";
 
 // Las coordenadas del documento se asumen en px CSS (96 DPI, el estandar
 // web). Para que los PDF/JPG exportados salgan nitidos, todo export
@@ -69,11 +69,33 @@ function getPdfjs() {
   return pdfjsPromise;
 }
 
+/** Porcion de un recurso, en fracciones 0..1 de su propio ancho/alto. */
+export interface Region {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface ResourceTarget {
   /** Ancho en PIXELES REALES que va a ocupar el recurso en el canvas destino. */
   width: number;
   /** Alto en PIXELES REALES que va a ocupar el recurso en el canvas destino. */
   height: number;
+  /**
+   * Si viene, se rasteriza SOLO ese pedazo del recurso (y `width`/`height`
+   * son los pixeles de ESE pedazo). Es lo que permite ver nitido un plano
+   * enorme al acercarse: en vez de repartir el techo de pixeles por toda la
+   * pagina, se gasta entero en lo que entra en pantalla.
+   */
+  region?: Region;
+}
+
+/** Un recurso ya rasterizado, junto con que pedazo del original representa. */
+export interface RecursoRasterizado {
+  img: CanvasImageSource;
+  /** null = la imagen cubre el recurso completo. */
+  region: Region | null;
 }
 
 export interface LoadResourcesOptions {
@@ -96,7 +118,7 @@ export interface LoadResourcesOptions {
   /** Se llama apenas UN recurso esta listo, sin esperar al resto. Permite que
    * las fotos vayan apareciendo en el lienzo de a una en vez de que no se vea
    * ninguna hasta que termine la ultima. */
-  onEach?: (resourceId: string, image: CanvasImageSource) => void;
+  onEach?: (resourceId: string, recurso: RecursoRasterizado) => void;
   /** Corta el trabajo pendiente (ej. el usuario cerro el dibujo). */
   signal?: AbortSignal;
   /** Solo estos recursos (y en este orden). Se usa para cargar primero lo
@@ -194,7 +216,8 @@ function rasterizarEnWorker(
   resourceId: string,
   blob: Blob,
   width: number,
-  height: number
+  height: number,
+  region?: Region
 ): Promise<ImageBitmap> {
   const id = siguienteId++;
   return new Promise<ImageBitmap>((resolve, reject) => {
@@ -205,6 +228,7 @@ function rasterizarEnWorker(
       blob,
       width,
       height,
+      region,
       smoothing: getBudgets().smoothing,
     });
   });
@@ -299,7 +323,8 @@ async function rasterizarEnMain(
   blob: Blob,
   width: number,
   height: number,
-  vectorial: boolean
+  vectorial: boolean,
+  region?: Region
 ): Promise<CanvasImageSource> {
   if (vectorial) {
     const pdfjsLib = await getPdfjs();
@@ -316,10 +341,18 @@ async function rasterizarEnMain(
       canvas.height = height;
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("sin contexto 2d");
+      // Misma matematica que en el worker: con region se escala sobre el
+      // pedazo pedido y se traslada para dejarlo en 0,0.
+      const rx = (region?.x ?? 0) * nativo.width;
+      const ry = (region?.y ?? 0) * nativo.height;
+      const rw = (region?.w ?? 1) * nativo.width;
+      const rh = (region?.h ?? 1) * nativo.height;
+      const sx = width / rw;
+      const sy = height / rh;
       await (page as any).render({
         canvasContext: ctx,
         viewport: nativo,
-        transform: [width / nativo.width, 0, 0, height / nativo.height, 0, 0],
+        transform: [sx, 0, 0, sy, -rx * sx, -ry * sy],
       }).promise;
       page.cleanup();
       return canvas;
@@ -330,6 +363,19 @@ async function rasterizarEnMain(
   }
 
   const base = await createImageBitmap(blob);
+  if (region) {
+    const cx = Math.max(0, Math.round(region.x * base.width));
+    const cy = Math.max(0, Math.round(region.y * base.height));
+    const cw = Math.max(1, Math.min(base.width - cx, Math.round(region.w * base.width)));
+    const ch = Math.max(1, Math.min(base.height - cy, Math.round(region.h * base.height)));
+    const recorte = await createImageBitmap(base, cx, cy, cw, ch, {
+      resizeWidth: Math.min(width, cw),
+      resizeHeight: Math.min(height, ch),
+      resizeQuality: getBudgets().smoothing === "high" ? "high" : "medium",
+    });
+    base.close();
+    return recorte;
+  }
   if (width >= base.width && height >= base.height) return base;
   const chico = await createImageBitmap(base, {
     resizeWidth: width,
@@ -381,7 +427,7 @@ async function tamañoNativo(blob: Blob, vectorial: boolean): Promise<{ w: numbe
 export async function loadResourceImages(
   doc: Document,
   options: LoadResourcesOptions = {}
-): Promise<Record<string, CanvasImageSource>> {
+): Promise<Record<string, RecursoRasterizado>> {
   const budgets = getBudgets();
   const opts = {
     quality: options.quality ?? 1,
@@ -391,7 +437,7 @@ export async function loadResourceImages(
   const maxTotal = options.maxTotalPixels ?? budgets.maxImagePixels;
   const timeoutMs = options.timeoutMs ?? 30000;
   const concurrency = options.concurrency ?? budgets.concurrency;
-  const loaded: Record<string, CanvasImageSource> = {};
+  const loaded: Record<string, RecursoRasterizado> = {};
 
   // Orden: lo pedido explicitamente (lo visible) primero; si no, del recurso
   // mas chico al mas grande, que es el que aparece antes en pantalla.
@@ -412,18 +458,30 @@ export async function loadResourceImages(
     await runPool(pendientes, 4, async (resourceId) => {
       if (options.signal?.aborted) return;
       const target = options.targets?.[resourceId];
-      const key = claveRaster(
+      // Si se pidio un RECORTE no se consulta el cache: ahi solo hay
+      // rasterizados de la pagina COMPLETA, y devolver uno haciendolo pasar
+      // por el recorte dibujaria la pagina entera dentro del sub-rectangulo
+      // (el plano aparecia encogido en una esquina). Ademas el recorte existe
+      // justamente porque hace falta MAS resolucion de la que hay guardada.
+      if (target?.region) {
+        statsCache.fallos++;
+        faltantes.push(resourceId);
+        return;
+      }
+      const cacheado = await leerRaster(
         options.fileId!,
         resourceId,
         (target?.width ?? 0) * opts.quality,
         (target?.height ?? 0) * opts.quality
       );
-      const cacheado = await leerRaster(key);
       if (cacheado) {
         statsCache.aciertos++;
-        loaded[resourceId] = cacheado;
+        // Lo guardado es SIEMPRE la pagina completa (los recortes no se
+        // cachean), asi que la region es null por construccion.
+        const entrada: RecursoRasterizado = { img: cacheado as CanvasImageSource, region: null };
+        loaded[resourceId] = entrada;
         pixelesUsados += cacheado.width * cacheado.height;
-        if (!options.signal?.aborted) options.onEach?.(resourceId, cacheado);
+        if (!options.signal?.aborted) options.onEach?.(resourceId, entrada);
       } else {
         statsCache.fallos++;
         faltantes.push(resourceId);
@@ -455,10 +513,7 @@ export async function loadResourceImages(
           const restante = Math.max(maxTotal - pixelesUsados, 500_000);
           const techoRecurso = Math.min(opts.maxPixels, restante);
 
-          const key =
-            options.fileId && !options.sinCache
-              ? claveRaster(options.fileId, resourceId, pedidoW, pedidoH)
-              : null;
+          const cachear = !!options.fileId && !options.sinCache;
 
           // Bajar los bytes (rango HTTP en un archivo remoto). El cache ya se
           // consulto arriba: aca solo llegan los que hay que rasterizar.
@@ -468,7 +523,13 @@ export async function loadResourceImages(
           const header = await blob.slice(0, 5).text();
           const vectorial = header === "%PDF-";
           const nativo = await tamañoNativo(blob, vectorial);
-          const { width, height } = clampTarget(pedidoW, pedidoH, nativo.w, nativo.h, vectorial, {
+          const region = target?.region;
+          // Con region, el "nativo" relevante es el del pedazo, no el de la
+          // pagina entera: si no, el clamp de un bitmap creeria que se le
+          // pide mas resolucion de la que tiene y lo achicaria de mas.
+          const natW = region ? nativo.w * region.w : nativo.w;
+          const natH = region ? nativo.h * region.h : nativo.h;
+          const { width, height } = clampTarget(pedidoW, pedidoH, natW, natH, vectorial, {
             maxPixels: techoRecurso,
             minSide: opts.minSide,
           });
@@ -479,25 +540,28 @@ export async function loadResourceImages(
           const slot = options.sinWorker ? null : tomarSlot();
           if (slot) {
             try {
-              img = await rasterizarEnWorker(slot, resourceId, blob, width, height);
+              img = await rasterizarEnWorker(slot, resourceId, blob, width, height, region);
             } catch {
               slot.ocupado = false;
-              img = await rasterizarEnMain(blob, width, height, vectorial);
+              img = await rasterizarEnMain(blob, width, height, vectorial, region);
             }
           } else {
-            img = await rasterizarEnMain(blob, width, height, vectorial);
+            img = await rasterizarEnMain(blob, width, height, vectorial, region);
           }
           if (!img || options.signal?.aborted) {
             if (img && img instanceof ImageBitmap) img.close();
             return;
           }
 
-          loaded[resourceId] = img;
+          const entrada: RecursoRasterizado = { img, region: region ?? null };
+          loaded[resourceId] = entrada;
           pixelesUsados += width * height;
-          options.onEach?.(resourceId, img);
+          options.onEach?.(resourceId, entrada);
 
-          // Guardar para la proxima apertura (no bloquea).
-          if (key) void guardarRaster(key, options.fileId!, img);
+          // Guardar para la proxima apertura (no bloquea). Los recortes NO se
+          // cachean: son especificos del encuadre que tenias en ese momento y
+          // ensuciarian el cache con entradas que no sirven para reabrir.
+          if (cachear && !region) void guardarRaster(options.fileId!, resourceId, pedidoW, pedidoH, img);
         })(),
         timeoutMs
       );
@@ -512,14 +576,43 @@ export async function loadResourceImages(
 /** Libera los bitmaps de un set de recursos. Los canvas se liberan poniendo
  * su tamaño en 0: en iOS/Android el buffer no vuelve solo hasta el GC, y con
  * canvases de decenas de MB eso es memoria retenida de mas. */
-export function releaseResourceImages(images: Record<string, CanvasImageSource>) {
-  Object.values(images).forEach((img) => {
-    if (typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) img.close();
-    else if (typeof HTMLCanvasElement !== "undefined" && img instanceof HTMLCanvasElement) {
-      img.width = 0;
-      img.height = 0;
-    }
-  });
+export function releaseResourceImages(images: Record<string, RecursoRasterizado>) {
+  Object.values(images).forEach((r) => liberarImagen(r.img));
+}
+
+/**
+ * Dibuja un recurso en el espacio YA transformado del elemento (0,0 hasta
+ * ancho x alto en unidades del documento).
+ *
+ * Si el bitmap es un RECORTE (se rasterizo solo la parte visible para poder
+ * verla nitida al hacer zoom), se lo coloca en el sub-rectangulo que le
+ * corresponde en vez de estirarlo sobre el recurso entero — que es lo que
+ * pasaria, y se veria todo corrido, si se ignorara la region.
+ */
+export function dibujarRecurso(
+  ctx: CanvasRenderingContext2D,
+  recurso: RecursoRasterizado,
+  ancho: number,
+  alto: number
+) {
+  const { img, region } = recurso;
+  if (region && ancho && alto) {
+    ctx.drawImage(img, region.x * ancho, region.y * alto, region.w * ancho, region.h * alto);
+  } else if (ancho && alto) {
+    ctx.drawImage(img, 0, 0, ancho, alto);
+  } else {
+    ctx.drawImage(img, 0, 0);
+  }
+}
+
+/** Libera una fuente suelta. Los canvas se sueltan poniendolos en 0x0: en
+ * iOS/Android el buffer no vuelve solo hasta el GC. */
+export function liberarImagen(img: CanvasImageSource) {
+  if (typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) img.close();
+  else if (typeof HTMLCanvasElement !== "undefined" && img instanceof HTMLCanvasElement) {
+    img.width = 0;
+    img.height = 0;
+  }
 }
 
 export type RenderItem =
@@ -616,21 +709,20 @@ export function buildRenderPlan(doc: Document): RenderPlan {
 export function drawItems(
   ctx: CanvasRenderingContext2D,
   items: RenderItem[],
-  images: Record<string, CanvasImageSource>
+  images: Record<string, RecursoRasterizado>
 ) {
   for (const item of items) {
     if (item.type === "image") {
-      const imgObj = images[item.resourceId];
+      const recurso = images[item.resourceId];
       // Un recurso ya liberado (canvas en 0x0, que es como se suelta memoria
       // en iOS/Android) hace que drawImage lance y aborte TODO el dibujado.
       // Saltearlo deja el resto de la pagina intacto.
-      const w = (imgObj as any)?.width;
-      if (!imgObj || (typeof w === "number" && (w <= 0 || (imgObj as any).height <= 0))) continue;
+      const w = (recurso?.img as any)?.width;
+      if (!recurso || (typeof w === "number" && (w <= 0 || (recurso.img as any).height <= 0))) continue;
       ctx.save();
       const m = item.transform;
       if (m && m.length === 16) ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
-      if (item.width && item.height) ctx.drawImage(imgObj, 0, 0, item.width, item.height);
-      else ctx.drawImage(imgObj, 0, 0);
+      dibujarRecurso(ctx, recurso, item.width, item.height);
       ctx.restore();
     } else {
       ctx.strokeStyle = item.color;

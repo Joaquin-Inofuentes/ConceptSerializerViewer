@@ -4,11 +4,16 @@ import {
   loadResourceImages,
   releaseResourceImages,
   drawnSizes,
+  dibujarRecurso,
+  liberarImagen,
   safeExportScale,
   exportFueRecortado,
   statsCache,
 } from "../Gallery/renderCore";
+import type { RecursoRasterizado, Region } from "../Gallery/renderCore";
 import { getBudgets } from "../device";
+import { coloresLienzo, temaGuardado } from "../theme";
+import type { Tema } from "../theme";
 
 export interface LayerConfig {
   visible: boolean;
@@ -31,6 +36,8 @@ interface ViewerProps {
 
 export interface ViewerHandle {
   exportDrawing: (format: 'png' | 'jpg' | 'pdf', zoomAll?: boolean) => Promise<void>;
+  /** Encuadra todo el dibujo en pantalla (el "zoom all" del boton). */
+  zoomAll: () => void;
   /** Metricas en vivo, para benchmarks y diagnostico. */
   getStats: () => ViewerStats;
 }
@@ -110,13 +117,21 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
 
   const budgets = useMemo(() => getBudgets(), []);
 
+  // El lienzo dibuja en canvas, asi que no se entera del tema por CSS: hay
+  // que releer los colores y repintar cuando cambia.
+  const [tema, setTema] = useState<Tema>(() => temaGuardado());
+  const coloresRef = useRef(coloresLienzo(tema));
+  useEffect(() => {
+    coloresRef.current = coloresLienzo(tema);
+  }, [tema]);
+
   // Core state moved to refs for high performance
   const panRef = useRef({ x: 0, y: 0 });
   const zoomRef = useRef(1);
   const sizeRef = useRef({ width: 0, height: 0 });
 
   // Cache refs
-  const imagesRef = useRef<Record<string, CanvasImageSource>>({});
+  const imagesRef = useRef<Record<string, RecursoRasterizado>>({});
   /** Px por unidad de documento a la que estan rasterizados los recursos
    * actuales; si el usuario se acerca mas que esto, se re-rasterizan. */
   const resourceScaleRef = useRef(0);
@@ -182,6 +197,22 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
     requestRedraw();
   }, [layerConfigs, isolatedLayer, requestRedraw]);
 
+  // El tema se cambia desde la galeria; el lienzo se entera por este evento.
+  useEffect(() => {
+    const alCambiar = (e: Event) => {
+      setTema((e as CustomEvent<Tema>).detail);
+      // El snapshot del gesto tiene el fondo viejo: se descarta.
+      if (snapshotRef.current) {
+        snapshotRef.current.width = 0;
+        snapshotRef.current.height = 0;
+      }
+      gestoRef.current = false;
+      requestRedraw();
+    };
+    window.addEventListener("concepts:tema", alCambiar);
+    return () => window.removeEventListener("concepts:tema", alCambiar);
+  }, [requestRedraw]);
+
   // Pre-calcula Path2D (en dos niveles de detalle), bounding boxes para
   // frustum culling, y el orden de dibujado por capa. El orden se resuelve
   // ACA y no en cada frame: re-ordenar decenas de miles de items 60 veces
@@ -246,6 +277,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
 
   useImperativeHandle(ref, () => ({
     getStats: () => ({ ...statsRef.current }),
+    zoomAll: () => fitToBoundsRef.current(),
     exportDrawing: async (format: 'png' | 'jpg' | 'pdf', zoomAll: boolean = true) => {
       if (!doc || !docCache) return;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -350,16 +382,15 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
           const layerOpacity = config ? config.opacity : 1.0;
 
           if (item.kind === "image") {
-            const imageObj = exportImages[item.resourceId];
-            if (!imageObj) continue;
+            const recurso = exportImages[item.resourceId];
+            if (!recurso) continue;
             ctx.save();
             ctx.globalAlpha = layerOpacity;
             const m = item.transform;
             if (m && m.length === 16) {
               ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
             }
-            if (item.width && item.height) ctx.drawImage(imageObj, 0, 0, item.width, item.height);
-            else ctx.drawImage(imageObj, 0, 0);
+            dibujarRecurso(ctx, recurso, item.width, item.height);
             ctx.restore();
           } else {
             ctx.strokeStyle = item.color;
@@ -480,8 +511,20 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
     if (!fit) return;
     zoomRef.current = fit.zoom;
     panRef.current = fit.pan;
+    // Al reencuadrar se sale de cualquier gesto en curso: si no, el siguiente
+    // frame blitearia el snapshot viejo con el pan/zoom nuevo y se veria un
+    // salto raro antes del redibujado.
+    gestoRef.current = false;
     requestRedraw();
+    pedirRefinadoRef.current();
   }, [computeFit, requestRedraw]);
+
+  // El handle imperativo se crea una sola vez; estos refs le dan acceso a la
+  // version actual de las funciones sin recrearlo.
+  const fitToBoundsRef = useRef(fitToBounds);
+  useEffect(() => {
+    fitToBoundsRef.current = fitToBounds;
+  }, [fitToBounds]);
 
   useEffect(() => {
     fitToBounds();
@@ -512,6 +555,74 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
     return [...areas.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
   }, [docCache]);
 
+  /**
+   * Que PEDAZO de cada recurso se ve en pantalla, en fracciones 0..1 de su
+   * propio ancho/alto.
+   *
+   * Es lo que permite ver nitido un plano grande al acercarse. Un plano de
+   * 1544x5717 a 10x de zoom necesitaria ~40 Mpx para verse entero y nitido —
+   * imposible en un telefono, y por eso antes se veia borroso al hacer zoom.
+   * Rasterizando solo la porcion visible alcanza con 1-2 Mpx para el mismo
+   * nivel de detalle.
+   *
+   * El calculo se hace en el espacio PROPIO del recurso (se invierte su
+   * matriz), asi funciona igual con los planos rotados -90 grados, que son
+   * casi todos en esta carpeta.
+   */
+  const regionesVisibles = useCallback((): Record<string, Region> => {
+    const out: Record<string, Region> = {};
+    if (!docCache) return out;
+    const pan = panRef.current;
+    const zoom = zoomRef.current;
+    const size = sizeRef.current;
+    const vMinX = -pan.x / zoom;
+    const vMinY = -pan.y / zoom;
+    const vMaxX = (size.width - pan.x) / zoom;
+    const vMaxY = (size.height - pan.y) / zoom;
+
+    for (const item of docCache.items) {
+      if (item.kind !== "image" || !visibleItem(item)) continue;
+      if (!(item.width > 0) || !(item.height > 0)) continue;
+      const m = item.transform;
+      if (!m || m.length !== 16) continue;
+      const a = m[0], b = m[1], c = m[4], d = m[5], e = m[12], f = m[13];
+      const det = a * d - b * c;
+      if (!det) continue;
+      // Inversa de la afin, para llevar las esquinas de la vista al espacio
+      // del recurso.
+      const ia = d / det, ib = -b / det, ic = -c / det, id = a / det;
+      const ie = -(e * ia + f * ic), iff = -(e * ib + f * id);
+      let rMinX = Infinity, rMinY = Infinity, rMaxX = -Infinity, rMaxY = -Infinity;
+      for (const [x, y] of [[vMinX, vMinY], [vMaxX, vMinY], [vMinX, vMaxY], [vMaxX, vMaxY]]) {
+        const rx = x * ia + y * ic + ie;
+        const ry = x * ib + y * id + iff;
+        if (rx < rMinX) rMinX = rx;
+        if (rx > rMaxX) rMaxX = rx;
+        if (ry < rMinY) rMinY = ry;
+        if (ry > rMaxY) rMaxY = ry;
+      }
+      // Un poco de margen para poder desplazarse sin re-rasterizar en cada
+      // pixel de arrastre.
+      const margen = 0.15;
+      let x0 = rMinX / item.width - margen;
+      let y0 = rMinY / item.height - margen;
+      let x1 = rMaxX / item.width + margen;
+      let y1 = rMaxY / item.height + margen;
+      x0 = Math.max(0, Math.min(1, x0));
+      y0 = Math.max(0, Math.min(1, y0));
+      x1 = Math.max(0, Math.min(1, x1));
+      y1 = Math.max(0, Math.min(1, y1));
+      const w = x1 - x0;
+      const h = y1 - y0;
+      if (!(w > 0.001) || !(h > 0.001)) continue;
+      // Si se ve casi entero no vale la pena recortar: complica sin ganar
+      // resolucion, y ademas el resultado se puede cachear.
+      if (w > 0.9 && h > 0.9) continue;
+      out[item.resourceId] = { x: x0, y: y0, w, h };
+    }
+    return out;
+  }, [docCache]);
+
   // --- Recursos embebidos (fotos / PDFs) ---------------------------------
   // Esta era la causa real del freeze al abrir un dibujo pesado: cada PDF
   // embebido se rasterizaba a la escala del EXPORT (600 DPI) aunque en
@@ -523,14 +634,20 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
   const cargarRecursos = useCallback(async (
     escala: number,
     signal?: AbortSignal,
-    only?: string[]
+    only?: string[],
+    regiones?: Record<string, Region>
   ) => {
     if (!doc) return;
     const dibujado = drawnSizes(doc);
     if (Object.keys(dibujado).length === 0) return;
-    const targets: Record<string, { width: number; height: number }> = {};
+    const targets: Record<string, { width: number; height: number; region?: Region }> = {};
     Object.entries(dibujado).forEach(([id, size]) => {
-      targets[id] = { width: size.width * escala, height: size.height * escala };
+      const region = regiones?.[id];
+      // Con recorte, el destino en pixeles es el del PEDAZO, no el del
+      // recurso entero: por eso se multiplica por el ancho/alto de la region.
+      targets[id] = region
+        ? { width: size.width * escala * region.w, height: size.height * escala * region.h, region }
+        : { width: size.width * escala, height: size.height * escala };
     });
 
     const total = (only ?? doc.resourceIds).length;
@@ -540,9 +657,9 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
     // del DOCUMENTO entero, no de cada tanda, asi que la segunda tanda tiene
     // que arrancar donde quedo la primera.
     let yaUsados = 0;
-    Object.entries(imagesRef.current).forEach(([id, i]) => {
+    Object.entries(imagesRef.current).forEach(([id, r]) => {
       if (only && only.includes(id)) return; // se va a reemplazar
-      yaUsados += ((i as any).width || 0) * ((i as any).height || 0);
+      yaUsados += ((r.img as any).width || 0) * ((r.img as any).height || 0);
     });
 
     const nuevas = await loadResourceImages(doc, {
@@ -560,11 +677,11 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
       // Cada foto se pinta apenas esta lista. Antes no se veia NINGUNA hasta
       // que terminaba la ultima, que en un dibujo con 19 PDFs adjuntos son
       // mas de 20 segundos de lienzo a medio dibujar.
-      onEach: (id, img) => {
+      onEach: (id, recurso) => {
         if (signal?.aborted) return;
         const previa = imagesRef.current[id];
-        imagesRef.current = { ...imagesRef.current, [id]: img };
-        if (previa && previa !== img) liberarUno(previa);
+        imagesRef.current = { ...imagesRef.current, [id]: recurso };
+        if (previa && previa.img !== recurso.img) liberarImagen(previa.img);
         listos++;
         statsRef.current.recursosCargados = Object.keys(imagesRef.current).length;
         onResourceProgressRef.current?.(listos, total);
@@ -579,17 +696,17 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
       // cerrado tira excepcion (el lienzo quedaba en negro al abortar un
       // refinado por zoom).
       const enUso = imagesRef.current;
-      const sobrantes: Record<string, CanvasImageSource> = {};
-      Object.entries(nuevas).forEach(([id, img]) => {
-        if (enUso[id] !== img) sobrantes[id] = img;
+      const sobrantes: Record<string, RecursoRasterizado> = {};
+      Object.entries(nuevas).forEach(([id, recurso]) => {
+        if (enUso[id]?.img !== recurso.img) sobrantes[id] = recurso;
       });
       releaseResourceImages(sobrantes);
       return;
     }
     resourceScaleRef.current = escala * RESOURCE_QUALITY;
     let px = 0;
-    Object.values(imagesRef.current).forEach((i) => {
-      px += ((i as any).width || 0) * ((i as any).height || 0);
+    Object.values(imagesRef.current).forEach((r) => {
+      px += ((r.img as any).width || 0) * ((r.img as any).height || 0);
     });
     statsRef.current.pixelesImagenes = px;
     requestRedraw();
@@ -645,7 +762,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
     if (previewsPedidasRef.current || !onImagesLoadedRef.current) return;
     previewsPedidasRef.current = true;
     const urls: Record<string, string> = {};
-    for (const [id, fuente] of Object.entries(imagesRef.current)) {
+    for (const [id, recurso] of Object.entries(imagesRef.current)) {
+      const fuente = recurso.img;
       const w = (fuente as any).width || 384;
       const h = (fuente as any).height || 384;
       const k = Math.min(384 / Math.max(w, h), 1);
@@ -693,20 +811,52 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
   // estuvieras mirando uno, multiplicando por 19 el costo y la RAM pico.
   const refinarTimerRef = useRef<number | null>(null);
   const refinarAbortRef = useRef<AbortController | null>(null);
+  // Se declara antes de definir pedirRefinado porque fitToBounds (que esta
+  // mas arriba) necesita dispararlo tras reencuadrar.
+  const pedirRefinadoRef = useRef<() => void>(() => {});
   const pedirRefinado = useCallback(() => {
     if (!doc || Object.keys(imagesRef.current).length === 0) return;
     if (refinarTimerRef.current) window.clearTimeout(refinarTimerRef.current);
     refinarTimerRef.current = window.setTimeout(() => {
       const necesaria = zoomRef.current * budgets.maxDpr;
-      if (necesaria <= resourceScaleRef.current * 1.1) return;
       const visibles = recursosVisibles();
       if (visibles.length === 0) return;
+      const regiones = regionesVisibles();
+
+      // Hay que re-rasterizar si (a) hace falta mas resolucion que la que
+      // tenemos, o (b) el recorte cargado ya no cubre lo que se ve. Lo
+      // segundo importa sobre todo al ALEJARSE: un bitmap recortado dibuja
+      // solo su pedazo, asi que sin este chequeo el resto del plano quedaria
+      // en blanco al volver a la vista completa.
+      const cubre = (cargada: Region | null, pedida: Region | undefined) => {
+        if (!cargada) return true; // el completo cubre cualquier recorte
+        if (!pedida) return false; // ahora se ve todo y solo tenemos un pedazo
+        const t = 0.02;
+        return (
+          cargada.x <= pedida.x + t &&
+          cargada.y <= pedida.y + t &&
+          cargada.x + cargada.w >= pedida.x + pedida.w - t &&
+          cargada.y + cargada.h >= pedida.y + pedida.h - t
+        );
+      };
+      const hayDescubierto = visibles.some((id) => !cubre(imagesRef.current[id]?.region ?? null, regiones[id]));
+      const faltaResolucion = necesaria > resourceScaleRef.current * 1.1;
+      if (!hayDescubierto && !faltaResolucion) return;
+
       refinarAbortRef.current?.abort();
       const abort = new AbortController();
       refinarAbortRef.current = abort;
-      void cargarRecursos(necesaria, abort.signal, visibles);
+      // Solo la porcion visible de cada recurso: es lo que hace que al
+      // acercarse se vea NITIDO en vez de pixelado. Sin esto, el techo de
+      // pixeles por recurso repartia la resolucion por toda la pagina y a
+      // partir de ~4x de zoom los planos se veian borrosos.
+      void cargarRecursos(necesaria, abort.signal, visibles, regiones);
     }, 400);
-  }, [doc, cargarRecursos, recursosVisibles, budgets]);
+  }, [doc, cargarRecursos, recursosVisibles, regionesVisibles, budgets]);
+
+  useEffect(() => {
+    pedirRefinadoRef.current = pedirRefinado;
+  }, [pedirRefinado]);
 
   useEffect(() => {
     return () => {
@@ -800,7 +950,9 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
             const s = snapshotViewRef.current;
             const k = zoom / s.zoom;
             ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.fillStyle = "#ffffff";
+            // Los bordes que va descubriendo el gesto se rellenan con el
+            // fondo del tema, no con blanco fijo.
+            ctx.fillStyle = coloresRef.current.fondo;
             ctx.fillRect(0, 0, bw, bh);
             // El snapshot esta en px de dispositivo del DPR con que se tomo.
             const escala = (k * dpr) / s.dpr;
@@ -812,8 +964,12 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
             isDirtyRef.current = false;
             dibujo = true;
           } else {
+          const colores = coloresRef.current;
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-          ctx.clearRect(0, 0, size.width, size.height);
+          // Se PINTA el fondo en vez de limpiarlo: con tema oscuro un canvas
+          // transparente dejaba ver el blanco del contenedor.
+          ctx.fillStyle = colores.fondo;
+          ctx.fillRect(0, 0, size.width, size.height);
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = budgets.smoothing;
 
@@ -823,7 +979,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
           const gridSize = 50 * zoom;
           if (gridSize > 4) {
             ctx.save();
-            ctx.strokeStyle = '#e0e0e0';
+            ctx.strokeStyle = colores.grilla;
             ctx.lineWidth = 1;
             ctx.beginPath();
             const startX = pan.x % gridSize;
@@ -872,20 +1028,27 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
             const layerOpacity = config ? config.opacity : 1.0;
 
             if (item.kind === "image") {
-              const imageObj = imagesRef.current[item.resourceId];
+              const recurso = imagesRef.current[item.resourceId];
               // Un recurso liberado (canvas con width/height en 0) hace que
-              // drawImage TIRE, y una excepcion aca aborta el frame entero:
-              // el lienzo queda a medio dibujar. Se saltea en silencio, que
-              // es exactamente lo mismo que "todavia no cargo".
-              if (!imageObj || !anchoUtil(imageObj)) continue;
+              // drawImage TIRE, y una excepcion aca aborta el frame entero.
+              const usable = recurso && anchoUtil(recurso.img);
               ctx.save();
               ctx.globalAlpha = layerOpacity;
               const m = item.transform;
               if (m && m.length === 16) {
                 ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
               }
-              if (item.width && item.height) ctx.drawImage(imageObj, 0, 0, item.width, item.height);
-              else ctx.drawImage(imageObj, 0, 0);
+              if (usable) {
+                dibujarRecurso(ctx, recurso!, item.width, item.height);
+              } else {
+                // Marcador de posicion: un recuadro solido en el lugar exacto
+                // que ocupa el recurso. Sin esto, una imagen que todavia no
+                // cargo (o que fallo, o que se oculto) simplemente no se
+                // dibuja y el lienzo parece vacio o incompleto sin explicar
+                // por que — que es justo lo que pasaba con los dibujos cuyos
+                // trazos son anotaciones finas sobre los planos.
+                dibujarHueco(ctx, item.width || 0, item.height || 0, colores);
+              }
               ctx.restore();
               // El save/restore invalida el estado de trazo cacheado.
               color = ""; alpha = -1; ancho = -1;
@@ -1112,6 +1275,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
       ...statsRef.current,
       recursosEnMemoria: Object.keys(imagesRef.current).length,
       ramImagenesMB: +((statsRef.current.pixelesImagenes * 4) / 1048576).toFixed(1),
+      recortados: Object.values(imagesRef.current).filter((r) => r.region).length,
       cache: { ...statsCache },
     });
     return () => {
@@ -1172,6 +1336,38 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
   );
 });
 
+/**
+ * Recuadro que ocupa el lugar de un recurso que no esta dibujado (todavia
+ * cargando, fallado, u oculto). Se dibuja en el espacio YA transformado del
+ * recurso, asi que hereda su rotacion y escala y queda exactamente donde ira
+ * la imagen. Lleva una diagonal tenue para que se lea como "hueco" y no como
+ * un rectangulo del dibujo.
+ */
+function dibujarHueco(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  colores: { huecoBorde: string; huecoRelleno: string }
+) {
+  if (!(w > 0) || !(h > 0)) return;
+  ctx.fillStyle = colores.huecoRelleno;
+  ctx.fillRect(0, 0, w, h);
+  // El grosor se compensa por la escala del contexto para que el borde se vea
+  // igual de fino sin importar el zoom.
+  const t = ctx.getTransform();
+  const escala = Math.max(Math.hypot(t.a, t.b), 0.0001);
+  ctx.strokeStyle = colores.huecoBorde;
+  ctx.lineWidth = 1 / escala;
+  ctx.strokeRect(0, 0, w, h);
+  ctx.globalAlpha *= 0.5;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(w, h);
+  ctx.moveTo(w, 0);
+  ctx.lineTo(0, h);
+  ctx.stroke();
+}
+
 /** true si la fuente tiene pixeles para dibujar. Un ImageBitmap cerrado o un
  * canvas puesto en 0x0 (que es como se libera memoria en iOS/Android) hacen
  * que drawImage lance InvalidStateError. */
@@ -1181,11 +1377,3 @@ function anchoUtil(img: CanvasImageSource): boolean {
   return typeof w !== "number" || (w > 0 && h > 0);
 }
 
-/** Libera un bitmap suelto (helper del reemplazo progresivo). */
-function liberarUno(img: CanvasImageSource) {
-  if (typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) img.close();
-  else if (typeof HTMLCanvasElement !== "undefined" && img instanceof HTMLCanvasElement) {
-    img.width = 0;
-    img.height = 0;
-  }
-}

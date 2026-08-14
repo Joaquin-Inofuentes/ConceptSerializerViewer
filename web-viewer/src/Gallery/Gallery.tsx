@@ -3,6 +3,7 @@ import { AnimatePresence, m } from "motion/react";
 import {
   Upload, RefreshCw, AlertTriangle, CheckCircle2, Circle, Download, X,
   FileText, Image as ImageIcon, FolderOpen, Folder, Home, ChevronLeft, ChevronRight,
+  Sun, Moon, Trash2, Clock,
 } from "lucide-react";
 import { listDriveFolder, driveFileUrl, driveAuthHeaders } from "./driveClient";
 import type { DriveFolderRef, DriveListing } from "./driveClient";
@@ -15,6 +16,12 @@ import { gatherExportMetadata } from "./exportMetadata";
 import { logAbrir, logDescarga } from "./analytics";
 import { openConceptsRemote, parseConceptsRemote } from "../VisorConcept/parser";
 import { DRIVE_FOLDER_ID } from "../config";
+import { aSlug } from "../rutas";
+import { alternarTema, temaGuardado } from "../theme";
+import type { Tema } from "../theme";
+import { listarRecientes, vaciarRecientes } from "./recientes";
+import type { Reciente } from "./recientes";
+import { vaciarCache } from "./rasterCache";
 import "./Gallery.css";
 
 type ItemStatus = "queued" | "processing" | "ready" | "error";
@@ -44,8 +51,15 @@ interface SelectedRef {
 interface GalleryProps {
   hidden: boolean;
   userName: string | null;
-  onOpen: (fileId: string, name: string, originRect: DOMRect | null) => void;
+  /** `ruta` son los nombres de las carpetas contenedoras (sin la raiz): sirve
+   * para armar la URL compartible y la lista de recientes. */
+  onOpen: (fileId: string, name: string, originRect: DOMRect | null, ruta: string[]) => void;
   onUpload: (file: File, name: string) => void;
+  /** Carpetas (por slug) a las que hay que navegar al arrancar, tomadas de la
+   * URL. La galeria las resuelve contra el arbol de Drive. */
+  rutaInicial?: string[];
+  /** Avisa la ruta actual para que App actualice la URL. */
+  onRutaCambio?: (ruta: string[]) => void;
 }
 
 const EASE_IOS: [number, number, number, number] = [0.16, 1, 0.3, 1];
@@ -82,7 +96,10 @@ async function runPool<T>(items: T[], limit: number, worker: (item: T) => Promis
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => next()));
 }
 
-export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
+export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRutaCambio }: GalleryProps) {
+  const [tema, setTema] = useState<Tema>(() => temaGuardado());
+  const [recientes, setRecientes] = useState<Reciente[]>([]);
+  const [confirmarReset, setConfirmarReset] = useState(false);
   const [folderStack, setFolderStack] = useState<FolderCrumb[]>([ROOT_CRUMB]);
   const [folders, setFolders] = useState<DriveFolderRef[]>([]);
   const [items, setItems] = useState<GalleryItem[]>([]);
@@ -281,9 +298,27 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
         folderTreeCacheRef.current = await fetchAllFolderCache();
         folderTreeLoadedRef.current = true;
       }
-      loadFolder(ROOT_CRUMB.id, ROOT_CRUMB.name);
+
+      // Si la URL trae una ruta (/guada-y-flor-re/concepts), se resuelve
+      // contra el arbol ya cacheado: comparar slugs es instantaneo y no hace
+      // falta pegarle a Drive por cada nivel.
+      const pila: FolderCrumb[] = [ROOT_CRUMB];
+      for (const slug of rutaInicial || []) {
+        const actual = folderTreeCacheRef.current.get(pila[pila.length - 1].id);
+        const hija = actual?.subfolders.find((f) => aSlug(f.name) === slug);
+        if (!hija) break; // el resto de la ruta puede ser el archivo
+        pila.push({ id: hija.id, name: hija.name });
+      }
+      if (pila.length > 1) setFolderStack(pila);
+      const destino = pila[pila.length - 1];
+      loadFolder(destino.id, destino.name);
     })();
-  }, [loadFolder]);
+  }, [loadFolder, rutaInicial]);
+
+  // Cada vez que cambia la carpeta, se avisa para que la URL la refleje.
+  useEffect(() => {
+    onRutaCambio?.(folderStack.slice(1).map((c) => c.name));
+  }, [folderStack, onRutaCambio]);
 
   // La seleccion (archivos y/o carpetas enteras) se mantiene a proposito al
   // navegar entre carpetas, para poder juntar cosas de varios lugares y
@@ -318,7 +353,32 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
   const handleOpen = (item: GalleryItem, originRect: DOMRect | null) => {
     if (item.status === "processing") return;
     logAbrir(item.id, item.name, currentFolder.id);
-    onOpen(item.id, item.name, originRect);
+    // La ruta sin la raiz: es lo que va en la URL compartible.
+    onOpen(item.id, item.name, originRect, folderStack.slice(1).map((c) => c.name));
+  };
+
+  // --- Tema, recientes y restablecer ------------------------------------
+  const cambiarTema = () => setTema(alternarTema());
+
+  useEffect(() => {
+    void listarRecientes(6).then(setRecientes);
+  }, [hidden]);
+
+  const restablecerTodo = async () => {
+    // Borra TODO lo local: rasterizados, recientes, nombre de usuario y tema.
+    // No toca Drive ni Supabase — solo lo que esta guardado en este telefono.
+    try {
+      await vaciarCache();
+      await vaciarRecientes();
+      localStorage.clear();
+      if (typeof caches !== "undefined") {
+        const nombres = await caches.keys();
+        await Promise.all(nombres.map((n) => caches.delete(n)));
+      }
+    } catch {
+      /* si algo no se pudo borrar, igual se recarga */
+    }
+    window.location.href = "/";
   };
 
   const toggleSelected = (ref: SelectedRef) => {
@@ -479,6 +539,24 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
             <Upload size={16} /> Subir .concepts
             <input type="file" accept=".concepts" onChange={handleUpload} hidden />
           </label>
+          <button
+            className="gallery-icon-btn gallery-tema-btn"
+            onClick={cambiarTema}
+            title={tema === "oscuro" ? "Cambiar a tema claro" : "Cambiar a tema oscuro"}
+            aria-label={tema === "oscuro" ? "Cambiar a tema claro" : "Cambiar a tema oscuro"}
+          >
+            {tema === "oscuro" ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+          {/* Accion destructiva: borra todo lo guardado en este dispositivo.
+              Pide confirmacion porque no se puede deshacer. */}
+          <button
+            className="gallery-icon-btn gallery-reset-btn"
+            onClick={() => setConfirmarReset(true)}
+            title="Restablecer: borra el cache y los datos locales"
+            aria-label="Restablecer datos locales"
+          >
+            <Trash2 size={16} />
+          </button>
         </div>
       </header>
 
@@ -535,6 +613,30 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
         <div className="gallery-error">
           <AlertTriangle size={16} /> {listError}
         </div>
+      )}
+
+      {/* Ultimos abiertos: solo en la raiz, para no tapar el contenido de la
+          carpeta en la que estas. Guarda unicamente rutas (ver recientes.ts),
+          asi que mostrarlos no cuesta ni red ni memoria. */}
+      {folderStack.length === 1 && recientes.length > 0 && (
+        <section className="gallery-recientes">
+          <h2>
+            <Clock size={14} /> Ultimos abiertos
+          </h2>
+          <div className="gallery-recientes-lista">
+            {recientes.map((r) => (
+              <button
+                key={r.id}
+                className="gallery-reciente"
+                onClick={() => onOpen(r.id, r.nombre, null, r.ruta)}
+                title={[...r.ruta, r.nombre].join(" / ")}
+              >
+                <span className="gallery-reciente-nombre">{r.nombre}</span>
+                {r.ruta.length > 0 && <span className="gallery-reciente-ruta">{r.ruta.join(" / ")}</span>}
+              </button>
+            ))}
+          </div>
+        </section>
       )}
 
       {isEmpty && <div className="gallery-empty">Esta carpeta esta vacia.</div>}
@@ -715,6 +817,46 @@ export function Gallery({ hidden, userName, onOpen, onUpload }: GalleryProps) {
                 </button>
               </div>
               <button className="gallery-modal-cancel" onClick={() => setShowFormatPicker(false)}>
+                Cancelar
+              </button>
+            </m.div>
+          </m.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {confirmarReset && (
+          <m.div
+            className="gallery-modal-overlay"
+            onClick={() => setConfirmarReset(false)}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.25, ease: EASE_IOS }}
+          >
+            <m.div
+              className="gallery-modal"
+              onClick={(e) => e.stopPropagation()}
+              initial={{ opacity: 0, scale: 0.92, y: 16 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.94, y: 10 }}
+              transition={{ type: "spring", stiffness: 320, damping: 26 }}
+            >
+              <h3>Restablecer</h3>
+              <p>
+                Se borra todo lo guardado en <strong>este dispositivo</strong>: el cache de dibujos ya
+                abiertos, la lista de recientes, tu nombre y el tema. No se borra nada de Drive ni de
+                los dibujos.
+              </p>
+              <p>La proxima apertura vuelve a bajar y rasterizar todo, asi que sera mas lenta.</p>
+              <div className="gallery-modal-options">
+                <button className="gallery-modal-option peligro" onClick={restablecerTodo}>
+                  <Trash2 size={20} />
+                  <span>Borrar y recargar</span>
+                  <small>No se puede deshacer</small>
+                </button>
+              </div>
+              <button className="gallery-modal-cancel" onClick={() => setConfirmarReset(false)}>
                 Cancelar
               </button>
             </m.div>

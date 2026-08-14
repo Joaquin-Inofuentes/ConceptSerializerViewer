@@ -50,7 +50,7 @@ for (const f of pesados) {
 
     // 3) Todo cargado
     try {
-      await page.waitForFunction(() => !document.querySelector(".viewer-loading-badge"), { timeout: 240000 });
+      await page.waitForFunction(() => !document.querySelector(".viewer-carga"), { timeout: 240000 });
     } catch {
       console.log("  (no termino de cargar, se captura igual)");
     }

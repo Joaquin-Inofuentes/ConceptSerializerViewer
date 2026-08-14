@@ -82,7 +82,7 @@ for (const f of pesados) {
 
     // --- Hito 3: todas las imagenes cargadas (se va el badge) ---
     try {
-      await page.waitForFunction(() => !document.querySelector(".viewer-loading-badge"), {
+      await page.waitForFunction(() => !document.querySelector(".viewer-carga"), {
         timeout: 240000,
       });
       r.msTodo = Date.now() - t0;

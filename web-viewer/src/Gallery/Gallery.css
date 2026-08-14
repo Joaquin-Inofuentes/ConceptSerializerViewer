@@ -42,10 +42,10 @@
   gap: 8px;
   cursor: pointer;
   padding: 0.55rem 1rem;
-  background: #fff;
+  background: var(--bg-elevado);
   border: 1px solid var(--border-color, #dee2e6);
   border-radius: 8px;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+  box-shadow: var(--sombra-suave);
   font-weight: 500;
   font-size: 0.85rem;
   color: var(--text-main, #212529);
@@ -55,7 +55,7 @@
 }
 .gallery-upload-btn:hover,
 .gallery-drive-btn:hover {
-  background: #f1f3f5;
+  background: var(--bg-hover);
   border-color: var(--primary, #0d6efd);
 }
 .gallery-upload-btn:active,
@@ -80,14 +80,14 @@
   height: 30px;
   flex-shrink: 0;
   border: 1px solid var(--border-color, #dee2e6);
-  background: #fff;
+  background: var(--bg-elevado);
   border-radius: 8px;
   color: var(--text-main, #212529);
   cursor: pointer;
   transition: background 0.25s ease, border-color 0.25s ease, transform 0.15s ease, color 0.25s ease;
 }
 .gallery-icon-btn:hover:not(:disabled) {
-  background: #f1f3f5;
+  background: var(--bg-hover);
   border-color: var(--primary, #0d6efd);
   color: var(--primary, #0d6efd);
 }
@@ -135,7 +135,7 @@
   transition: background 0.25s ease, color 0.25s ease;
 }
 .gallery-breadcrumb-item:hover:not(:disabled) {
-  background: #f1f3f5;
+  background: var(--bg-hover);
   color: var(--primary, #0d6efd);
 }
 .gallery-breadcrumb-item.current {
@@ -152,7 +152,7 @@
   gap: 8px;
   font-size: 0.8rem;
   color: var(--text-muted, #6c757d);
-  background: #fff;
+  background: var(--bg-elevado);
   border: 1px solid var(--border-color, #dee2e6);
   border-radius: 8px;
   padding: 0.5rem 0.85rem;
@@ -176,7 +176,7 @@
   gap: 8px;
   font-size: 0.85rem;
   color: var(--error, #dc3545);
-  background: #fff5f5;
+  background: var(--error-bg);
   border: 1px solid #f5c2c7;
   border-radius: 8px;
   padding: 0.6rem 0.9rem;
@@ -206,7 +206,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-  background: #fff;
+  background: var(--bg-elevado);
   border: 1px solid var(--border-color, #dee2e6);
   border-radius: 10px;
   padding: 0.6rem;
@@ -265,7 +265,7 @@
 }
 .gallery-checkbox.checked {
   color: var(--primary, #0d6efd);
-  background: #fff;
+  background: var(--bg-elevado);
   animation: checkPop 0.5s ease;
 }
 
@@ -281,7 +281,7 @@
   aspect-ratio: 1;
   border-radius: 6px;
   overflow: hidden;
-  background: #f1f3f5;
+  background: var(--bg-hover);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -358,11 +358,11 @@
   display: flex;
   align-items: center;
   gap: 1rem;
-  background: #212529;
+  background: var(--bg-elevado);
   color: #fff;
   padding: 0.7rem 0.7rem 0.7rem 1.1rem;
   border-radius: 999px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--sombra);
   font-size: 0.85rem;
   font-weight: 500;
   z-index: 200;
@@ -412,7 +412,7 @@
 }
 
 .gallery-modal {
-  background: #fff;
+  background: var(--bg-elevado);
   border-radius: 12px;
   padding: 1.5rem;
   width: min(360px, 90vw);
@@ -444,7 +444,7 @@
   padding: 1rem 0.5rem;
   border: 1px solid var(--border-color, #dee2e6);
   border-radius: 10px;
-  background: #fff;
+  background: var(--bg-elevado);
   cursor: pointer;
   color: var(--text-main, #212529);
   transition: border-color 0.25s ease, background 0.25s ease, transform 0.15s ease;
@@ -521,7 +521,7 @@
 .skeleton-shimmer {
   width: 100%;
   height: 100%;
-  background: linear-gradient(100deg, #eceef0 30%, #f6f7f8 50%, #eceef0 70%);
+  background: linear-gradient(100deg, var(--skeleton-1) 30%, var(--skeleton-2) 50%, var(--skeleton-1) 70%);
   background-size: 200% 100%;
   animation: shimmer 1.3s ease-in-out infinite;
 }
@@ -529,7 +529,7 @@
 .skeleton-line {
   height: 0.85rem;
   border-radius: 4px;
-  background: linear-gradient(100deg, #eceef0 30%, #f6f7f8 50%, #eceef0 70%);
+  background: linear-gradient(100deg, var(--skeleton-1) 30%, var(--skeleton-2) 50%, var(--skeleton-1) 70%);
   background-size: 200% 100%;
   animation: shimmer 1.3s ease-in-out infinite;
 }
@@ -556,4 +556,95 @@
     flex-direction: column;
     gap: 0.75rem;
   }
+}
+
+/* --- Tema, restablecer y recientes ------------------------------------ */
+
+/* El toggle de tema y el de restablecer comparten el estilo de los iconos de
+   la barra de navegacion, para que la cabecera no se llene de botones con
+   pesos visuales distintos. */
+.gallery-tema-btn,
+.gallery-reset-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+}
+
+/* Rojo de peligro: la accion borra datos y no se puede deshacer, asi que se
+   lee distinto del resto ANTES de tocarla, no solo en el dialogo. */
+.gallery-reset-btn {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 35%, transparent);
+}
+.gallery-reset-btn:hover:not(:disabled) {
+  background: var(--error-bg);
+  border-color: var(--error);
+}
+
+.gallery-modal-option.peligro {
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+  color: var(--error);
+}
+.gallery-modal-option.peligro:hover {
+  background: var(--error-bg);
+  border-color: var(--error);
+}
+
+.gallery-recientes {
+  margin: 0 0 1.5rem;
+}
+.gallery-recientes h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.6rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.gallery-recientes-lista {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.gallery-reciente {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  max-width: 260px;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-elevado);
+  color: var(--text-main);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+.gallery-reciente:hover {
+  border-color: var(--primary);
+  background: var(--bg-hover);
+}
+.gallery-reciente:active {
+  transform: scale(0.97);
+}
+.gallery-reciente-nombre {
+  font-size: 0.85rem;
+  font-weight: 500;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gallery-reciente-ruta {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

@@ -1,11 +1,73 @@
+/**
+ * Tokens del tema, para TODA la app.
+ *
+ * Viven aca y no en VisorConcept/App.css porque ese CSS viaja con el visor,
+ * que se carga perezosamente: la galeria se pinta antes y se quedaba sin
+ * variables (y por lo tanto en blanco aunque el tema fuera oscuro).
+ *
+ * El OSCURO es el default (`:root` pelado); `data-theme="claro"` lo cambia.
+ * Los colores del LIENZO no estan aca: el canvas no lee CSS y los toma de
+ * src/theme.ts — si se tocan estos, hay que tocar aquellos.
+ */
+:root {
+  --bg-color: #0f1116;
+  --bg-canvas: #14161c;
+  --bg-elevado: #191c24;
+  --bg-hover: #212633;
+  --text-main: #e7e9ee;
+  --text-muted: #99a0b0;
+  --border-color: #262a35;
+  --primary: #4d9fff;
+  --primary-hover: #6db0ff;
+  --error: #ff6b6b;
+  --error-bg: #2a1a1d;
+  --glow: rgba(77, 159, 255, 0.35);
+  --sombra: 0 4px 20px rgba(0, 0, 0, 0.45);
+  --sombra-suave: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --skeleton-1: #1d212b;
+  --skeleton-2: #262b38;
+  --carga-fondo: rgba(28, 32, 42, 0.94);
+  --carga-texto: #e7e9ee;
+  --carga-tenue: #99a0b0;
+  --carga-riel: rgba(255, 255, 255, 0.12);
+  --carga-barra: linear-gradient(90deg, #4d9fff, #7bd4ff);
+
+  color-scheme: dark;
+}
+
+:root[data-theme="claro"] {
+  --bg-color: #f8f9fa;
+  --bg-canvas: #ffffff;
+  --bg-elevado: #ffffff;
+  --bg-hover: #f1f3f5;
+  --text-main: #212529;
+  --text-muted: #6c757d;
+  --border-color: #dee2e6;
+  --primary: #0d6efd;
+  --primary-hover: #0b5ed7;
+  --error: #dc3545;
+  --error-bg: #fff5f5;
+  --glow: rgba(13, 110, 253, 0.4);
+  --sombra: 0 4px 20px rgba(0, 0, 0, 0.15);
+  --sombra-suave: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --skeleton-1: #eceef0;
+  --skeleton-2: #f4f6f8;
+  --carga-fondo: rgba(20, 20, 22, 0.9);
+  --carga-texto: #ffffff;
+  --carga-tenue: rgba(255, 255, 255, 0.7);
+  --carga-riel: rgba(255, 255, 255, 0.2);
+  --carga-barra: linear-gradient(90deg, #4da3ff, #8fd0ff);
+
+  color-scheme: light;
+}
+
 :root {
   font-family: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
-  color-scheme: dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #0d0f1a;
+  color: var(--text-main);
+  background-color: var(--bg-color);
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -19,6 +81,8 @@ body {
   place-items: center;
   min-width: 320px;
   min-height: 100vh;
+  background-color: var(--bg-color);
+  color: var(--text-main);
 }
 
 #root {
@@ -31,7 +95,7 @@ body {
   position: fixed;
   inset: 0;
   z-index: 1000;
-  background: #ffffff;
+  background: var(--bg-canvas);
   overflow: hidden;
   transform-origin: center center;
 }

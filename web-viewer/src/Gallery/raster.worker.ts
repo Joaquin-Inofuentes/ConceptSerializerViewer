@@ -32,10 +32,19 @@ interface PedidoRaster {
   width: number;
   height: number;
   smoothing: ImageSmoothingQuality;
+  /**
+   * Porcion del recurso a rasterizar, en fracciones de 0 a 1 sobre su propio
+   * ancho/alto. Sirve para que al hacer mucho zoom se gaste el presupuesto de
+   * pixeles en lo que se ve, en vez de repartirlo por toda la pagina: un
+   * plano de 1544x5717 mirado de cerca necesitaria 40 Mpx para verse nitido
+   * entero, pero solo ~2 Mpx para el pedazo que entra en pantalla.
+   */
+  region?: { x: number; y: number; w: number; h: number };
 }
 
 async function rasterizar(p: PedidoRaster): Promise<ImageBitmap> {
   const header = await p.blob.slice(0, 5).text();
+  const reg = p.region;
 
   if (header === "%PDF-") {
     const data = new Uint8Array(await p.blob.arrayBuffer());
@@ -55,10 +64,19 @@ async function rasterizar(p: PedidoRaster): Promise<ImageBitmap> {
       // despues estirado a un ancho/alto arbitrario, asi que rasterizarlo con
       // una escala unica (forzosamente la mayor) generaba canvases absurdos
       // (15278x5042 = 77 Mpx para algo que se muestra a 266x807).
+      //
+      // Con `region` ademas se recorta: la escala se calcula sobre el pedazo
+      // pedido y se traslada para que ese pedazo caiga en 0,0 del canvas.
+      const rx = (reg?.x ?? 0) * nativo.width;
+      const ry = (reg?.y ?? 0) * nativo.height;
+      const rw = (reg?.w ?? 1) * nativo.width;
+      const rh = (reg?.h ?? 1) * nativo.height;
+      const sx = p.width / rw;
+      const sy = p.height / rh;
       await (page as any).render({
         canvasContext: ctx as unknown as CanvasRenderingContext2D,
         viewport: nativo,
-        transform: [p.width / nativo.width, 0, 0, p.height / nativo.height, 0, 0],
+        transform: [sx, 0, 0, sy, -rx * sx, -ry * sy],
       }).promise;
       const bitmap = canvas.transferToImageBitmap();
       page.cleanup();
@@ -69,8 +87,21 @@ async function rasterizar(p: PedidoRaster): Promise<ImageBitmap> {
   }
 
   // Imagen raster: createImageBitmap decodifica y reescala nativamente, sin
-  // pasar por un canvas intermedio.
+  // pasar por un canvas intermedio. Con region usa la variante que recorta.
   const base = await createImageBitmap(p.blob);
+  if (reg) {
+    const cx = Math.max(0, Math.round(reg.x * base.width));
+    const cy = Math.max(0, Math.round(reg.y * base.height));
+    const cw = Math.max(1, Math.min(base.width - cx, Math.round(reg.w * base.width)));
+    const ch = Math.max(1, Math.min(base.height - cy, Math.round(reg.h * base.height)));
+    const recorte = await createImageBitmap(base, cx, cy, cw, ch, {
+      resizeWidth: Math.min(p.width, cw),
+      resizeHeight: Math.min(p.height, ch),
+      resizeQuality: p.smoothing === "high" ? "high" : "medium",
+    });
+    base.close();
+    return recorte;
+  }
   if (p.width >= base.width && p.height >= base.height) return base;
   const chico = await createImageBitmap(base, {
     resizeWidth: p.width,

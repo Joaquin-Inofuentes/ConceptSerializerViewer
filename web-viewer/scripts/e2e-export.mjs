@@ -58,7 +58,7 @@ for (const b of await page.$$("button")) {
 const input = await page.$('input[type="file"]');
 await input.uploadFile(target.localPath);
 await page.waitForSelector(".canvas-wrapper canvas", { timeout: 180000 });
-await page.waitForFunction(() => !document.querySelector(".viewer-loading-badge"), {
+await page.waitForFunction(() => !document.querySelector(".viewer-carga"), {
   timeout: 300000,
   polling: 500,
 });

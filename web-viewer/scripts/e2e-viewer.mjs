@@ -56,7 +56,7 @@ await page.waitForSelector(".canvas-wrapper canvas", { timeout: 180000 });
 const msHastaCanvas = Date.now() - t0;
 
 // Tiempo hasta que terminan de aparecer las fotos.
-await page.waitForFunction(() => !document.querySelector(".viewer-loading-badge"), {
+await page.waitForFunction(() => !document.querySelector(".viewer-carga"), {
   timeout: 300000,
   polling: 500,
 });
