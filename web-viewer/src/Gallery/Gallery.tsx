@@ -510,12 +510,16 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
         await exportSectionsAsZip(sections, metadata);
       }
 
-      const allIds = plan.flatMap((s) => s.files.map((f) => f.id));
+      // Plano, no plan[0]: con varias carpetas seleccionadas, la unica
+      // carpeta con contenido no tiene por que ser la primera del plan (una
+      // carpeta vacia igual deja su entrada en `plan`), y plan[0].files[0]
+      // podia no existir aunque el total fuera 1.
+      const allFiles = plan.flatMap((s) => s.files);
       logDescarga(
         "galeria",
         format,
-        allIds,
-        allIds.length === 1 ? plan[0].files[0].name : undefined,
+        allFiles.map((f) => f.id),
+        allFiles.length === 1 ? allFiles[0].name : undefined,
         currentFolder.id
       );
       // La seleccion se mantiene activa a proposito: asi se puede volver a

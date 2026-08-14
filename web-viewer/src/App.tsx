@@ -123,11 +123,19 @@ function App() {
     openRemote(id, provisorio, null, []);
     void ubicarArchivo(id).then((info) => {
       if (!info) return;
-      setFileData((actual) =>
-        actual && actual.kind === 'remote' && actual.fileId === id
-          ? { ...actual, name: info.nombre, ruta: info.ruta }
-          : actual
-      );
+      // Si el usuario ya cerro el dibujo (o abrio otro) mientras esto
+      // resolvia, `actual` ya no es este archivo: sin esta bandera, la URL y
+      // "ultimos abiertos" se reescribian igual, y una recarga de pagina
+      // reabria el dibujo que el usuario ya habia cerrado.
+      let sigueAbierto = false;
+      setFileData((actual) => {
+        if (actual && actual.kind === 'remote' && actual.fileId === id) {
+          sigueAbierto = true;
+          return { ...actual, name: info.nombre, ruta: info.ruta };
+        }
+        return actual;
+      });
+      if (!sigueAbierto) return;
       irA(construirRuta(info.ruta, info.nombre), true);
       void registrarAbierto({
         id,

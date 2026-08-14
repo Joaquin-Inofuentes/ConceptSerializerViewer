@@ -14,6 +14,7 @@ import {
   soltarPdfsAbiertos,
   programarCierreWorkers,
   cancelarCierreWorkers,
+  compararOrdenDibujo,
 } from "../Gallery/renderCore";
 import type { RecursoRasterizado, Region } from "../Gallery/renderCore";
 import { getBudgets } from "../device";
@@ -412,9 +413,23 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       });
     });
 
-    items.sort((a, b) => a.layerIndex - b.layerIndex);
-    // Los grupos se dibujan en el mismo orden de capa que los items sueltos,
-    // asi el resultado es identico se use el camino que se use.
+    // Las notas (trazos) tienen que quedar SIEMPRE arriba de las fotos, sin
+    // excepcion — asi lo pidio el usuario, con independencia de en que orden
+    // se hayan pegado o en que capa esten. Antes se ordenaba solo por capa y,
+    // dentro de una misma capa, la imagen se pegaba DESPUES del trazo en el
+    // array de items, quedando dibujada encima y tapando la anotacion.
+    // `compararOrdenDibujo` es la MISMA regla que usa `renderCore.ts` para
+    // las miniaturas y el export de galeria — un solo lugar, para que el
+    // lienzo en vivo y lo exportado no puedan divergir.
+    items.sort((a, b) =>
+      compararOrdenDibujo(
+        { esImagen: a.kind === "image", layerIndex: a.layerIndex },
+        { esImagen: b.kind === "image", layerIndex: b.layerIndex }
+      )
+    );
+    // Los grupos (trazos fusionados) siempre se dibujan DESPUES de todas las
+    // imagenes (ver el render loop), asi que alcanza con mantenerlos
+    // ordenados por capa entre si.
     const grupos = [...fusionados.values()].sort((a, b) => a.layerIndex - b.layerIndex);
     return { items, grupos };
   }, [doc]);
@@ -1178,17 +1193,26 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       const sinBitmap = cercanos.filter(
         (id) => !imagesRef.current[id] && (fallosRef.current[id] ?? 0) < MAX_INTENTOS
       );
-      const aRefinar = visibles.filter((id) => imagesRef.current[id] && necesita(id));
+      // Mismo tope que sinBitmap: sin este chequeo, un recurso que ya tiene
+      // bitmap pero cuyo refinado a mas resolucion sigue fallando (timeout
+      // persistente, region invalida) se volvia a pedir en CADA sync
+      // (~cada 220ms tras un gesto) para siempre, aunque ya estuviera
+      // contado como "fallido" en otros lados de la UI.
+      const aRefinar = visibles.filter(
+        (id) => imagesRef.current[id] && necesita(id) && (fallosRef.current[id] ?? 0) < MAX_INTENTOS
+      );
       // El anillo se trae a la resolucion de pantalla, sin recorte: todavia no
       // se sabe que pedazo va a mirar el usuario y el recorte solo tiene
       // sentido para lo que ya esta en cuadro.
       const pendientes = [...sinBitmap, ...aRefinar];
-      if (pendientes.length === 0) return;
 
-      // Marcar como recien usados los que estan en pantalla, para que el
-      // desalojo no se lleve justo lo que se esta mirando.
+      // Marcar como recien usados y desalojar SIEMPRE, incluso sin nada nuevo
+      // que traer: si no, quedarse paneando dentro de una zona ya cacheada
+      // nunca libera lo que quedo lejos de un recorrido anterior, y el
+      // presupuesto de RAM del dispositivo deja de cumplirse en silencio.
       for (const id of cercanos) usoRef.current[id] = ++relojUsoRef.current;
       desalojarLejanos(cercanos);
+      if (pendientes.length === 0) return;
 
       // Cuantos bytes va a costar ESTA tanda de verdad. Es lo unico con lo que
       // se puede calcular un porcentaje y un tiempo restante honestos.
@@ -1452,21 +1476,15 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           ctx.lineJoin = "round";
           ctx.lineCap = "round";
 
-          if (usarFusionado) {
-            for (const g of docCache.grupos) {
-              if (isolatedLayerRef.current && isolatedLayerRef.current !== g.layerId) continue;
-              const config = layerConfigsRef.current[g.layerId];
-              if (config && !config.visible) continue;
-              const a = g.globalAlpha * (config ? config.opacity : 1.0);
-              if (g.color !== color) { ctx.strokeStyle = g.color; color = g.color; }
-              if (a !== alpha) { ctx.globalAlpha = a; alpha = a; }
-              if (g.width !== ancho) { ctx.lineWidth = g.width; ancho = g.width; }
-              ctx.stroke(g.path);
-            }
-          }
-
+          // Las notas (trazos) van SIEMPRE arriba de las fotos, sin excepcion:
+          // por eso las imagenes se dibujan primero y los trazos fusionados
+          // (el camino de lejos) se dejan para el final, despues del loop de
+          // items. `docCache.items` ya viene ordenado imagenes-antes-que-
+          // trazos (ver el sort en el useMemo de mas arriba), asi que alcanza
+          // con mover el bloque de grupos fusionados de antes del loop a
+          // despues.
           for (const item of docCache.items) {
-            // Los trazos ya se dibujaron todos juntos mas arriba.
+            // Los trazos ya se dibujaron todos juntos mas abajo.
             if (usarFusionado && item.kind === "stroke") continue;
             if (isolatedLayerRef.current && isolatedLayerRef.current !== item.layerId) continue;
             const config = layerConfigsRef.current[item.layerId];
@@ -1517,6 +1535,23 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
               if (a !== alpha) { ctx.globalAlpha = a; alpha = a; }
               if (item.width !== ancho) { ctx.lineWidth = item.width; ancho = item.width; }
               ctx.stroke(item.pathFull);
+            }
+          }
+
+          // Camino de lejos: los trazos fusionados se dibujan ACA, despues de
+          // todas las imagenes, para que las notas queden arriba de las fotos
+          // sin excepcion (antes se dibujaban primero y una foto pegada
+          // encima de una capa tapaba las anotaciones de esa capa).
+          if (usarFusionado) {
+            for (const g of docCache.grupos) {
+              if (isolatedLayerRef.current && isolatedLayerRef.current !== g.layerId) continue;
+              const config = layerConfigsRef.current[g.layerId];
+              if (config && !config.visible) continue;
+              const a = g.globalAlpha * (config ? config.opacity : 1.0);
+              if (g.color !== color) { ctx.strokeStyle = g.color; color = g.color; }
+              if (a !== alpha) { ctx.globalAlpha = a; alpha = a; }
+              if (g.width !== ancho) { ctx.lineWidth = g.width; ancho = g.width; }
+              ctx.stroke(g.path);
             }
           }
           ctx.restore();
@@ -1674,23 +1709,27 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
   }, []);
 
   const touchDistStartRef = useRef<number | null>(null);
-  const [lastTap, setLastTap] = useState(0);
-  const [tapCount, setTapCount] = useState(0);
+  // Puro conteo interno del gesto de triple-tap, no se lee en ningun JSX: va
+  // en refs como el resto del estado de gestos de este archivo, para no
+  // pedir un re-render en cada toque (el mismo motivo por el que pan/zoom/
+  // drag viven en refs y no en useState).
+  const lastTapRef = useRef(0);
+  const tapCountRef = useRef(0);
 
   const handleTouchStart = (e: React.TouchEvent) => {
     if (e.touches.length === 1) {
       const now = Date.now();
-      if (now - lastTap < 300) {
-        const newCount = tapCount + 1;
-        setTapCount(newCount);
+      if (now - lastTapRef.current < 300) {
+        const newCount = tapCountRef.current + 1;
+        tapCountRef.current = newCount;
         if (newCount >= 3) {
            fitToBounds();
-           setTapCount(0);
+           tapCountRef.current = 0;
         }
       } else {
-        setTapCount(1);
+        tapCountRef.current = 1;
       }
-      setLastTap(now);
+      lastTapRef.current = now;
 
       setIsDragging(true);
       dragStartRef.current = { x: e.touches[0].clientX - panRef.current.x, y: e.touches[0].clientY - panRef.current.y };

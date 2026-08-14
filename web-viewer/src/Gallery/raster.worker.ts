@@ -221,11 +221,22 @@ async function rasterizar(p: PedidoRaster): Promise<ImageBitmap> {
     const rh = (reg?.h ?? 1) * nativo.height;
     const sx = p.width / rw;
     const sy = p.height / rh;
-    await (page as any).render({
-      canvasContext: ctx as unknown as CanvasRenderingContext2D,
-      viewport: nativo,
-      transform: [sx, 0, 0, sy, -rx * sx, -ry * sy],
-    }).promise;
+    try {
+      await (page as any).render({
+        canvasContext: ctx as unknown as CanvasRenderingContext2D,
+        viewport: nativo,
+        transform: [sx, 0, 0, sy, -rx * sx, -ry * sy],
+      }).promise;
+    } catch (err) {
+      // Un render fallido puede dejar la pagina cacheada en un estado
+      // invalido (canvas a medio pintar, operador no soportado). Sin esto el
+      // proximo pedido del mismo recurso reusa la MISMA pagina rota via el
+      // cache de abrirPdf y el error se vuelve permanente para ese recurso
+      // hasta que lo desaloje el LRU; se descarta para forzar un reparseo
+      // limpio en el proximo intento.
+      await cerrarPdf(p.resourceId);
+      throw err;
+    }
     // Sin page.cleanup(): tira justo lo que hace valiosa a la pagina cacheada
     // (las fuentes y los operadores ya decodificados). Se limpia al desalojarla.
     return canvas.transferToImageBitmap();
@@ -330,7 +341,9 @@ async function medirImagen(blob: Blob): Promise<{ w: number; h: number } | null>
 self.onmessage = async (e: MessageEvent<PedidoRaster>) => {
   const p = e.data;
   if (p.limpiar) {
-    for (const id of [...abiertos.keys()]) await cerrarPdf(id);
+    // En paralelo: son PDFs independientes (a lo sumo MAX_PDFS_ABIERTOS = 2),
+    // esperarlos uno por uno solo suma la latencia de destroy() de cada uno.
+    await Promise.all([...abiertos.keys()].map((id) => cerrarPdf(id)));
     (self as unknown as Worker).postMessage({ id: p.id, limpio: true });
     return;
   }

@@ -566,7 +566,13 @@ function procesarItem(item: any, layer: Layer, globalBbox: BBox) {
     buscarElementos(item, layer, globalBbox);
 
   } else if (tipo === 1 && item.length > 1 && Array.isArray(item[1]) && item[1].length > 0 && item[1][0] === 4) {
-    // subcapa
+    // subcapa: a diferencia de cualquier otro tipo de item, esta rama no
+    // recorria adentro — si una subcapa tiene trazos anidados (no se pudo
+    // confirmar que nunca los tenga), quedaban descartados en silencio. Se
+    // busca igual que en el resto de los casos: `buscarElementos` solo
+    // extrae trazos (tipo 6 con su blob de puntos), asi que no hay riesgo de
+    // fabricar una imagen de la nada si la subcapa viene vacia.
+    buscarElementos(item, layer, globalBbox);
   } else {
     buscarElementos(item, layer, globalBbox);
   }

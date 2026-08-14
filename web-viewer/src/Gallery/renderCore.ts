@@ -923,6 +923,21 @@ export interface RenderPlan {
 }
 
 /**
+ * Orden de dibujo compartido: las notas (trazos) van SIEMPRE arriba de las
+ * fotos, sin excepcion, y dentro de cada grupo se respeta el orden de capa.
+ * Un solo lugar para esta regla — la usan tanto este archivo (miniaturas y
+ * export de galeria) como `Viewer.tsx` (el lienzo en vivo) — para que las
+ * dos superficies no puedan divergir si la regla cambia en el futuro.
+ */
+export function compararOrdenDibujo(
+  a: { esImagen: boolean; layerIndex: number },
+  b: { esImagen: boolean; layerIndex: number }
+): number {
+  if (a.esImagen !== b.esImagen) return a.esImagen ? -1 : 1;
+  return a.layerIndex - b.layerIndex;
+}
+
+/**
  * Junta los trazos e imagenes del documento en items dibujables, y calcula
  * el encuadre ("zoom all"). Dos pasadas separadas y no una por capa: primero
  * TODOS los trazos de TODAS las capas para saber si el documento tiene
@@ -993,16 +1008,26 @@ export function buildRenderPlan(doc: Document): RenderPlan {
     });
   });
 
-  // Ordenar aca (una vez) y no en cada dibujado: drawItems se llama por frame
-  // en el visor y re-ordenar decenas de miles de items 60 veces por segundo
-  // era puro trabajo tirado.
-  items.sort((a, b) => a.layerIndex - b.layerIndex);
+  // Las notas (trazos) van SIEMPRE arriba de las fotos, sin excepcion: se
+  // armaron en dos pasadas separadas (arriba, trazos primero) solo para
+  // calcular bien el encuadre; el orden de DIBUJO se decide aca, aparte,
+  // independiente del orden en que se acumularon. Se ordena una sola vez
+  // (y no en cada dibujado: drawItems se llama por frame en el visor y
+  // re-ordenar decenas de miles de items 60 veces por segundo era puro
+  // trabajo tirado).
+  items.sort((a, b) =>
+    compararOrdenDibujo(
+      { esImagen: a.type === "image", layerIndex: a.layerIndex },
+      { esImagen: b.type === "image", layerIndex: b.layerIndex }
+    )
+  );
 
   return { items, minX, minY, maxX, maxY, hasContent: minX !== Infinity };
 }
 
-/** Dibuja los items (ya ordenados por capa) sobre un contexto ya
- * trasladado/escalado por el que llama. */
+/** Dibuja los items (ya ordenados: todas las imagenes primero, todos los
+ * trazos despues, para que las notas queden siempre arriba) sobre un
+ * contexto ya trasladado/escalado por el que llama. */
 export function drawItems(
   ctx: CanvasRenderingContext2D,
   items: RenderItem[],

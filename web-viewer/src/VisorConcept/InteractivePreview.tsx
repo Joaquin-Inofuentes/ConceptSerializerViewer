@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Download } from 'lucide-react';
+import { Download, RotateCw } from 'lucide-react';
 import { logDescarga } from '../Gallery/analytics';
-import { EXPORT_SCALE } from '../Gallery/renderCore';
+import { safeExportScale } from '../Gallery/renderCore';
 
 interface InteractivePreviewProps {
   src: string;
@@ -11,7 +11,7 @@ interface InteractivePreviewProps {
 
 export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fileName, onClose }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  
+
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [isDragging, setIsDragging] = useState(false);
@@ -22,6 +22,14 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
   const [dragStartPan, setDragStartPan] = useState({ x: 0, y: 0 });
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [exportZoomAll, setExportZoomAll] = useState(true);
+  // Rotacion manual de la foto en pantalla (0/90/180/270), a pedido del
+  // usuario: algunas fotos vienen embebidas de costado o cabeza abajo (la
+  // rotacion viene del propio archivo .concepts) y no hay forma de arreglarlo
+  // desde ahi. Se resetea al abrir una foto distinta.
+  const [rotacion, setRotacion] = useState(0);
+  useEffect(() => {
+    setRotacion(0);
+  }, [src]);
 
   const exportDrawing = async (format: 'png' | 'jpg' | 'pdf', zoomAll: boolean = true) => {
     const img = new Image();
@@ -35,10 +43,16 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
     let translateX, translateY, exportZoom;
 
     if (zoomAll) {
-      exportWidth = img.naturalWidth;
-      exportHeight = img.naturalHeight;
-      translateX = img.naturalWidth / 2;
-      translateY = img.naturalHeight / 2;
+      // Girada un cuarto de vuelta (90/270), la caja del export se planta
+      // con los lados intercambiados: si no, una foto rotada a apaisada se
+      // exporta recortada dentro de un lienzo vertical. `% 180` en vez de
+      // comparar contra 90/270 a mano: sigue valiendo si el control de
+      // rotacion deja de moverse en pasos fijos de 90°.
+      const girada90 = ((rotacion % 180) + 180) % 180 !== 0;
+      exportWidth = girada90 ? img.naturalHeight : img.naturalWidth;
+      exportHeight = girada90 ? img.naturalWidth : img.naturalHeight;
+      translateX = exportWidth / 2;
+      translateY = exportHeight / 2;
       exportZoom = 1;
     } else {
       const rect = containerRef.current?.getBoundingClientRect();
@@ -49,11 +63,15 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
       exportZoom = zoom;
     }
 
+    // safeExportScale (no EXPORT_SCALE crudo): una foto grande, mas si esta
+    // rotada 90/270, puede pasarse del limite duro de canvas del navegador
+    // (queda en blanco, sin error) o del presupuesto de RAM del dispositivo.
+    // Es el mismo criterio que ya usan el export del visor y el de la
+    // galeria — este era el unico camino de export que no lo aplicaba.
+    const scale = safeExportScale(exportWidth, exportHeight);
     const exportCanvas = document.createElement("canvas");
-    // Renderiza a EXPORT_SCALE (150 DPI) para que salga nitido, mismo
-    // criterio que el resto de los exports de la app.
-    exportCanvas.width = Math.round(exportWidth * EXPORT_SCALE);
-    exportCanvas.height = Math.round(exportHeight * EXPORT_SCALE);
+    exportCanvas.width = Math.round(exportWidth * scale);
+    exportCanvas.height = Math.round(exportHeight * scale);
     const ctx = exportCanvas.getContext("2d");
     if (!ctx) return;
     ctx.imageSmoothingEnabled = true;
@@ -65,9 +83,10 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
     }
 
     ctx.save();
-    ctx.scale(EXPORT_SCALE, EXPORT_SCALE);
+    ctx.scale(scale, scale);
     ctx.translate(translateX, translateY);
     ctx.scale(exportZoom, exportZoom);
+    if (rotacion) ctx.rotate((rotacion * Math.PI) / 180);
     ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
     ctx.restore();
 
@@ -100,6 +119,19 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
+
+  // Mismo patron que Viewer.tsx: un listener nativo no pasivo solo para
+  // bloquear el scroll de la pagina detras del visor mientras se hace zoom
+  // con la rueda. Sin esto, la pagina se corria hacia abajo/arriba de fondo
+  // mientras la foto zoomeaba, un bug que ya estaba arreglado en el visor
+  // principal pero no en esta vista.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const bloquear = (e: WheelEvent) => e.preventDefault();
+    el.addEventListener('wheel', bloquear, { passive: false });
+    return () => el.removeEventListener('wheel', bloquear);
+  }, []);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 2) {
@@ -153,6 +185,9 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
     if (e.button === 0) setIsDragging(false);
   };
 
+  // React adjunta onWheel como pasivo: el e.preventDefault() de aca abajo no
+  // alcanza a frenar el scroll, asi que ademas se registra un listener nativo
+  // no pasivo mas abajo (mismo patron que Viewer.tsx) solo para bloquearlo.
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
     const zoomFactor = 1.1;
@@ -267,7 +302,7 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
           position: 'absolute',
           top: '50%',
           left: '50%',
-          transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom})`,
+          transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom}) rotate(${rotacion}deg)`,
           transformOrigin: 'center center',
           transition: isDragging || isRightDragging ? 'none' : 'transform 0.1s ease',
         }}
@@ -302,8 +337,15 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
 
       {/* Floating Tools exactly like Viewer */}
       <div className="floating-tools" style={{ zIndex: 10002 }}>
+        <button
+          className="btn-tool"
+          onClick={(e) => { e.stopPropagation(); setRotacion((r) => (r + 90) % 360); }}
+          title="Rotar 90° a la derecha"
+        >
+          <RotateCw size={20} />
+        </button>
         <div className="dropdown-container">
-          <button 
+          <button
             className={`btn-tool ${showExportMenu ? 'active-glow' : ''}`}
             onClick={(e) => { e.stopPropagation(); setShowExportMenu(!showExportMenu); }}
             title="Exportar"
