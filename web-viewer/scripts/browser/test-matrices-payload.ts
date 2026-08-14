@@ -63,7 +63,7 @@ export async function testMatrices(url: string, headers: Record<string, string>)
   const bytes = await zip.read(nombreTree);
   const tree: any = decode(bytes, { extensionCodec });
 
-  type Img = { width: number; height: number; internoMat: number[] | null; matrixB: number[] | null; capa: number };
+  type Img = { width: number; height: number; internoMat: number[] | null; matrixB: number[] | null; capa: number; tipo: number };
   const imagenes: Img[] = [];
   const trazos: Array<{ minX: number; minY: number; maxX: number; maxY: number }> = [];
 
@@ -84,7 +84,7 @@ export async function testMatrices(url: string, headers: Record<string, string>)
       // matrixB por cuerpo.find encuentra el PRIMER array de 16 en cuerpo top-level,
       // que en la practica es el ultimo elemento (no hay otros arrays de 16 ahi).
       if (tam) {
-        imagenes.push({ width: tam[0], height: tam[1], internoMat, matrixB, capa });
+        imagenes.push({ width: tam[0], height: tam[1], internoMat, matrixB, capa, tipo });
       }
       return;
     }
@@ -122,10 +122,13 @@ export async function testMatrices(url: string, headers: Record<string, string>)
     buscarTrazos(docData, 0);
   }
 
-  const caja = (m: number[], w: number, h: number) => {
+  const caja = (m: number[], w: number, h: number, centrado = false) => {
     const gm = girarTransform(m);
     const a = gm[0], b = gm[1], c = gm[4], d = gm[5], e = gm[12], f = gm[13];
-    const esquinas = [[0, 0], [w, 0], [0, h], [w, h]].map(([x, y]) => [a * x + c * y + e, b * x + d * y + f]);
+    const local = centrado
+      ? [[-w / 2, -h / 2], [w / 2, -h / 2], [-w / 2, h / 2], [w / 2, h / 2]]
+      : [[0, 0], [w, 0], [0, h], [w, h]];
+    const esquinas = local.map(([x, y]) => [a * x + c * y + e, b * x + d * y + f]);
     const xs = esquinas.map((p) => p[0]), ys = esquinas.map((p) => p[1]);
     return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
   };
@@ -140,24 +143,59 @@ export async function testMatrices(url: string, headers: Record<string, string>)
     return +((n / trazos.length) * 100).toFixed(1);
   };
 
+  // Overlap separado por tipo de item (7=foto suelta, 8=PDF de fondo): capaz
+  // la convencion correcta depende de cual es, no solo del archivo entero.
+  const overlapPorTipo = (tipoBuscado: number, cajaFn: (im: Img) => { x0: number; y0: number; x1: number; y1: number }) => {
+    const subset = imagenes.filter((im) => im.tipo === tipoBuscado);
+    if (!subset.length || !trazos.length) return null;
+    const cajas = subset.map(cajaFn);
+    let n = 0;
+    for (const t of trazos) {
+      const cx = (t.minX + t.maxX) / 2, cy = (t.minY + t.maxY) / 2;
+      if (cajas.some((c) => cx >= c.x0 && cx <= c.x1 && cy >= c.y0 && cy <= c.y1)) n++;
+    }
+    return +((n / trazos.length) * 100).toFixed(1);
+  };
+
   const IDENT = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   const candidatas = {
     soloInterno: imagenes.map((im) => caja(im.internoMat || IDENT, im.width, im.height)),
     soloMatrixB: imagenes.map((im) => caja(im.matrixB || IDENT, im.width, im.height)),
     compuestaIntMB: imagenes.map((im) => caja(mul(im.internoMat || IDENT, im.matrixB || IDENT), im.width, im.height)),
     compuestaMBInt: imagenes.map((im) => caja(mul(im.matrixB || IDENT, im.internoMat || IDENT), im.width, im.height)),
+    // Hipotesis: el origen local del recurso es su CENTRO, no la esquina
+    // superior-izquierda. Solo importa (difiere de soloInterno) cuando la
+    // matriz tiene escala/rotacion no trivial; con una matriz identidad pura
+    // (imagen "nunca tocada") es donde mas cambia.
+    internoCentrado: imagenes.map((im) => caja(im.internoMat || IDENT, im.width, im.height, true)),
+    matrixBCentrado: imagenes.map((im) => caja(im.matrixB || IDENT, im.width, im.height, true)),
+    intBCentrado: imagenes.map((im) => caja(mul(im.internoMat || IDENT, im.matrixB || IDENT), im.width, im.height, true)),
+    bIntCentrado: imagenes.map((im) => caja(mul(im.matrixB || IDENT, im.internoMat || IDENT), im.width, im.height, true)),
   };
 
   return {
     imagenes: imagenes.length,
     trazos: trazos.length,
+    tipo7: imagenes.filter((im) => im.tipo === 7).length,
+    tipo8: imagenes.filter((im) => im.tipo === 8).length,
     internoIdentidad: imagenes.filter((im) => !im.internoMat || im.internoMat.every((v, i) => v === IDENT[i])).length,
     matrixBIdentidad: imagenes.filter((im) => !im.matrixB || im.matrixB.every((v, i) => v === IDENT[i])).length,
+    porTipo: {
+      t7_interno: overlapPorTipo(7, (im) => caja(im.internoMat || IDENT, im.width, im.height)),
+      t7_matrixBcentrado: overlapPorTipo(7, (im) => caja(im.matrixB || IDENT, im.width, im.height, true)),
+      t8_interno: overlapPorTipo(8, (im) => caja(im.internoMat || IDENT, im.width, im.height)),
+      t8_matrixBcentrado: overlapPorTipo(8, (im) => caja(im.matrixB || IDENT, im.width, im.height, true)),
+      t8_internoCentrado: overlapPorTipo(8, (im) => caja(im.internoMat || IDENT, im.width, im.height, true)),
+    },
     overlap: {
       soloInterno: overlapPct(candidatas.soloInterno),
       soloMatrixB: overlapPct(candidatas.soloMatrixB),
       compuestaIntMB: overlapPct(candidatas.compuestaIntMB),
       compuestaMBInt: overlapPct(candidatas.compuestaMBInt),
+      internoCentrado: overlapPct(candidatas.internoCentrado),
+      matrixBCentrado: overlapPct(candidatas.matrixBCentrado),
+      intBCentrado: overlapPct(candidatas.intBCentrado),
+      bIntCentrado: overlapPct(candidatas.bIntCentrado),
     },
   };
 }

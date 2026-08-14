@@ -1,0 +1,10 @@
+import puppeteer from "puppeteer";
+const FILE = process.argv[2];
+const BASE = process.env.BASE_URL || "https://unx-concept.vercel.app";
+const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox"] });
+const page = await browser.newPage();
+page.setDefaultTimeout(120000);
+await page.goto(`${BASE}/?file=${FILE}`, { waitUntil: "domcontentloaded" });
+await new Promise((r) => setTimeout(r, 4000));
+console.log(page.url());
+await browser.close();

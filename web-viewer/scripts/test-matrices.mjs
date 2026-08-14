@@ -10,10 +10,15 @@ const FN = "https://kuhcxzusnrttkywgalgk.supabase.co/functions/v1/concepts-drive
 
 const manifest = JSON.parse(await readFile(path.join(CACHE_DIR, "manifest.json"), "utf8"));
 let stats = JSON.parse(await readFile(path.join(CACHE_DIR, "stats-corpus.json"), "utf8"));
-const objetivos = stats
-  .filter((x) => x.strokes > 0 && x.images > 0)
-  .sort((a, b) => a.MB - b.MB)
-  .slice(0, Number(process.env.N || 10));
+const conAmbos = stats.filter((x) => x.strokes > 0 && x.images > 0).sort((a, b) => a.MB - b.MB);
+const N = Number(process.env.N || 10);
+// IDS=id1,id2 corre solo esos archivos puntuales; sin eso, mitad y mitad:
+// los mas chicos (donde aparecio el problema) Y los mas pesados (donde ya se
+// confirmo visualmente que el render es correcto) — asi una hipotesis que
+// "arregla" los chicos pero rompe los pesados se detecta en la misma corrida.
+const objetivos = process.env.IDS
+  ? process.env.IDS.split(",").map((id) => stats.find((x) => x.id === id)).filter(Boolean)
+  : [...conAmbos.slice(0, Math.ceil(N / 2)), ...conAmbos.slice(-Math.floor(N / 2))];
 
 const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox"], protocolTimeout: 900000 });
 
@@ -34,7 +39,13 @@ for (const s of objetivos) {
       { apikey: K, Authorization: `Bearer ${K}` }
     );
     console.log(
-      `${f.name.padEnd(35)} img=${r.imagenes} trz=${r.trazos} identInterno=${r.internoIdentidad} identB=${r.matrixBIdentidad} | overlap: interno=${r.overlap.soloInterno}% matrixB=${r.overlap.soloMatrixB}% int∘B=${r.overlap.compuestaIntMB}% B∘int=${r.overlap.compuestaMBInt}%`
+      `${f.name.padEnd(35)} ${s.MB}MB img=${r.imagenes}(t7=${r.tipo7},t8=${r.tipo8}) trz=${r.trazos} | interno=${r.overlap.soloInterno}% centrado=${r.overlap.internoCentrado}% matrixBcentrado=${r.overlap.matrixBCentrado}%`
+    );
+    console.log(
+      `    tipo7(fotos):  interno=${r.porTipo.t7_interno}% matrixBcentrado=${r.porTipo.t7_matrixBcentrado}%`
+    );
+    console.log(
+      `    tipo8(PDFs):   interno=${r.porTipo.t8_interno}% matrixBcentrado=${r.porTipo.t8_matrixBcentrado}% internoCentrado=${r.porTipo.t8_internoCentrado}%`
     );
   } catch (e) {
     console.error(`  FALLO ${f.name}: ${String(e).slice(0, 200)}`);

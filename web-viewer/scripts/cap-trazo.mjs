@@ -9,7 +9,12 @@ import path from "node:path";
 import puppeteer from "puppeteer";
 
 const OUT = path.resolve(".cache/detalle");
+// La geometria se calcula importando el parser suelto (.ts), que solo Vite
+// dev sirve sin bundlear; la captura visual puede apuntar a otra URL (p.ej.
+// produccion) via VISUAL_BASE, porque ahi solo se usan los hooks __viewer*
+// que expone la app ya compilada.
 const BASE = (process.env.BASE_URL || "http://localhost:5173").replace(/\/+$/, "");
+const VISUAL_BASE = (process.env.VISUAL_BASE || BASE).replace(/\/+$/, "");
 const FILE = process.argv[2];
 if (!FILE) {
   console.error("Uso: node scripts/cap-trazo.mjs <driveFileId>");
@@ -75,7 +80,7 @@ if (!dentro.length) {
 const elegidos = (dentro.length ? dentro : trazos).slice(0, 3);
 
 // 2) Ahora si, abrir el visor real y navegar a esos trazos.
-await page.goto(`${BASE}/?tier=alta&file=${FILE}`, { waitUntil: "domcontentloaded" });
+await page.goto(`${VISUAL_BASE}/?tier=alta&file=${FILE}`, { waitUntil: "domcontentloaded" });
 await page.waitForFunction(() => document.querySelector("canvas")?.width > 1, { timeout: 240000 });
 await page.waitForFunction(() => !document.querySelector(".viewer-carga"), { timeout: 240000 }).catch(() => {});
 await new Promise((r) => setTimeout(r, 2500));

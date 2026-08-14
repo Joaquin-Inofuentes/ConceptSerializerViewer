@@ -549,6 +549,14 @@ function procesarItem(item: any, layer: Layer, globalBbox: BBox) {
     const mat = interno.find(x => Array.isArray(x) && x.length === 16);
     if (mat) transform = mat;
 
+    // NO "arreglar" la matriz identidad centrandola en el recurso: se probo
+    // (medido contra el corpus real, ver notas de la sesion) y aunque sube
+    // el % de trazos que caen sobre CUALQUIER imagen, en un archivo real con
+    // dos copias del mismo recurso rompe la relacion entre ambas — pasan de
+    // estar prolijamente apiladas (como las dejo el usuario) a superponerse.
+    // La convencion "esquina superior izquierda" puede no ser perfecta, pero
+    // es la que preserva la disposicion tal cual la dejo quien dibujo.
+
     // Solo se acepta si de verdad parece una imagen colocada. Sin esta guarda,
     // aceptar el tipo 7 a ciegas podria fabricar elementos vacios a partir de
     // cualquier otra cosa que comparta la etiqueta.
