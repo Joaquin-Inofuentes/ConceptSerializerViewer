@@ -9,7 +9,9 @@ import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import puppeteer from "puppeteer";
 
-const DEV_URL = "http://localhost:5173/";
+// Apunta a produccion con BASE_URL=https://... ; por defecto, el dev server.
+const RAIZ = process.env.BASE_URL || "http://localhost:5173";
+const DEV_URL = RAIZ.endsWith("/") ? RAIZ : RAIZ + "/";
 const CACHE_DIR = path.resolve(".cache/concepts");
 const DL_DIR = path.join(CACHE_DIR, "descargas-galeria");
 const ruta = (process.argv[2] || "Fede y Franco/Concepts/V1").split("/");

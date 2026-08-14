@@ -12,7 +12,9 @@ import puppeteer from "puppeteer";
 
 const CACHE_DIR = path.resolve(".cache/concepts");
 const DL_DIR = path.join(CACHE_DIR, "descargas-test");
-const DEV_URL = "http://localhost:5173/";
+// Apunta a produccion con BASE_URL=https://... ; por defecto, el dev server.
+const RAIZ = process.env.BASE_URL || "http://localhost:5173";
+const DEV_URL = RAIZ.endsWith("/") ? RAIZ : RAIZ + "/";
 
 const manifest = JSON.parse(await readFile(path.join(CACHE_DIR, "manifest.json"), "utf8"));
 const disponibles = manifest.files.filter((f) => f.size && f.localPath).sort((a, b) => b.size - a.size);
