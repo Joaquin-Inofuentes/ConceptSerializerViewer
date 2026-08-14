@@ -54,9 +54,22 @@ export async function listDriveFolder(folderId: string): Promise<DriveListing> {
   throw ultimoError instanceof Error ? ultimoError : new Error(String(ultimoError));
 }
 
-/** URL del proxy para un archivo de Drive. Es la que consume el lector de zip
- * por rangos: en vez de bajar los 262 MB, pide los pedazos que necesita. */
+/**
+ * URL del proxy para un archivo de Drive. Es la que consume el lector de zip
+ * por rangos: en vez de bajar los 262 MB, pide los pedazos que necesita.
+ *
+ * En DESARROLLO acepta `?origen=<url>` para leer el mismo .concepts desde un
+ * servidor local. No es una funcion de la app: es para poder medir. Contra
+ * Drive cada rango tarda entre 0,3 y 3 s segun la hora, y con esa varianza dos
+ * corridas del banco de pruebas no se pueden comparar — o sea que no se puede
+ * saber si un cambio mejoro algo. Va detras de `import.meta.env.DEV` para que
+ * el build de produccion ni siquiera lo incluya.
+ */
 export function driveFileUrl(fileId: string): string {
+  if (import.meta.env.DEV) {
+    const origen = new URLSearchParams(window.location.search).get("origen");
+    if (origen) return `${origen.replace(/\/+$/, "")}/${encodeURIComponent(fileId)}.concepts`;
+  }
   return `${FUNCTIONS_URL}/concepts-drive?action=download&fileId=${encodeURIComponent(fileId)}`;
 }
 

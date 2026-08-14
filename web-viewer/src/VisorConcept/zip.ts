@@ -98,6 +98,12 @@ export class RemoteSource implements ZipSource {
    * nunca el archivo entero. */
   private readonly MAX_CACHE_BYTES = 12 * 1024 * 1024;
 
+  /** Cuanto puede adelantar `prefetch` sin que lo adelantado se desaloje solo.
+   * Se deja un margen para el indice y las lecturas en curso. */
+  get capacidadCache(): number {
+    return this.MAX_CACHE_BYTES - 2 * 1024 * 1024;
+  }
+
   private url: string;
   private headers: Record<string, string>;
   /** URL directa de Drive que devolvio el proxy la primera vez. Reenviarla
@@ -510,19 +516,26 @@ export class ZipArchive {
    * NINGUNA imagen hasta que llegara el ultimo byte. Con grupos chicos las
    * fotos siguen apareciendo de a tandas.
    */
-  async prefetch(names: string[], maxGrupo = 3 * 1024 * 1024): Promise<void> {
+  async prefetch(names: string[], maxGrupo = 1024 * 1024): Promise<void> {
+    // `names` viene en el orden en que se van a usar (primero lo que ocupa mas
+    // pantalla). Ese orden se conserva como PRIORIDAD para decidir que grupo
+    // se baja antes.
+    const prioridad = new Map<string, number>();
+    names.forEach((n, i) => prioridad.set(n, i));
+
     const tramos = names
-      .map((n) => this.entries.get(n))
-      .filter((e): e is ZipEntry => !!e)
-      .map((e) => ({
+      .map((n) => ({ n, e: this.entries.get(n) }))
+      .filter((x): x is { n: string; e: ZipEntry } => !!x.e)
+      .map(({ n, e }) => ({
         // Margen para el encabezado local (y para el offset corrido).
         desde: Math.max(0, e.localHeaderOffset - 64),
         hasta: e.localHeaderOffset + 30 + 512 + e.compressedSize + 64,
+        prio: prioridad.get(n) ?? Number.MAX_SAFE_INTEGER,
       }))
       .sort((a, b) => a.desde - b.desde);
     if (tramos.length === 0) return;
 
-    const grupos: { desde: number; hasta: number }[] = [];
+    const grupos: { desde: number; hasta: number; prio: number }[] = [];
     let actual = { ...tramos[0] };
     for (const t of tramos.slice(1)) {
       const fusionado = Math.max(actual.hasta, t.hasta) - actual.desde;
@@ -531,6 +544,7 @@ export class ZipArchive {
       const hueco = t.desde - actual.hasta;
       if (fusionado <= maxGrupo && hueco <= 256 * 1024) {
         actual.hasta = Math.max(actual.hasta, t.hasta);
+        actual.prio = Math.min(actual.prio, t.prio);
       } else {
         grupos.push(actual);
         actual = { ...t };
@@ -538,11 +552,33 @@ export class ZipArchive {
     }
     grupos.push(actual);
 
+    // Los grupos se agrupan por CERCANIA en el archivo (para gastar pocas
+    // requests) pero se bajan por PRIORIDAD. Antes se bajaban en orden de
+    // offset, que no tiene nada que ver con lo que el usuario esta mirando:
+    // en una conexion lenta el visor esperaba a que llegaran los 10 MB
+    // enteros porque el primer plano que necesitaba vivia en el ultimo grupo.
+    // Medido con 4G lenta en el dibujo mas pesado: 44,5 s hasta la primera
+    // imagen.
+    grupos.sort((a, b) => a.prio - b.prio);
+
     // Secuencial: en paralelo competirian por el ancho de banda y el primer
     // grupo (el que desbloquea las primeras imagenes) llegaria mas tarde.
+    //
+    // Y con un techo: adelantar mas bytes de los que entran en el cache de
+    // bloques es CONTRAPRODUCENTE. Los primeros grupos se desalojan antes de
+    // que nadie los lea, y cada recurso termina bajandose dos veces — una en
+    // el adelanto y otra al leerlo. Medido sobre el dibujo de 262,9 MB: 386,7
+    // MB transferidos, o sea 147% del archivo. Se adelanta solo lo que se va a
+    // poder conservar; el resto se lee normalmente, que ya funciona bien.
+    const techo = this.source instanceof RemoteSource ? this.source.capacidadCache : Infinity;
+    let adelantados = 0;
     for (const g of grupos) {
       const fin = Math.min(g.hasta, this.source.size);
-      if (fin > g.desde) await this.source.read(g.desde, fin - g.desde);
+      if (fin <= g.desde) continue;
+      const largo = fin - g.desde;
+      if (adelantados + largo > techo) break;
+      adelantados += largo;
+      await this.source.read(g.desde, largo);
     }
   }
 

@@ -21,8 +21,13 @@ const DB_NAME = "concepts-raster";
  * en el espacio sin rotar; subir la version borra el store y obliga a
  * regenerarlos bien. Sin esto, quien ya abrio un dibujo seguiria viendo los
  * planos aplastados aunque el codigo este arreglado.
+ *
+ * v4: los de la v3 estan CABEZA ABAJO. Se rasterizaban siempre con el viewport
+ * sin rotar, y como estos planos traen /Rotate=90 y Concepts los coloca a -90,
+ * el resultado quedaba a 180 grados (ver orientacion.ts). Mismo motivo para
+ * subir la version: el arreglo no se nota si se sigue leyendo lo guardado.
  */
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE = "bitmaps";
 /** Cuantos ARCHIVOS distintos se conservan. */
 export const MAX_ARCHIVOS_CACHEADOS = 3;
@@ -119,7 +124,8 @@ export async function leerRaster(
   fileId: string,
   resourceId: string,
   pedidoW: number,
-  pedidoH: number
+  pedidoH: number,
+  opciones: { cualquierTamaño?: boolean } = {}
 ): Promise<ImageBitmap | null> {
   const exacta = claveRaster(fileId, resourceId, pedidoW, pedidoH);
   let fila = (await conStore<FilaCache>("readonly", (s) => s.get(exacta) as IDBRequest<FilaCache>)) as
@@ -138,6 +144,13 @@ export async function leerRaster(
         .filter((c) => c.pedidoW >= pedidoW * 0.8 && c.pedidoH >= pedidoH * 0.8)
         .sort((a, b) => a.pedidoW * a.pedidoH - b.pedidoW * b.pedidoH);
       fila = utiles[0] || null;
+      // Como ADELANTO (mostrar algo mientras se rasteriza lo bueno) sirve
+      // cualquier cosa que haya, aunque sea mas chica de lo pedido: se va a
+      // ver borrosa unos segundos, que es infinitamente mejor que el hueco
+      // gris. Se elige la mas grande disponible.
+      if (!fila && opciones.cualquierTamaño) {
+        fila = [...candidatas].sort((a, b) => b.pedidoW * b.pedidoH - a.pedidoW * a.pedidoH)[0] || null;
+      }
     }
   }
 
@@ -199,10 +212,31 @@ export async function guardarRaster(
         usadoEn: Date.now(),
       } as FilaCache)
     );
-    void podar();
+    programarPoda();
   } catch {
     /* sin cache */
   }
+}
+
+let podaProgramada: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Poda con espera, en vez de tras CADA guardado.
+ *
+ * `podar()` hace un getAll() del store entero. Llamarlo despues de cada
+ * recurso significaba, al abrir un dibujo con 19 planos, 19 lecturas completas
+ * del cache (hasta 50 MB) desde el hilo principal — justo mientras el usuario
+ * esta paneando. Con la espera se hace una sola vez al final de la tanda.
+ */
+function programarPoda() {
+  if (podaProgramada) clearTimeout(podaProgramada);
+  podaProgramada = setTimeout(() => {
+    podaProgramada = null;
+    const correr = () => void podar();
+    // En un rato libre, para no competir con el dibujado.
+    if (typeof requestIdleCallback === "function") requestIdleCallback(correr, { timeout: 5000 });
+    else correr();
+  }, 4000);
 }
 
 let podando = false;

@@ -127,6 +127,43 @@ ok(
   urlArchivo
 );
 
+// --- 5) el camino de vuelta: entrar DIRECTO por la ruta ----------------
+// Es lo que de verdad quiere decir "link compartible": que alguien pegue la
+// URL y le abra el dibujo. Sin esto solo estabamos comprobando que la barra
+// de direcciones se actualiza, que no es lo mismo.
+await page.goto(`${BASE}${urlArchivo}`, { waitUntil: "domcontentloaded" });
+const abrio = await page
+  .waitForFunction(() => document.querySelector("canvas")?.width > 1, { timeout: 180000 })
+  .then(() => true)
+  .catch(() => false);
+const tituloDirecto = await page.evaluate(
+  () => document.querySelector(".filename-display")?.textContent?.trim() || ""
+);
+ok("entrar directo por la ruta abre el dibujo", abrio, `${urlArchivo} -> "${tituloDirecto}"`);
+ok(
+  "y abre el dibujo que dice la ruta",
+  abrio && urlArchivo.endsWith(
+    tituloDirecto
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .trim()
+      .replace(/[^\w\s-]/g, "")
+      .replace(/[\s_]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .toLowerCase()
+  ),
+  `"${tituloDirecto}"`
+);
+
+// Una ruta que no existe no puede dejar la app colgada.
+await page.goto(`${BASE}/carpeta-que-no-existe/dibujo-inventado`, { waitUntil: "domcontentloaded" });
+const galeriaViva = await page
+  .waitForSelector(".gallery-page", { timeout: 60000 })
+  .then(() => true)
+  .catch(() => false);
+ok("una ruta inexistente cae en la galeria sin romper", galeriaViva);
+
 console.log(`\nerrores de consola: ${errores.length}`);
 [...new Set(errores)].slice(0, 4).forEach((e) => console.log(`  - ${e}`));
 console.log(`\n=== ${R.filter(Boolean).length}/${R.length} OK`);

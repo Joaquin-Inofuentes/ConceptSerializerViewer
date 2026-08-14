@@ -119,6 +119,10 @@ export interface LoadResourcesOptions {
    * las fotos vayan apareciendo en el lienzo de a una en vez de que no se vea
    * ninguna hasta que termine la ultima. */
   onEach?: (resourceId: string, recurso: RecursoRasterizado) => void;
+  /** Se llama cuando un recurso no se pudo traer (timeout, red caida, PDF
+   * roto). Sin esto el fallo era invisible: el llamador lo volvia a pedir en
+   * cada gesto, para siempre. */
+  onFallo?: (resourceId: string, error: unknown) => void;
   /** Corta el trabajo pendiente (ej. el usuario cerro el dibujo). */
   signal?: AbortSignal;
   /** Solo estos recursos (y en este orden). Se usa para cargar primero lo
@@ -140,15 +144,51 @@ export interface LoadResourcesOptions {
 /** Contadores del cache persistente, para poder medir si de verdad sirve en
  * vez de suponerlo (el cache ya fallo silenciosamente una vez: guardaba el
  * tamaño recortado y lo comparaba contra el pedido, asi que nunca acertaba). */
-export const statsCache = { aciertos: 0, fallos: 0 };
+export const statsCache = {
+  aciertos: 0,
+  fallos: 0,
+  /** Veces que lo guardado no servia como resultado final pero se mostro
+   * igual mientras se rasterizaba el bueno. */
+  adelantos: 0,
+};
+
+/**
+ * Cuanto cuesta cada etapa de traer un recurso, acumulado en ms.
+ *
+ * Sin esto, "abrir tarda 50 s" no dice si el tiempo se va en la red, en el
+ * inflate del zip o en pdf.js, y se termina optimizando a ciegas la parte
+ * equivocada.
+ */
+export const tiempos = {
+  cacheMs: 0,
+  bytesMs: 0,
+  rasterMs: 0,
+  guardarMs: 0,
+  n: 0,
+  /** Rasterizados que terminaron BLOQUEANDO el hilo principal. Deberia ser 0
+   * salvo en navegadores sin OffscreenCanvas: cada uno es pdf.js ejecutando la
+   * lista de operadores de un plano encima del render loop. */
+  enMain: 0,
+  enMainMs: 0,
+};
+
+export function reiniciarTiempos() {
+  tiempos.cacheMs = 0;
+  tiempos.bytesMs = 0;
+  tiempos.rasterMs = 0;
+  tiempos.guardarMs = 0;
+  tiempos.n = 0;
+  tiempos.enMain = 0;
+  tiempos.enMainMs = 0;
+}
 
 /** Corre `worker` sobre `items` con un maximo de `limit` en vuelo. */
-async function runPool<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
+async function runPool<T>(items: T[], limit: number, worker: (item: T, indice: number) => Promise<void>) {
   let idx = 0;
   const next = async (): Promise<void> => {
     const current = idx++;
     if (current >= items.length) return;
-    await worker(items[current]);
+    await worker(items[current], current);
     return next();
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => next()));
@@ -162,22 +202,28 @@ interface SlotWorker {
   worker: Worker;
   ocupado: boolean;
   pendientes: Map<number, { resolve: (b: ImageBitmap) => void; reject: (e: Error) => void }>;
+  /** Recursos que este worker tiene parseados (su cache de PDFs abiertos).
+   * Sirve para mandarle el refinado de un plano al worker que ya lo tiene, en
+   * vez de a uno que tendria que parsearlo de nuevo. */
+  recientes: string[];
 }
 
 let pool: SlotWorker[] = [];
 let siguienteId = 1;
 let workersRotos = false;
+/** Quienes esperan un worker libre. Ver `esperarSlot`. */
+let colaSlots: Array<(s: SlotWorker | null) => void> = [];
 
 function crearSlot(): SlotWorker | null {
   try {
     const worker = new Worker(new URL("./raster.worker.ts", import.meta.url), { type: "module" });
-    const slot: SlotWorker = { worker, ocupado: false, pendientes: new Map() };
+    const slot: SlotWorker = { worker, ocupado: false, pendientes: new Map(), recientes: [] };
     worker.onmessage = (e: MessageEvent) => {
       const { id, bitmap, error } = e.data || {};
       const p = slot.pendientes.get(id);
       if (!p) return;
       slot.pendientes.delete(id);
-      slot.ocupado = false;
+      liberarSlot(slot);
       if (error) p.reject(new Error(error));
       else p.resolve(bitmap as ImageBitmap);
     };
@@ -188,6 +234,10 @@ function crearSlot(): SlotWorker | null {
       slot.pendientes.forEach((p) => p.reject(new Error("worker de rasterizado caido")));
       slot.pendientes.clear();
       slot.ocupado = false;
+      // Los que estaban esperando un worker no pueden quedarse colgados.
+      const esperando = colaSlots;
+      colaSlots = [];
+      esperando.forEach((r) => r(null));
     };
     return slot;
   } catch {
@@ -196,9 +246,12 @@ function crearSlot(): SlotWorker | null {
   }
 }
 
-function tomarSlot(): SlotWorker | null {
+function tomarSlot(resourceId?: string): SlotWorker | null {
   if (workersRotos || !soportaOffscreen()) return null;
-  const libre = pool.find((s) => !s.ocupado);
+  // Primero el que ya tiene este PDF parseado: mandarselo a otro obligaria a
+  // parsearlo de nuevo, que es justo el costo que el cache evita.
+  const afin = resourceId ? pool.find((s) => !s.ocupado && s.recientes.includes(resourceId)) : undefined;
+  const libre = afin ?? pool.find((s) => !s.ocupado);
   if (libre) {
     libre.ocupado = true;
     return libre;
@@ -211,6 +264,54 @@ function tomarSlot(): SlotWorker | null {
   return nuevo;
 }
 
+/** Devuelve el slot al pool, o se lo pasa directo al que estaba esperando. */
+function liberarSlot(slot: SlotWorker) {
+  const siguiente = colaSlots.shift();
+  if (siguiente) {
+    // Se queda ocupado: cambia de dueño sin pasar por "libre", para que no lo
+    // tome otro por el medio.
+    siguiente(slot);
+    return;
+  }
+  slot.ocupado = false;
+}
+
+/**
+ * Un worker libre, ESPERANDO si hace falta.
+ *
+ * Antes, si todos los workers estaban ocupados, `tomarSlot` devolvia null y el
+ * que llamaba rasterizaba en el hilo principal. Eso parecia un fallback
+ * inofensivo y era la principal causa de tirones: durante el pan/zoom conviven
+ * dos generaciones de refinado (la que se acaba de abortar sigue en vuelo y
+ * ocupa los dos workers), asi que la nueva caia SIEMPRE en el hilo principal —
+ * y ahi pdf.js se pone a ejecutar la lista de operadores del plano, con
+ * fillText y todo, bloqueando el render loop cientos de ms. En el perfil eran
+ * 1,3 s de pdf.js en el hilo principal durante una tanda de gestos.
+ *
+ * Esperar es estrictamente mejor: el trabajo tarda lo mismo, pero la pantalla
+ * sigue respondiendo mientras tanto.
+ */
+function esperarSlot(resourceId?: string): Promise<SlotWorker | null> {
+  if (workersRotos || !soportaOffscreen()) return Promise.resolve(null);
+  const inmediato = tomarSlot(resourceId);
+  if (inmediato) return Promise.resolve(inmediato);
+  return new Promise((resolve) => colaSlots.push(resolve));
+}
+
+/** Le dice a los workers que suelten los PDFs que tienen abiertos. Se llama al
+ * cerrar un dibujo: si no, sus paginas parseadas quedan retenidas mientras se
+ * abre el siguiente y se suman los dos consumos. */
+export function soltarPdfsAbiertos() {
+  pool.forEach((s) => {
+    s.recientes = [];
+    try {
+      s.worker.postMessage({ id: -1, limpiar: true });
+    } catch {
+      /* worker ya terminado */
+    }
+  });
+}
+
 function rasterizarEnWorker(
   slot: SlotWorker,
   resourceId: string,
@@ -220,6 +321,10 @@ function rasterizarEnWorker(
   region?: Region
 ): Promise<ImageBitmap> {
   const id = siguienteId++;
+  // Se anota ANTES de mandar: el worker cachea por resourceId, asi que a
+  // partir de aca este slot es el que conviene para los refinados de este
+  // recurso. Se conserva la misma cantidad que cachea el worker.
+  slot.recientes = [resourceId, ...slot.recientes.filter((r) => r !== resourceId)].slice(0, 2);
   return new Promise<ImageBitmap>((resolve, reject) => {
     slot.pendientes.set(id, { resolve, reject });
     slot.worker.postMessage({
@@ -234,11 +339,40 @@ function rasterizarEnWorker(
   });
 }
 
-/** Cierra los workers (al cerrar un dibujo no hace falta, se reutilizan; esto
- * es para tests y para liberar en memoria muy justa). */
+/** Cierra los workers. */
 export function cerrarWorkersRaster() {
   pool.forEach((s) => s.worker.terminate());
   pool = [];
+  colaSlots.forEach((r) => r(null));
+  colaSlots = [];
+}
+
+let cierreDiferido: number | null = null;
+
+/**
+ * Programa el cierre de los workers para dentro de un rato.
+ *
+ * Cada worker tiene el modulo de pdf.js cargado y hasta 2 paginas parseadas;
+ * con el visor cerrado eso son decenas de MB retenidos mientras el usuario
+ * navega la galeria — que es justo cuando la galeria esta generando
+ * miniaturas y necesita la memoria. Pero cerrarlos al instante haria pagar
+ * ~300 ms de arranque a quien vuelve a entrar al mismo dibujo, que es lo mas
+ * comun. Con la espera se queda con lo mejor de los dos.
+ */
+export function programarCierreWorkers(msEspera = 20000) {
+  if (cierreDiferido !== null) clearTimeout(cierreDiferido);
+  cierreDiferido = setTimeout(() => {
+    cierreDiferido = null;
+    if (pool.every((s) => !s.ocupado)) cerrarWorkersRaster();
+  }, msEspera) as unknown as number;
+}
+
+/** Cancela el cierre programado (el usuario volvio a abrir un dibujo). */
+export function cancelarCierreWorkers() {
+  if (cierreDiferido !== null) {
+    clearTimeout(cierreDiferido);
+    cierreDiferido = null;
+  }
 }
 
 /**
@@ -264,6 +398,7 @@ export function drawnSizes(doc: Document): Record<string, { width: number; heigh
   });
   return out;
 }
+
 
 /**
  * Ajusta el tamaño pedido a los limites.
@@ -335,10 +470,7 @@ async function rasterizarEnMain(
     try {
       const pdf = await tarea.promise;
       const page = await pdf.getPage(1);
-      // rotation: 0 — ver la explicacion en raster.worker.ts: Concepts guarda
-      // la geometria en el espacio SIN rotar y pone la rotacion en la matriz
-      // del elemento, asi que usar el viewport que pdf.js rota por /Rotate
-      // deformaba el plano.
+      // rotation: 0 — misma razon que en raster.worker.ts.
       const nativo = page.getViewport({ scale: 1, rotation: 0 });
       const canvas = document.createElement("canvas");
       canvas.width = width;
@@ -461,27 +593,31 @@ export async function loadResourceImages(
   // que reabrir un dibujo no cueste red: si se adelantan los bytes primero,
   // se bajan 12 MB para despues descubrir que estaban todos cacheados.
   const faltantes: string[] = [];
+  const tCache = performance.now();
   if (options.fileId && !options.sinCache) {
     await runPool(pendientes, 4, async (resourceId) => {
       if (options.signal?.aborted) return;
       const target = options.targets?.[resourceId];
-      // Si se pidio un RECORTE no se consulta el cache: ahi solo hay
-      // rasterizados de la pagina COMPLETA, y devolver uno haciendolo pasar
-      // por el recorte dibujaria la pagina entera dentro del sub-rectangulo
-      // (el plano aparecia encogido en una esquina). Ademas el recorte existe
-      // justamente porque hace falta MAS resolucion de la que hay guardada.
-      if (target?.region) {
-        statsCache.fallos++;
-        faltantes.push(resourceId);
-        return;
-      }
+
+      // Con RECORTE lo guardado no sirve como resultado final —solo hay
+      // paginas completas y el recorte existe justamente porque hace falta
+      // mas resolucion— pero si sirve como PRIMER NIVEL: se publica la pagina
+      // completa cacheada al instante (~30 ms) para que se vea algo ya, y el
+      // recurso queda igual en `faltantes` para que el recorte nitido llegue
+      // despues. Antes se salteaba el cache por completo en este caso, asi que
+      // un plano que entraba en pantalla estando acercado pagaba un parseo
+      // entero de pdf.js (~4,7 s con CPU frenada) para mostrar algo que ya
+      // estaba en el disco.
+      const soloComoAdelanto = !!target?.region;
+
       const cacheado = await leerRaster(
         options.fileId!,
         resourceId,
         (target?.width ?? 0) * opts.quality,
-        (target?.height ?? 0) * opts.quality
+        (target?.height ?? 0) * opts.quality,
+        { cualquierTamaño: soloComoAdelanto }
       );
-      if (cacheado) {
+      if (cacheado && !soloComoAdelanto) {
         statsCache.aciertos++;
         // Lo guardado es SIEMPRE la pagina completa (los recortes no se
         // cachean), asi que la region es null por construccion.
@@ -489,25 +625,65 @@ export async function loadResourceImages(
         loaded[resourceId] = entrada;
         pixelesUsados += cacheado.width * cacheado.height;
         if (!options.signal?.aborted) options.onEach?.(resourceId, entrada);
-      } else {
-        statsCache.fallos++;
-        faltantes.push(resourceId);
+        return;
+      }
+      statsCache.fallos++;
+      faltantes.push(resourceId);
+      if (cacheado) {
+        // Adelanto: se muestra pero NO se contabiliza en el presupuesto,
+        // porque en cuanto llegue el recorte este bitmap se reemplaza y se
+        // libera. Sumarlo haria que el recorte —el que de verdad importa—
+        // naciera con menos presupuesto del que le corresponde.
+        statsCache.adelantos++;
+        if (!options.signal?.aborted) {
+          options.onEach?.(resourceId, { img: cacheado as CanvasImageSource, region: null });
+        }
       }
     });
   } else {
     faltantes.push(...pendientes);
   }
+  tiempos.cacheMs += performance.now() - tCache;
   if (faltantes.length === 0 || options.signal?.aborted) return loaded;
 
-  // --- Paso 2: adelantar los bytes de lo que SI falta ---------------------
-  // Los recursos estan contiguos en el .concepts, asi que pedirlos de a uno
-  // gastaba una ida y vuelta HTTP por recurso. No se espera a que termine del
-  // todo antes de empezar a rasterizar: el pool arranca en paralelo y los
-  // primeros recursos ya salen del bloque que llego.
-  const adelanto = doc.prefetchResources(faltantes).catch(() => {});
+  // El lookup del cache corre en paralelo, asi que `faltantes` quedo en orden
+  // de llegada. Se restaura el orden de PRIORIDAD (lo que ocupa mas pantalla
+  // primero), que es el que usan tanto el pool como el adelanto de bytes.
+  const orden = new Map(pendientes.map((id, i) => [id, i]));
+  faltantes.sort((a, b) => (orden.get(a) ?? 0) - (orden.get(b) ?? 0));
 
-  await runPool(faltantes, concurrency, async (resourceId) => {
+  // --- Paso 2: adelantar los bytes, pero solo un poco por delante ---------
+  //
+  // Los recursos estan contiguos en el .concepts, asi que pedirlos de a uno
+  // gasta una ida y vuelta HTTP por recurso (~1,7 s a traves del proxy de
+  // Drive): agruparlos es lo que hace que abrir no cueste 19 viajes.
+  //
+  // Pero adelantar LA TANDA ENTERA es contraproducente en una conexion lenta:
+  // el adelanto se lleva todo el ancho de banda bajando los 11 MB de los 19
+  // planos mientras el pool espera los 600 KB del primero. Medido con 4G lenta
+  // en el dibujo mas pesado: 43,5 s hasta la primera imagen con adelanto
+  // completo contra 27,5 s sin adelanto ninguno.
+  //
+  // La ventana movil se queda con lo mejor de los dos: se adelanta solo lo que
+  // el pool esta por consumir, asi se siguen ahorrando viajes sin tapar lo que
+  // el usuario esta esperando.
+  const VENTANA_ADELANTO = 4;
+  let adelantados = 0;
+  let adelanto: Promise<void> = Promise.resolve();
+  const asegurarAdelanto = (hasta: number) => {
+    const limite = Math.min(hasta, faltantes.length);
+    if (limite <= adelantados) return;
+    const trozo = faltantes.slice(adelantados, limite);
+    adelantados = limite;
+    // Encadenado y no en paralelo: dos adelantos a la vez volverian a competir
+    // por el ancho de banda, que es justo lo que se quiere evitar.
+    adelanto = adelanto.then(() => doc.prefetchResources(trozo)).catch(() => {});
+  };
+  asegurarAdelanto(concurrency + VENTANA_ADELANTO);
+
+  await runPool(faltantes, concurrency, async (resourceId, indice) => {
     if (options.signal?.aborted) return;
+    asegurarAdelanto(indice + concurrency + VENTANA_ADELANTO);
     try {
       await withTimeout(
         (async () => {
@@ -524,18 +700,35 @@ export async function loadResourceImages(
 
           // Bajar los bytes (rango HTTP en un archivo remoto). El cache ya se
           // consulto arriba: aca solo llegan los que hay que rasterizar.
+          const tBytes = performance.now();
           const blob = await doc.loadResource(resourceId);
+          tiempos.bytesMs += performance.now() - tBytes;
           if (!blob || options.signal?.aborted) return;
 
           const header = await blob.slice(0, 5).text();
           const vectorial = header === "%PDF-";
-          const nativo = await tamañoNativo(blob, vectorial);
           const region = target?.region;
-          // Con region, el "nativo" relevante es el del pedazo, no el de la
-          // pagina entera: si no, el clamp de un bitmap creeria que se le
-          // pide mas resolucion de la que tiene y lo achicaria de mas.
-          const natW = region ? nativo.w * region.w : nativo.w;
-          const natH = region ? nativo.h * region.h : nativo.h;
+
+          // El tamano nativo solo se necesita si NO hay un destino util:
+          // con destino, un PDF se rasteriza a lo que se le pida y un bitmap
+          // lo capa el propio rasterizador, que ya tiene la imagen
+          // decodificada y nunca la agranda.
+          //
+          // Averiguarlo siempre costaba carisimo: para un PDF significaba
+          // abrirlo entero con pdf.js EN EL HILO PRINCIPAL solo para leer el
+          // tamano de la pagina, y despues el worker lo volvia a abrir para
+          // dibujarlo. O sea el trabajo pesado por duplicado, con la mitad
+          // bloqueando los gestos.
+          let natW = Infinity;
+          let natH = Infinity;
+          if (!(pedidoW > 0) || !(pedidoH > 0)) {
+            const nativo = await tamañoNativo(blob, vectorial);
+            // Con region, el "nativo" relevante es el del pedazo, no el de la
+            // pagina entera: si no, el clamp de un bitmap creeria que se le
+            // pide mas resolucion de la que tiene y lo achicaria de mas.
+            natW = region ? nativo.w * region.w : nativo.w;
+            natH = region ? nativo.h * region.h : nativo.h;
+          }
           const { width, height } = clampTarget(pedidoW, pedidoH, natW, natH, vectorial, {
             maxPixels: techoRecurso,
             minSide: opts.minSide,
@@ -544,17 +737,36 @@ export async function loadResourceImages(
 
           // Rasterizar, preferentemente fuera del hilo principal.
           let img: CanvasImageSource | null = null;
-          const slot = options.sinWorker ? null : tomarSlot();
+          const tRaster = performance.now();
+          const slot = options.sinWorker ? null : await esperarSlot(resourceId);
+          if (options.signal?.aborted) {
+            if (slot) liberarSlot(slot);
+            return;
+          }
+          const enMain = async () => {
+            const t = performance.now();
+            const r = await rasterizarEnMain(blob, width, height, vectorial, region);
+            tiempos.enMain++;
+            tiempos.enMainMs += performance.now() - t;
+            return r;
+          };
           if (slot) {
             try {
               img = await rasterizarEnWorker(slot, resourceId, blob, width, height, region);
-            } catch {
-              slot.ocupado = false;
-              img = await rasterizarEnMain(blob, width, height, vectorial, region);
+            } catch (e) {
+              // No se silencia: caer al hilo principal cuesta cientos de ms de
+              // bloqueo por recurso, asi que si esta pasando hay que enterarse.
+              if (tiempos.enMain === 0) console.warn("Rasterizado en worker fallo, se sigue en el hilo principal:", e);
+              liberarSlot(slot);
+              img = await enMain();
             }
           } else {
-            img = await rasterizarEnMain(blob, width, height, vectorial, region);
+            // Solo llega aca si no hay OffscreenCanvas o si los workers se
+            // cayeron: ahi no queda otra que bloquear el hilo principal.
+            img = await enMain();
           }
+          tiempos.rasterMs += performance.now() - tRaster;
+          tiempos.n++;
           if (!img || options.signal?.aborted) {
             if (img && img instanceof ImageBitmap) img.close();
             return;
@@ -562,7 +774,13 @@ export async function loadResourceImages(
 
           const entrada: RecursoRasterizado = { img, region: region ?? null };
           loaded[resourceId] = entrada;
-          pixelesUsados += width * height;
+          // Los pixeles REALES del bitmap, no los pedidos: el rasterizador
+          // capa los bitmaps a su tamano nativo, asi que una foto chica pedida
+          // en grande gasta menos de lo solicitado y el presupuesto que sobra
+          // tiene que quedar disponible para el resto.
+          const wReal = (img as any).width;
+          const hReal = (img as any).height;
+          pixelesUsados += typeof wReal === "number" && wReal > 0 ? wReal * hReal : width * height;
           options.onEach?.(resourceId, entrada);
 
           // Guardar para la proxima apertura (no bloquea). Los recortes NO se
@@ -574,10 +792,72 @@ export async function loadResourceImages(
       );
     } catch (e) {
       console.error("Recurso omitido por timeout/error", resourceId, e);
+      options.onFallo?.(resourceId, e);
     }
   });
   await adelanto;
   return loaded;
+}
+
+/**
+ * Entrega los recursos de a uno y suelta los que ya se usaron.
+ *
+ * Es para EXPORTAR. El export dibuja el documento completo, asi que necesita
+ * todos los recursos — pero no todos al mismo tiempo. Pedirlos de una sola vez
+ * significaba tener vivos los 94 bitmaps del dibujo mas pesado mientras ademas
+ * existe el canvas de export (hasta 96 MB en gama baja) y el JPEG resultante:
+ * el pico se iba muy por encima de lo que aguanta un telefono de 1 GB.
+ *
+ * Filtrar los recursos chicos NO es la solucion: se midio, y a la escala del
+ * export las 96 colocaciones del dibujo mas pesado miden 24 px o mas. Son
+ * contenido real del PDF. Lo que hay que acotar es cuantos estan vivos a la
+ * vez, no cuales se bajan.
+ *
+ * Mantiene unos pocos en memoria porque un mismo recurso puede estar colocado
+ * varias veces seguidas, y ahi recargarlo seria trabajo puro.
+ */
+export function proveedorEnStreaming(
+  doc: Document,
+  targets: Record<string, ResourceTarget>,
+  opciones: Omit<LoadResourcesOptions, "targets" | "only" | "onEach"> = {},
+  maxVivos = 3
+) {
+  const vivos = new Map<string, RecursoRasterizado>();
+
+  const soltarSobrantes = () => {
+    while (vivos.size > maxVivos) {
+      const masViejo = vivos.keys().next().value as string | undefined;
+      if (masViejo === undefined) break;
+      const r = vivos.get(masViejo);
+      vivos.delete(masViejo);
+      if (r) liberarImagen(r.img);
+    }
+  };
+
+  return {
+    async obtener(resourceId: string): Promise<RecursoRasterizado | null> {
+      const hit = vivos.get(resourceId);
+      if (hit) {
+        // Renovar posicion en la cola de uso.
+        vivos.delete(resourceId);
+        vivos.set(resourceId, hit);
+        return hit;
+      }
+      const cargados = await loadResourceImages(doc, { ...opciones, targets, only: [resourceId] });
+      const recurso = cargados[resourceId];
+      if (!recurso) return null;
+      vivos.set(resourceId, recurso);
+      soltarSobrantes();
+      return recurso;
+    },
+    liberar() {
+      vivos.forEach((r) => liberarImagen(r.img));
+      vivos.clear();
+    },
+    get vivos() {
+      return vivos.size;
+    },
+  };
 }
 
 /** Libera los bitmaps de un set de recursos. Los canvas se liberan poniendo
@@ -682,10 +962,6 @@ export function buildRenderPlan(doc: Document): RenderPlan {
 
   doc.layers.forEach((layer) => {
     layer.images.forEach((img) => {
-      const tx = img.transform[12];
-      const ty = img.transform[13];
-      const w = img.width || 500;
-      const h = img.height || 500;
       items.push({
         type: "image",
         resourceId: img.resourceId,
@@ -695,10 +971,24 @@ export function buildRenderPlan(doc: Document): RenderPlan {
         layerIndex: layer.index,
       });
       if (!hasStrokes) {
-        if (tx < minX) minX = tx;
-        if (ty < minY) minY = ty;
-        if (tx + w > maxX) maxX = tx + w;
-        if (ty + h > maxY) maxY = ty + h;
+        // Con la matriz aplicada, no [tx, ty, tx+ancho, ty+alto]: ese atajo
+        // ignora escala y rotacion, y en los dibujos con planos rotados -90
+        // grados daba un encuadre diez veces mas grande y corrido, o sea una
+        // miniatura casi vacia con el dibujo perdido en una esquina.
+        const m = img.transform;
+        const w = img.width || 500;
+        const h = img.height || 500;
+        if (m && m.length === 16) {
+          const a = m[0], b = m[1], c = m[4], d = m[5], e = m[12], f = m[13];
+          for (const [px, py] of [[0, 0], [w, 0], [0, h], [w, h]]) {
+            const x = a * px + c * py + e;
+            const y = b * px + d * py + f;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
       }
     });
   });

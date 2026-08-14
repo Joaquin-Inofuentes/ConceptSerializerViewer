@@ -1,0 +1,32 @@
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import puppeteer from "puppeteer";
+const OUT = path.resolve(".cache/cap-palier");
+await mkdir(OUT, { recursive: true });
+const BASE = (process.env.BASE_URL || "http://localhost:5173").replace(/\/+$/,"");
+const RUTA = process.env.RUTA || "/fede-y-franco/concepts/juramento/palier";
+const b = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--enable-precise-memory-info"], protocolTimeout: 900000 });
+const p = await b.newPage();
+p.setDefaultTimeout(300000);
+await p.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+const errs=[]; p.on("pageerror",e=>errs.push(e.message.slice(0,160)));
+let bytes=0; p.on("response",r=>{if(r.url().includes("concepts-drive")) bytes+=Number(r.headers()["content-length"]||0);});
+const t0=Date.now();
+await p.goto(BASE+RUTA, { waitUntil: "domcontentloaded" });
+await p.waitForFunction(()=>{const c=document.querySelector("canvas");return c&&c.width>1;},{timeout:300000});
+const tCanvas=Date.now()-t0;
+await p.screenshot({path:path.join(OUT,"1-trazos.png")});
+try{ await p.waitForFunction(()=>!document.querySelector(".viewer-carga"),{timeout:300000}); }catch{}
+const tTodo=Date.now()-t0;
+await new Promise(r=>setTimeout(r,1200));
+await p.screenshot({path:path.join(OUT,"2-completo.png")});
+const st=await p.evaluate(()=>window.__viewerStats?window.__viewerStats():null);
+const px=await p.evaluate(()=>{const c=document.querySelector("canvas");const d=c.getContext("2d").getImageData(0,0,c.width,c.height).data;let nf=0;const col=new Set();
+for(let i=0;i<d.length;i+=4*53){const r=d[i],g=d[i+1],bb=d[i+2];col.add((r>>4)<<8|(g>>4)<<4|(bb>>4));if(!(r>245&&g>245&&bb>245)&&!(r<32&&g<34&&bb<40))nf++;}
+return {pctNoFondo:+((nf/Math.floor(d.length/(4*53)))*100).toFixed(1),colores:col.size};});
+console.log(`URL: ${BASE}${RUTA}`);
+console.log(`lienzo ${tCanvas}ms | completo ${tTodo}ms | red ${(bytes/1048576).toFixed(1)} MB`);
+console.log(`canvas: ${px.pctNoFondo}% con contenido, ${px.colores} colores`);
+console.log(`stats: ${JSON.stringify(st)}`);
+console.log(errs.length?`errores: ${[...new Set(errs)].slice(0,3).join(" | ")}`:"sin errores");
+await b.close();

@@ -24,6 +24,161 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 // PDFs, con y sin worker compartido). Entre "ahorrar el arranque" y "liberar
 // la RAM del PDF", en un telefono de 1 GB gana liberar la RAM.
 
+/**
+ * Ultimos PDFs abiertos, para no volver a parsearlos en cada refinado.
+ *
+ * Cada vez que el usuario se acerca, el visor vuelve a rasterizar los planos
+ * que se ven para que se lean nitidos. Sin este cache eso significaba abrir y
+ * parsear el PDF ENTERO otra vez, que en estos planos (CAD, decenas de miles
+ * de vectores) es el 95% del costo: medido sobre el dibujo mas pesado, una
+ * tanda de gestos disparaba 42 rasterizaciones y 286 s de trabajo. Reusar la
+ * pagina ya parseada deja el refinado en solo el dibujado.
+ *
+ * El tope es bajo a proposito: un PDF abierto retiene su buffer, y el
+ * presupuesto de un telefono de 1 GB no da para tener muchos vivos. Con 2 por
+ * worker alcanza, porque el que se refina es justo el que se acaba de usar.
+ */
+const MAX_PDFS_ABIERTOS = 2;
+
+/**
+ * Fabricas que pdf.js necesita para dibujar, en version APTA PARA WORKER.
+ *
+ * Por defecto pdf.js usa `DOMCanvasFactory` y `DOMFilterFactory`, que hacen
+ * `globalThis.document.createElement(...)`. En un worker no hay `document`, y
+ * en cuanto un PDF necesitaba un canvas auxiliar —grupos de transparencia,
+ * mascaras suaves, patrones: cosas normales en un plano de CAD— el rasterizado
+ * tiraba "Cannot read properties of undefined (reading 'createElement')".
+ *
+ * Ese error estaba siendo atrapado por el llamador, que en silencio rehacia el
+ * trabajo en el hilo principal. O sea: el pool de workers se creaba, parecia
+ * andar, y NO se usaba nunca. Medido en el dibujo mas pesado: 38 de 38
+ * rasterizados terminaban en el hilo principal, 46,8 s de bloqueo con pdf.js
+ * ejecutando listas de operadores encima del render loop. Era la causa de los
+ * tirones al panear y hacer zoom.
+ */
+class FabricaCanvasWorker {
+  private hwa: boolean;
+  constructor({ enableHWA = false }: { enableHWA?: boolean } = {}) {
+    this.hwa = enableHWA;
+  }
+  create(width: number, height: number) {
+    if (width <= 0 || height <= 0) throw new Error("Invalid canvas size");
+    const canvas = new OffscreenCanvas(width, height);
+    return { canvas, context: canvas.getContext("2d", { willReadFrequently: !this.hwa }) };
+  }
+  reset({ canvas }: { canvas: OffscreenCanvas }, width: number, height: number) {
+    if (!canvas) throw new Error("Canvas is not specified");
+    if (width <= 0 || height <= 0) throw new Error("Invalid canvas size");
+    canvas.width = width;
+    canvas.height = height;
+  }
+  destroy(cc: { canvas: OffscreenCanvas | null; context: unknown }) {
+    if (!cc.canvas) throw new Error("Canvas is not specified");
+    cc.canvas.width = 0;
+    cc.canvas.height = 0;
+    cc.canvas = null;
+    cc.context = null;
+  }
+}
+
+/** Los filtros de pdf.js se implementan con SVG en el DOM. Sin DOM se
+ * devuelve "none", que es exactamente lo que hace la version de Node. */
+class FabricaFiltrosWorker {
+  addFilter() { return "none"; }
+  addHCMFilter() { return "none"; }
+  addAlphaFilter() { return "none"; }
+  addLuminosityFilter() { return "none"; }
+  addKnockoutFilter() { return "none"; }
+  addHighlightHCMFilter() { return "none"; }
+  addSelectionHCMFilter() { return "none"; }
+  addSelectionFilter() { return "none"; }
+  createSelectionStyle() { return null; }
+  destroy() {}
+}
+
+interface PdfAbierto {
+  tarea: { destroy(): Promise<void> };
+  page: any;
+  nativo: { width: number; height: number };
+  usadoEn: number;
+}
+
+const abiertos = new Map<string, PdfAbierto>();
+let reloj = 0;
+
+async function cerrarPdf(resourceId: string) {
+  const a = abiertos.get(resourceId);
+  if (!a) return;
+  abiertos.delete(resourceId);
+  try {
+    a.page.cleanup();
+  } catch {
+    /* ya limpio */
+  }
+  try {
+    await a.tarea.destroy();
+  } catch {
+    /* ya destruido */
+  }
+}
+
+async function abrirPdf(resourceId: string, blob: Blob): Promise<PdfAbierto> {
+  const cacheado = abiertos.get(resourceId);
+  if (cacheado) {
+    cacheado.usadoEn = ++reloj;
+    return cacheado;
+  }
+
+  const data = new Uint8Array(await blob.arrayBuffer());
+  // `destroy()` vive en el loading task, no en el documento: hay que
+  // guardarse la referencia para poder liberar el worker de pdf.js y el
+  // buffer del PDF, que con 19 planos de varios MB es RAM que no vuelve sola.
+  //
+  // `disableFontFace` no es un ajuste de calidad: es lo que hace que esto
+  // FUNCIONE aca adentro. Por defecto pdf.js registra las fuentes con
+  // `FontFace` y `document.createElement`, y en un worker no hay `document`:
+  // cada plano con texto tiraba "Cannot read properties of undefined (reading
+  // 'createElement')", el llamador lo atrapaba en silencio y lo rasterizaba en
+  // el hilo principal. O sea que el pool de workers existia pero no se usaba
+  // nunca, y los 19 planos se dibujaban encima del render loop — 40,9 s de
+  // hilo principal bloqueado al abrir el dibujo mas pesado. Con las fuentes
+  // dibujadas como trazos el texto se ve igual y el trabajo queda donde tiene
+  // que estar.
+  const tarea = pdfjsLib.getDocument({
+    data,
+    disableFontFace: true,
+    isOffscreenCanvasSupported: true,
+    useSystemFonts: false,
+    CanvasFactory: FabricaCanvasWorker,
+    FilterFactory: FabricaFiltrosWorker,
+  } as Parameters<typeof pdfjsLib.getDocument>[0]);
+  const pdf = await tarea.promise;
+  const page = await pdf.getPage(1);
+  // rotation: 0 a proposito. Muchos de estos PDFs traen /Rotate=90, y por
+  // defecto pdf.js YA aplica esa rotacion al viewport (una pagina de 842x3118
+  // se reporta como 3118x842). Pero Concepts guarda la geometria del recurso
+  // en el espacio SIN rotar, asi que usar el viewport rotado rasterizaba una
+  // pagina apaisada dentro de una caja vertical y el plano salia aplastado.
+  const nativo = page.getViewport({ scale: 1, rotation: 0 });
+
+  const entrada: PdfAbierto = { tarea, page, nativo, usadoEn: ++reloj };
+  abiertos.set(resourceId, entrada);
+
+  while (abiertos.size > MAX_PDFS_ABIERTOS) {
+    let masViejo: string | null = null;
+    let peor = Infinity;
+    for (const [id, a] of abiertos) {
+      if (id !== resourceId && a.usadoEn < peor) {
+        peor = a.usadoEn;
+        masViejo = id;
+      }
+    }
+    if (!masViejo) break;
+    await cerrarPdf(masViejo);
+  }
+  return entrada;
+}
+
 interface PedidoRaster {
   id: number;
   resourceId: string;
@@ -32,6 +187,8 @@ interface PedidoRaster {
   width: number;
   height: number;
   smoothing: ImageSmoothingQuality;
+  /** Cierra todos los PDFs abiertos (al cerrar el dibujo). */
+  limpiar?: boolean;
   /**
    * Porcion del recurso a rasterizar, en fracciones de 0 a 1 sobre su propio
    * ancho/alto. Sirve para que al hacer mucho zoom se gaste el presupuesto de
@@ -47,81 +204,136 @@ async function rasterizar(p: PedidoRaster): Promise<ImageBitmap> {
   const reg = p.region;
 
   if (header === "%PDF-") {
-    const data = new Uint8Array(await p.blob.arrayBuffer());
-    // `destroy()` vive en el loading task, no en el documento: hay que
-    // guardarse la referencia para poder liberar el worker de pdf.js y el
-    // buffer del PDF, que con 19 planos de varios MB es RAM que no vuelve
-    // sola.
-    const tarea = pdfjsLib.getDocument({ data });
-    const pdf = await tarea.promise;
-    try {
-      const page = await pdf.getPage(1);
-      // rotation: 0 a proposito. Muchos de estos PDFs traen /Rotate=90, y por
-      // defecto pdf.js YA aplica esa rotacion al viewport (una pagina de
-      // 842x3118 se reporta como 3118x842). Pero Concepts guarda la geometria
-      // del recurso en el espacio SIN rotar y mete la rotacion en la matriz
-      // del elemento. Usar el viewport rotado hacia que rasterizaramos una
-      // pagina apaisada dentro de una caja vertical: el plano salia aplastado
-      // (deformacion medida: 0,073) y las anotaciones quedaban "en el aire",
-      // porque ya no caian sobre lo que marcaban.
-      const nativo = page.getViewport({ scale: 1, rotation: 0 });
-      const canvas = new OffscreenCanvas(p.width, p.height);
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("sin contexto 2d en el worker");
-      // Escala NO uniforme via el `transform` de pdf.js: el recurso se dibuja
-      // despues estirado a un ancho/alto arbitrario, asi que rasterizarlo con
-      // una escala unica (forzosamente la mayor) generaba canvases absurdos
-      // (15278x5042 = 77 Mpx para algo que se muestra a 266x807).
-      //
-      // Con `region` ademas se recorta: la escala se calcula sobre el pedazo
-      // pedido y se traslada para que ese pedazo caiga en 0,0 del canvas.
-      const rx = (reg?.x ?? 0) * nativo.width;
-      const ry = (reg?.y ?? 0) * nativo.height;
-      const rw = (reg?.w ?? 1) * nativo.width;
-      const rh = (reg?.h ?? 1) * nativo.height;
-      const sx = p.width / rw;
-      const sy = p.height / rh;
-      await (page as any).render({
-        canvasContext: ctx as unknown as CanvasRenderingContext2D,
-        viewport: nativo,
-        transform: [sx, 0, 0, sy, -rx * sx, -ry * sy],
-      }).promise;
-      const bitmap = canvas.transferToImageBitmap();
-      page.cleanup();
-      return bitmap;
-    } finally {
-      void tarea.destroy();
-    }
+    const { page, nativo } = await abrirPdf(p.resourceId, p.blob);
+    const canvas = new OffscreenCanvas(p.width, p.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("sin contexto 2d en el worker");
+    // Escala NO uniforme via el `transform` de pdf.js: el recurso se dibuja
+    // despues estirado a un ancho/alto arbitrario, asi que rasterizarlo con
+    // una escala unica (forzosamente la mayor) generaba canvases absurdos
+    // (15278x5042 = 77 Mpx para algo que se muestra a 266x807).
+    //
+    // Con `region` ademas se recorta: la escala se calcula sobre el pedazo
+    // pedido y se traslada para que ese pedazo caiga en 0,0 del canvas.
+    const rx = (reg?.x ?? 0) * nativo.width;
+    const ry = (reg?.y ?? 0) * nativo.height;
+    const rw = (reg?.w ?? 1) * nativo.width;
+    const rh = (reg?.h ?? 1) * nativo.height;
+    const sx = p.width / rw;
+    const sy = p.height / rh;
+    await (page as any).render({
+      canvasContext: ctx as unknown as CanvasRenderingContext2D,
+      viewport: nativo,
+      transform: [sx, 0, 0, sy, -rx * sx, -ry * sy],
+    }).promise;
+    // Sin page.cleanup(): tira justo lo que hace valiosa a la pagina cacheada
+    // (las fuentes y los operadores ya decodificados). Se limpia al desalojarla.
+    return canvas.transferToImageBitmap();
   }
 
-  // Imagen raster: createImageBitmap decodifica y reescala nativamente, sin
-  // pasar por un canvas intermedio. Con region usa la variante que recorta.
-  const base = await createImageBitmap(p.blob);
+  // --- Imagen raster ------------------------------------------------------
+  //
+  // Se decodifica DIRECTO al tamaño final, en una sola llamada. Antes se hacia
+  // en dos pasos: `createImageBitmap(blob)` completo y despues otro para
+  // achicar. Con las fotos de estos dibujos (3264x2448) el primer paso
+  // materializa 32 MB de RGBA para terminar mostrando 300x225 px — y con dos
+  // workers en paralelo son ~64 MB de pico transitorio sobre un presupuesto
+  // total de 48 MB. Ese es el tipo de pico que mata la pestaña en un telefono
+  // de 1 GB aunque el promedio se vea bien.
+  //
+  // Pasandole el tamaño a `createImageBitmap`, Chrome usa el decodificador
+  // escalado de JPEG y nunca llega a materializar los 8 Mpx.
+  const calidad = p.smoothing === "high" ? "high" : "medium";
+  const nativo = await medirImagen(p.blob);
+
   if (reg) {
-    const cx = Math.max(0, Math.round(reg.x * base.width));
-    const cy = Math.max(0, Math.round(reg.y * base.height));
-    const cw = Math.max(1, Math.min(base.width - cx, Math.round(reg.w * base.width)));
-    const ch = Math.max(1, Math.min(base.height - cy, Math.round(reg.h * base.height)));
-    const recorte = await createImageBitmap(base, cx, cy, cw, ch, {
+    if (!nativo) {
+      // Sin poder leer el encabezado no se puede recortar en coordenadas de
+      // origen; se cae al camino de dos pasos, que es correcto aunque caro.
+      const base = await createImageBitmap(p.blob);
+      const cx = Math.max(0, Math.round(reg.x * base.width));
+      const cy = Math.max(0, Math.round(reg.y * base.height));
+      const cw = Math.max(1, Math.min(base.width - cx, Math.round(reg.w * base.width)));
+      const ch = Math.max(1, Math.min(base.height - cy, Math.round(reg.h * base.height)));
+      const recorte = await createImageBitmap(base, cx, cy, cw, ch, {
+        resizeWidth: Math.min(p.width, cw),
+        resizeHeight: Math.min(p.height, ch),
+        resizeQuality: calidad,
+      });
+      base.close();
+      return recorte;
+    }
+    const cx = Math.max(0, Math.round(reg.x * nativo.w));
+    const cy = Math.max(0, Math.round(reg.y * nativo.h));
+    const cw = Math.max(1, Math.min(nativo.w - cx, Math.round(reg.w * nativo.w)));
+    const ch = Math.max(1, Math.min(nativo.h - cy, Math.round(reg.h * nativo.h)));
+    // El recorte se hace SOBRE EL BLOB: no se decodifica la foto entera.
+    return createImageBitmap(p.blob, cx, cy, cw, ch, {
       resizeWidth: Math.min(p.width, cw),
       resizeHeight: Math.min(p.height, ch),
-      resizeQuality: p.smoothing === "high" ? "high" : "medium",
+      resizeQuality: calidad,
     });
-    base.close();
-    return recorte;
   }
-  if (p.width >= base.width && p.height >= base.height) return base;
-  const chico = await createImageBitmap(base, {
-    resizeWidth: p.width,
-    resizeHeight: p.height,
-    resizeQuality: p.smoothing === "high" ? "high" : "medium",
-  });
-  base.close();
-  return chico;
+
+  if (!nativo) return createImageBitmap(p.blob);
+  // Nunca agrandar: pedir mas pixeles que los que tiene la foto no agrega
+  // detalle y si gasta memoria.
+  const w = Math.min(p.width, nativo.w);
+  const h = Math.min(p.height, nativo.h);
+  if (w >= nativo.w && h >= nativo.h) return createImageBitmap(p.blob);
+  return createImageBitmap(p.blob, { resizeWidth: w, resizeHeight: h, resizeQuality: calidad });
+}
+
+/**
+ * Ancho y alto de una imagen leyendo SOLO el encabezado, sin decodificarla.
+ *
+ * Decodificar una foto de 8 Mpx para averiguar cuanto mide cuesta 32 MB de
+ * RAM; el encabezado esta en los primeros cientos de bytes. Devuelve null si
+ * el formato no se reconoce, y ahi el llamador se las arregla.
+ */
+async function medirImagen(blob: Blob): Promise<{ w: number; h: number } | null> {
+  try {
+    const buf = new Uint8Array(await blob.slice(0, 64 * 1024).arrayBuffer());
+    const v = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+
+    // PNG: el IHDR va siempre en el mismo lugar.
+    if (buf.length > 24 && v.getUint32(0) === 0x89504e47) {
+      return { w: v.getUint32(16), h: v.getUint32(20) };
+    }
+
+    // JPEG: se recorren los marcadores hasta un SOF (que trae las medidas).
+    if (buf.length > 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+      let i = 2;
+      while (i + 9 < buf.length) {
+        if (buf[i] !== 0xff) {
+          i++;
+          continue;
+        }
+        const marcador = buf[i + 1];
+        // SOF0..SOF15, salteando los que no describen una trama.
+        if (marcador >= 0xc0 && marcador <= 0xcf && marcador !== 0xc4 && marcador !== 0xc8 && marcador !== 0xcc) {
+          return { h: v.getUint16(i + 5), w: v.getUint16(i + 7) };
+        }
+        if (marcador === 0xd8 || marcador === 0x01 || (marcador >= 0xd0 && marcador <= 0xd7)) {
+          i += 2;
+          continue;
+        }
+        i += 2 + v.getUint16(i + 2);
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 self.onmessage = async (e: MessageEvent<PedidoRaster>) => {
   const p = e.data;
+  if (p.limpiar) {
+    for (const id of [...abiertos.keys()]) await cerrarPdf(id);
+    (self as unknown as Worker).postMessage({ id: p.id, limpio: true });
+    return;
+  }
   try {
     const bitmap = await rasterizar(p);
     (self as unknown as Worker).postMessage(

@@ -22,7 +22,7 @@ const browser = await puppeteer.launch({
 const leerFilas = (page) =>
   page.evaluate(async () => {
     const db = await new Promise((res) => {
-      const q = indexedDB.open("concepts-raster", 3);
+      const q = indexedDB.open("concepts-raster", 4);
       q.onsuccess = () => res(q.result);
       q.onerror = () => res(null);
     });

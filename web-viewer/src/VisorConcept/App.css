@@ -257,6 +257,10 @@ body {
   overflow: hidden;
   width: 100%;
   height: 100%;
+  /* Durante un pan/zoom el lienzo se mueve con un transform de CSS, asi que
+     por los bordes asoma lo que haya detras. Tiene que ser el mismo fondo que
+     pinta el canvas, o se veria un marco de otro color siguiendo al gesto. */
+  background: var(--bg-canvas);
 }
 
 .empty-state {
@@ -296,14 +300,10 @@ body {
   max-width: 82%;
   max-height: 82%;
   object-fit: contain;
-  filter: blur(1.5px) saturate(0.75);
-  opacity: 0.72;
-  animation: placeholderPulse 1.8s ease-in-out infinite;
-}
-
-@keyframes placeholderPulse {
-  0%, 100% { opacity: 0.55; }
-  50% { opacity: 0.82; }
+  /* Sin desenfoque y bien opaca. El desenfoque le quitaba justo lo unico que
+     sirve mientras cargan las fotos: poder leer el plano. Y a pleno sol la
+     diferencia entre 0,55 y 0,82 de opacidad pulsante es "no se ve nada". */
+  opacity: 0.92;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -319,7 +319,12 @@ body {
   left: 50%;
   bottom: 1.25rem;
   transform: translateX(-50%);
-  width: min(420px, calc(100vw - 2rem));
+  /* Se reserva el carril derecho: la columna de herramientas vive en
+     right:20px con botones de 44 px, y la tarjeta centrada le tapaba entero el
+     boton de Imagenes y un tercio del de Capas — justo durante la carga, que
+     es cuando uno quiere apagar capas o reencuadrar. */
+  width: min(420px, calc(100vw - 2rem - 68px));
+  margin-right: 68px;
   padding: 0.7rem 0.9rem;
   border-radius: 14px;
   background: var(--carga-fondo);
@@ -509,4 +514,43 @@ body {
   pointer-events: none;
   z-index: 55;
   animation: fadeIn 0.2s ease-out both;
+}
+
+/* Aviso de planos que no se pudieron traer. Va arriba, discreto pero legible:
+   antes un recurso fallido era un recuadro vacio identico a "todavia no
+   llego", la barra desaparecia y la app afirmaba que habia terminado. */
+.viewer-fallidos {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 55;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  background: var(--carga-fondo);
+  color: var(--carga-texto);
+  border: 1px solid var(--error);
+  box-shadow: var(--sombra);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* Celda de una foto que todavia no se trajo. No es un error: a este zoom mide
+   pocos pixeles y por eso no se baja. Se dice explicitamente, que ademas es la
+   unica parte de la app donde se ensena el modelo mental del umbral. */
+.gallery-item-lejos {
+  border-style: dashed;
+  cursor: default;
+}
+.gallery-item-lejos:hover {
+  border-color: var(--border-color);
+}
+.gallery-item-aviso {
+  font-size: 0.62rem;
+  line-height: 1.15;
+  text-align: center;
+  color: var(--text-muted);
+  padding: 0 2px;
 }

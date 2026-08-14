@@ -288,7 +288,7 @@ for (const f of paraCache) {
   await new Promise((r) => setTimeout(r, 3000));
   const parcial = await page.evaluate(async () => {
     const db = await new Promise((res) => {
-      const q = indexedDB.open("concepts-raster", 3);
+      const q = indexedDB.open("concepts-raster", 4);
       q.onsuccess = () => res(q.result);
       q.onerror = () => res(null);
     });
@@ -303,7 +303,7 @@ for (const f of paraCache) {
 }
 const cache = await page.evaluate(async () => {
   const db = await new Promise((res) => {
-    const q = indexedDB.open("concepts-raster", 3);
+    const q = indexedDB.open("concepts-raster", 4);
     q.onsuccess = () => res(q.result);
     q.onerror = () => res(null);
   });

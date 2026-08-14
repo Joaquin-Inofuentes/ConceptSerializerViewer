@@ -302,8 +302,9 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
       // Si la URL trae una ruta (/guada-y-flor-re/concepts), se resuelve
       // contra el arbol ya cacheado: comparar slugs es instantaneo y no hace
       // falta pegarle a Drive por cada nivel.
+      const segmentos = rutaInicial || [];
       const pila: FolderCrumb[] = [ROOT_CRUMB];
-      for (const slug of rutaInicial || []) {
+      for (const slug of segmentos) {
         const actual = folderTreeCacheRef.current.get(pila[pila.length - 1].id);
         const hija = actual?.subfolders.find((f) => aSlug(f.name) === slug);
         if (!hija) break; // el resto de la ruta puede ser el archivo
@@ -311,9 +312,24 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
       }
       if (pila.length > 1) setFolderStack(pila);
       const destino = pila[pila.length - 1];
-      loadFolder(destino.id, destino.name);
+      await loadFolder(destino.id, destino.name);
+
+      // Lo que sobro de la ruta es el DIBUJO, y hay que abrirlo.
+      //
+      // Sin esto la ruta compartible funcionaba a medias: al abrir un dibujo
+      // la URL pasaba a ser /carpeta/.../dibujo, pero si alguien pegaba ese
+      // link solo llegaba a la carpeta y tenia que buscar el dibujo a mano.
+      // O sea que el link decia a que plano apuntaba y no te llevaba ahi.
+      const resto = segmentos.slice(pila.length - 1);
+      if (resto.length !== 1) return;
+      // `loadFolder` ya dejo el listado en el arbol cacheado.
+      const archivos = folderTreeCacheRef.current.get(destino.id)?.files || [];
+      const archivo = archivos.find((f) => aSlug(f.name) === resto[0]);
+      if (archivo) {
+        onOpen(archivo.id, archivo.name, null, pila.slice(1).map((c) => c.name));
+      }
     })();
-  }, [loadFolder, rutaInicial]);
+  }, [loadFolder, rutaInicial, onOpen]);
 
   // Cada vez que cambia la carpeta, se avisa para que la URL la refleje.
   useEffect(() => {

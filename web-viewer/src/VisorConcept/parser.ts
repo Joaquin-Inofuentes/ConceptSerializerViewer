@@ -144,6 +144,44 @@ extensionCodec.register({
   },
 });
 
+/**
+ * Concepts guarda el documento girado 180 grados respecto de como lo muestra.
+ *
+ * Se nota en cuanto se mira texto: los planos salian con el rotulo del lado
+ * equivocado y las anotaciones a mano ("FALTA COLOCAR", "CASA") se leian cabeza
+ * abajo. No era cosa de un dibujo ni de un PDF puntual — se midio la direccion
+ * en la que corre el texto de cada plano, ya pasada por la matriz con la que el
+ * documento lo coloca, y dio hacia la izquierda en los 25 planos de los 5
+ * archivos mas pesados. O sea: el documento entero.
+ *
+ * Girar 180 es lo mismo que negar las dos coordenadas, asi que se corrige en el
+ * unico lugar por el que pasan todos: el parseo. De ahi para abajo (encuadre,
+ * descarte por frustum, recortes, export, miniaturas) todo trabaja con
+ * coordenadas ya derechas y no hay que acordarse de nada.
+ *
+ * OJO con arreglarlo mas arriba, en el rasterizado de los PDF: eso pone los
+ * planos derechos pero deja los trazos al reves, y ahi las anotaciones dejan de
+ * caer sobre lo que marcan — que es peor que tener todo consistentemente al
+ * reves.
+ */
+function girarPunto(x: number, y: number): [number, number] {
+  return [-x, -y];
+}
+
+/**
+ * La misma media vuelta, aplicada a la matriz con la que se coloca un recurso.
+ *
+ * Solo se tocan las 6 componentes de la afin 2D (las unicas que se usan al
+ * dibujar): negarlas equivale a componer la matriz con un giro de 180 grados,
+ * asi que la imagen queda derecha Y en el lugar que le corresponde.
+ */
+function girarTransform(m: number[]): number[] {
+  if (!m || m.length !== 16) return m;
+  const salida = m.slice();
+  for (const i of [0, 1, 4, 5, 12, 13]) salida[i] = -salida[i];
+  return salida;
+}
+
 function rgbaToHex(r: number, g: number, b: number, a: number) {
   const clamp = (v: number) => Math.max(0, Math.min(1, v));
   const hexR = Math.round(clamp(r) * 255).toString(16).padStart(2, "0");
@@ -245,7 +283,33 @@ async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Do
 
   const { ids, sizes, porId } = mapearRecursos(zip, layers);
 
+  /**
+   * Bytes ya bajados de cada recurso, con tope.
+   *
+   * Antes era un Map sin limite que solo se vaciaba al cerrar el dibujo: con
+   * 96 imagenes colocadas, recorrer el dibujo entero terminaba reteniendo los
+   * 262 MB del archivo en memoria de blobs — duplicados, porque lo que se
+   * dibuja es el bitmap ya rasterizado, no el blob. En un telefono de 1 GB
+   * Chrome pagina eso a disco y se siente como tirones de I/O, no como un
+   * error limpio, asi que no aparecia en ningun bench.
+   *
+   * Se conserva lo ultimo usado: sirve para el refinado por zoom, que vuelve a
+   * pedir el mismo recurso enseguida. Lo que se desaloja se vuelve a pedir por
+   * rango HTTP si hace falta.
+   */
   const cacheBlobs = new Map<string, Blob>();
+  const lecturas = new Map<string, Promise<Blob | null>>();
+  let bytesEnCache = 0;
+  const MAX_BYTES_BLOBS = 16 * 1024 * 1024;
+  const podarBlobs = () => {
+    while (bytesEnCache > MAX_BYTES_BLOBS && cacheBlobs.size > 1) {
+      const masViejo = cacheBlobs.keys().next().value as string | undefined;
+      if (masViejo === undefined) break;
+      const b = cacheBlobs.get(masViejo);
+      cacheBlobs.delete(masViejo);
+      bytesEnCache -= b ? b.size : 0;
+    }
+  };
   let cerrado = false;
 
   const bytesRecursos = ids.reduce((n, id) => n + (sizes[id] || 0), 0);
@@ -261,18 +325,38 @@ async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Do
     async loadResource(id: string) {
       if (cerrado) return null;
       const hit = cacheBlobs.get(id);
-      if (hit) return hit;
+      if (hit) {
+        // Renovar la posicion en la cola de uso.
+        cacheBlobs.delete(id);
+        cacheBlobs.set(id, hit);
+        return hit;
+      }
+      // Si ya hay una lectura EN VUELO para este recurso, se espera esa. Sin
+      // esto, dos pedidos simultaneos del mismo id (pasa cuando el refinado
+      // por zoom se cruza con la carga del anillo) bajaban y materializaban
+      // dos Blobs de varios MB del mismo contenido.
+      const enVuelo = lecturas.get(id);
+      if (enVuelo) return enVuelo;
+
       const nombre = porId.get(id);
       if (!nombre) return null;
-      try {
-        const blob = await zip.readBlob(nombre);
-        if (cerrado) return null;
-        cacheBlobs.set(id, blob);
-        return blob;
-      } catch (e) {
-        console.error("No se pudo leer el recurso", id, nombre, e);
-        return null;
-      }
+      const tarea = (async () => {
+        try {
+          const blob = await zip.readBlob(nombre);
+          if (cerrado) return null;
+          cacheBlobs.set(id, blob);
+          bytesEnCache += blob.size;
+          podarBlobs();
+          return blob;
+        } catch (e) {
+          console.error("No se pudo leer el recurso", id, nombre, e);
+          return null;
+        } finally {
+          lecturas.delete(id);
+        }
+      })();
+      lecturas.set(id, tarea);
+      return tarea;
     },
     async prefetchResources(ids: string[]) {
       if (cerrado) return;
@@ -287,6 +371,8 @@ async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Do
     close() {
       cerrado = true;
       cacheBlobs.clear();
+      lecturas.clear();
+      bytesEnCache = 0;
       if (fuente instanceof RemoteSource) fuente.liberar();
     },
   };
@@ -434,33 +520,51 @@ function procesarItem(item: any, layer: Layer, globalBbox: BBox) {
   const tipo = item[0];
   const cuerpo = item.length > 1 ? item[1] : null;
   
-  if (tipo === 8 && Array.isArray(cuerpo)) {
+  // Elemento con un recurso embebido colocado en el lienzo. Hay DOS tipos:
+  //
+  //   8 = el que usa Concepts para los PDF
+  //   7 = el que usa para las fotos (jpg)
+  //
+  // Los dos traen las mismas piezas (uuid del recurso, tamaño y matriz), solo
+  // que con campos intermedios distintos, asi que se extraen igual. Soportar
+  // solo el 8 hacia que un dibujo de fotos no mostrara NINGUNA imagen: un
+  // archivo de 87 MB con 29 fotos se abria con el lienzo vacio y las
+  // anotaciones sueltas, porque el parser no encontraba nada que colocar.
+  if ((tipo === 8 || tipo === 7) && Array.isArray(cuerpo)) {
     const interno = Array.isArray(cuerpo) && cuerpo.length > 1 && Array.isArray(cuerpo[1]) ? cuerpo[1] : [];
-    
+
     let elementoId = "";
     const u = interno.find(x => typeof x === "string" && x.includes("-"));
     if (u) elementoId = u;
-    
+
     let resourceId = "";
     const ru = cuerpo.find(x => typeof x === "string" && x.includes("-"));
     if (ru) resourceId = ru;
-    
+
     let width = 0, height = 0;
     const tam = cuerpo.find(x => Array.isArray(x) && x.length === 2 && typeof x[0] === "number");
     if (tam) { width = tam[0]; height = tam[1]; }
-    
+
     let transform = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
     const mat = interno.find(x => Array.isArray(x) && x.length === 16);
     if (mat) transform = mat;
-    
-    layer.images.push({
-      id: elementoId,
-      resourceId,
-      width,
-      height,
-      transform
-    });
-    
+
+    // Solo se acepta si de verdad parece una imagen colocada. Sin esta guarda,
+    // aceptar el tipo 7 a ciegas podria fabricar elementos vacios a partir de
+    // cualquier otra cosa que comparta la etiqueta.
+    if (resourceId && width > 0 && height > 0) {
+      layer.images.push({
+        id: elementoId,
+        resourceId,
+        width,
+        height,
+        transform: girarTransform(transform)
+      });
+      return;
+    }
+    // Si no cumple, se sigue buscando trazos adentro como con cualquier item.
+    buscarElementos(item, layer, globalBbox);
+
   } else if (tipo === 1 && item.length > 1 && Array.isArray(item[1]) && item[1].length > 0 && item[1][0] === 4) {
     // subcapa
   } else {
@@ -516,8 +620,8 @@ function emitirTrazo(o: any, blob: Uint8Array, layer: Layer, globalBbox: BBox) {
   const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
   
   for (let i = 0; i < n; i++) {
-    const x = view.getFloat32(i * 16, true);
-    const y = view.getFloat32(i * 16 + 4, true);
+    // Media vuelta al documento entero, ver `girarPunto`.
+    const [x, y] = girarPunto(view.getFloat32(i * 16, true), view.getFloat32(i * 16 + 4, true));
     const p = view.getUint16(i * 16 + 8, true);
     const t1 = view.getUint16(i * 16 + 10, true);
     const t2 = view.getUint16(i * 16 + 12, true);

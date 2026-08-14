@@ -67,6 +67,10 @@ function construir(tier: DeviceTier): Budgets {
       // 12 Mpx x 4 bytes = 48 MB de bitmaps como mucho.
       maxImagePixels: 12_000_000,
       maxPixelsPerResource: 3_000_000,
+      // Medido con 2 y con 3 sobre el dibujo mas pesado: el tiempo hasta tener
+      // todo cargado es el mismo (16,1 s contra 17,3 s, dentro del ruido) y
+      // cada worker mantiene abiertos hasta 2 PDFs, asi que 3 workers son 6
+      // PDFs vivos. En un telefono de 1 GB eso se paga y no se gana nada.
       concurrency: 2,
       // 24 Mpx = 96 MB de canvas de export.
       maxExportPixels: 24_000_000,

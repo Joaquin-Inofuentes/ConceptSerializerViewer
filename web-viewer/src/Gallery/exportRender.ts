@@ -1,9 +1,8 @@
 import type { Document } from "../VisorConcept/parser";
 import {
-  loadResourceImages,
-  releaseResourceImages,
+  proveedorEnStreaming,
   buildRenderPlan,
-  drawItems,
+  dibujarRecurso,
   drawnSizes,
   safeExportScale,
 } from "./renderCore";
@@ -46,8 +45,11 @@ export async function renderDocumentCanvas(doc: Document): Promise<RenderedCanva
     targets[id] = { width: size.width * scale, height: size.height * scale };
   });
   const budgets = getBudgets();
-  const images = await loadResourceImages(doc, {
-    targets,
+  // De a uno y soltando: al descargar varias carpetas se encadenan muchos
+  // documentos, y retener los recursos de cada uno mientras existe su canvas
+  // de export (decenas de MB) es lo que hacia que la pestaña muriera a mitad
+  // de una descarga larga.
+  const proveedor = proveedorEnStreaming(doc, targets, {
     quality: 1,
     maxPixels: Math.min(40_000_000, budgets.maxExportPixels),
     maxTotalPixels: budgets.maxExportPixels,
@@ -67,9 +69,29 @@ export async function renderDocumentCanvas(doc: Document): Promise<RenderedCanva
   ctx.save();
   ctx.scale(scale, scale);
   ctx.translate(-minX, -minY);
-  drawItems(ctx, plan.items, images);
+  try {
+    for (const item of plan.items) {
+      if (item.type === "image") {
+        const recurso = await proveedor.obtener(item.resourceId);
+        if (!recurso) continue;
+        ctx.save();
+        const m = item.transform;
+        if (m && m.length === 16) ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
+        dibujarRecurso(ctx, recurso, item.width, item.height);
+        ctx.restore();
+      } else {
+        ctx.strokeStyle = item.color;
+        ctx.globalAlpha = item.alpha;
+        ctx.lineWidth = item.width;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        ctx.stroke(item.path);
+      }
+    }
+  } finally {
+    proveedor.liberar();
+  }
   ctx.restore();
-  releaseResourceImages(images);
   // El documento NO se cierra aca a proposito: "renderizar" no deberia
   // invalidar el documento que te pasaron. Cerrarlo es responsabilidad de
   // quien lo abrio (ver `handleDownload` en Gallery.tsx).

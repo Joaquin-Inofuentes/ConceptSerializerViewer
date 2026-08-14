@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { openConceptsRemote, openConceptsLocal } from './parser';
 import type { Document } from './parser';
 import { SeguidorProgreso, TEXTO_FASE, formatearRestante, formatearMB } from './progreso';
@@ -68,8 +68,14 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
   const [recursosListos, setRecursosListos] = useState(false);
   const [progresoRecursos, setProgresoRecursos] = useState<{ listos: number; total: number } | null>(null);
   const [progreso, setProgreso] = useState<EstadoProgreso | null>(null);
-  /** Cuantos planos se estan re-rasterizando por un acercamiento (0 = ninguno). */
-  const [refinando, setRefinando] = useState(0);
+  /** Cuantos planos se estan afinando y cuantos hay que traer de la red. Se
+   * distinguen porque para el usuario no es lo mismo esperar un instante que
+   * esperar 30 s de 4G. */
+  const [refinando, setRefinando] = useState({ afinar: 0, traer: 0 });
+  /** El usuario ya toco el lienzo: se saca la vista previa de encima. */
+  const [previaDescartada, setPreviaDescartada] = useState(false);
+  /** Planos que no se pudieron traer. Se avisa en vez de decir "listo". */
+  const [fallidos, setFallidos] = useState(0);
   const seguidorRef = useRef<SeguidorProgreso | null>(null);
 
   // Layer State
@@ -130,12 +136,15 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
 
   useEffect(() => {
     setRecursosListos(false);
+    setPreviaDescartada(false);
+    setFallidos(0);
     setProgresoRecursos(null);
     setPlaceholder(null);
     setDoc(null);
     setStats(null);
     setError(null);
     let cancelado = false;
+    faseDibujandoRef.current = false;
     let docCreado: Document | null = null;
     let urlPlaceholder: string | null = null;
 
@@ -189,10 +198,11 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
           return;
         }
         docCreado = parsedDoc;
-        // Recien aca se sabe cuantos bytes hacen falta DE VERDAD (el tamaño
-        // del archivo no sirve: de 262 MB se bajan 11). A partir de este
-        // punto el porcentaje es real.
-        seguidor.fijarEsperados(parsedDoc.bytesNecesarios);
+        // Aca NO se fija el total: `bytesNecesarios` suma TODOS los recursos
+        // colocados, y el visor solo baja los que entran en pantalla y son lo
+        // bastante grandes. El total real lo informa el visor apenas decide
+        // que va a traer (`onBytesPrevistos`); hasta entonces la barra va
+        // indeterminada, que es honesto.
 
         let strokesCount = 0;
         let imagesCount = 0;
@@ -225,6 +235,53 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
       if (urlPlaceholder) URL.revokeObjectURL(urlPlaceholder);
     };
   }, [source]);
+
+  // Los callbacks que recibe el Viewer se declaran con identidad ESTABLE.
+  //
+  // Escritos como arrows inline, cada render de este componente le pasaba al
+  // Viewer cuatro funciones nuevas. Y este componente re-renderiza mucho
+  // durante la carga: el progreso de bytes avisa ~10 veces por segundo y cada
+  // recurso que termina dispara otro. Con props nuevas, `React.memo` no sirve
+  // de nada y el Viewer se re-renderiza entero cada vez — en el perfil de una
+  // tanda de gestos, React era el 13% del hilo principal.
+  const alCargarImagenes = useCallback((urls: Record<string, string>) => {
+    setImageUrls(urls);
+  }, []);
+
+  const alTerminarRecursos = useCallback(() => {
+    setRecursosListos(true);
+    seguidorRef.current?.cambiarFase('listo');
+  }, []);
+
+  const faseDibujandoRef = useRef(false);
+  const alAvanzarRecursos = useCallback((listos: number, total: number) => {
+    setProgresoRecursos({ listos, total });
+    // La fase se cambia UNA vez; el resto de los avisos van por `fijarDetalle`,
+    // que respeta el limitador de 100 ms. `cambiarFase` fuerza el aviso, asi
+    // que llamarlo por cada recurso provocaba un render extra cada vez aunque
+    // la fase fuera la misma.
+    if (!faseDibujandoRef.current) {
+      faseDibujandoRef.current = true;
+      seguidorRef.current?.cambiarFase('dibujando', `${listos} de ${total} imágenes`);
+    } else {
+      seguidorRef.current?.fijarDetalle(`${listos} de ${total} imágenes`);
+    }
+  }, []);
+
+  const alRefinar = useCallback((activo: boolean, aAfinar: number, aTraer: number) => {
+    setRefinando(activo ? { afinar: aAfinar, traer: aTraer } : { afinar: 0, traer: 0 });
+  }, []);
+
+  // El peso REAL de lo que se va a bajar. El documento declara el de todos los
+  // recursos colocados —250 MB en el mas pesado— pero solo viajan los que se
+  // ven: ~11 MB. Con el numero declarado, la barra mostraba 3% y "faltan 14
+  // min" en una apertura de 50 s, y el usuario cerraba la app.
+  const alPreverBytes = useCallback((bytes: number) => {
+    seguidorRef.current?.fijarEsperados(bytes);
+  }, []);
+
+  const alPrimerGesto = useCallback(() => setPreviaDescartada(true), []);
+  const alFallar = useCallback((cuantos: number) => setFallidos(cuantos), []);
 
   const toggleLayerVisibility = (id: string) => {
     setLayerConfigs(prev => ({
@@ -405,7 +462,9 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
               setShowLayerMenu(false);
               // Las previews se generan recien aca: es un loop de toDataURL
               // en el hilo principal que en gama baja cuesta cientos de ms, y
-              // la mayoria de los usuarios nunca abre este menu.
+              // la mayoria de los usuarios nunca abre este menu. Se piden en
+              // CADA apertura (no una sola vez por documento): las fotos que
+              // llegaron despues de la primera vez nunca aparecian.
               if (abriendo) void (window as any).__conceptsPedirPreviews?.();
             }}
             title={`Imágenes: ${stats.images}`}
@@ -420,14 +479,25 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
                 <span style={{fontSize:'0.7rem', color:'#888'}}>ESC para cerrar</span>
               </div>
               <div className="image-gallery">
+                {/* Las que no tienen preview NO son un error: son fotos que
+                    todavia no se bajaron porque a este zoom miden pocos
+                    pixeles. Antes se les mostraba "..." girando en rojo, para
+                    siempre — la grilla parecia una pantalla de errores cuando
+                    en realidad es el comportamiento normal, y ademas no se
+                    comunicaba en ningun lado que hay que acercarse. */}
                 {doc.resourceIds.length > 0 ? doc.resourceIds.map((id) => {
                   const url = imageUrls[id];
                   return (
-                    <div key={id} className="gallery-item" onClick={() => url && setPreviewImage(url)}>
+                    <div
+                      key={id}
+                      className={`gallery-item ${url ? '' : 'gallery-item-lejos'}`}
+                      onClick={() => url && setPreviewImage(url)}
+                      title={url ? 'Ver la foto' : 'Acercate en el dibujo para traerla'}
+                    >
                         {url ? (
                           <img src={url} alt="Recurso" />
                         ) : (
-                          <div className="pdf-thumbnail spin-slow">...</div>
+                          <span className="gallery-item-aviso">Acercate<br />para verla</span>
                         )}
                     </div>
                   );
@@ -448,24 +518,23 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
             fileId={fileId}
             layerConfigs={layerConfigs}
             isolatedLayer={isolatedLayer}
-            onImagesLoaded={(urls) => setImageUrls(urls)}
-            onResourcesReady={() => {
-              setRecursosListos(true);
-              seguidorRef.current?.cambiarFase('listo');
-            }}
-            onResourceProgress={(listos, total) => {
-              setProgresoRecursos({ listos, total });
-              seguidorRef.current?.cambiarFase('dibujando', `${listos} de ${total} imágenes`);
-            }}
-            onRefinando={(activo, cuantos) => setRefinando(activo ? cuantos : 0)}
+            onImagesLoaded={alCargarImagenes}
+            onResourcesReady={alTerminarRecursos}
+            onResourceProgress={alAvanzarRecursos}
+            onRefinando={alRefinar}
+            onBytesPrevistos={alPreverBytes}
+            onPrimerGesto={alPrimerGesto}
+            onFallidos={alFallar}
           />
           {/* Al acercarse, los planos se vuelven a rasterizar a mas resolucion.
               Mientras tanto se sigue viendo la version anterior, y sin avisar
               eso se lee como "quedo borroso" en vez de "esta afinando". */}
-          {recursosListos && refinando > 0 && (
+          {recursosListos && (refinando.afinar > 0 || refinando.traer > 0) && (
             <div className="viewer-refinando">
               <span className="viewer-loading-dot" />
-              Afinando {refinando} plano{refinando === 1 ? '' : 's'}…
+              {refinando.traer > 0
+                ? `Trayendo ${refinando.traer} plano${refinando.traer === 1 ? '' : 's'}…`
+                : `Afinando ${refinando.afinar} plano${refinando.afinar === 1 ? '' : 's'}…`}
             </div>
           )}
           {/* La vista previa se mantiene hasta que aparece la PRIMERA imagen,
@@ -475,7 +544,15 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
               la carga de las fotos (medido: ~28 s en el dibujo de 262 MB).
               Con esto el usuario ve su dibujo completo todo el tiempo, y el
               lienzo real lo reemplaza cuando ya tiene contenido. */}
-          {placeholder && doc.resourceIds.length > 0 && !recursosListos && !(progresoRecursos && progresoRecursos.listos > 0) && (
+          {/* Un plano que no se pudo traer se dice, no se esconde: antes la
+              app afirmaba "listo" con recuadros vacios y sin ninguna pista de
+              que faltaba algo ni de por que. */}
+          {fallidos > 0 && (
+            <div className="viewer-fallidos" role="status">
+              {fallidos} plano{fallidos === 1 ? '' : 's'} no se pudo cargar
+            </div>
+          )}
+          {placeholder && doc.resourceIds.length > 0 && !recursosListos && !previaDescartada && !(progresoRecursos && progresoRecursos.listos > 0) && (
             <div className="viewer-placeholder viewer-placeholder-overlay">
               <img src={placeholder} alt="" className="viewer-placeholder-img" />
             </div>
