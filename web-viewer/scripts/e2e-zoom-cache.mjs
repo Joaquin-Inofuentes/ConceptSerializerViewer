@@ -103,7 +103,7 @@ console.log(errores.length ? `errores: ${errores.slice(0, 3).join(" | ")}` : "si
 const cache = await page.evaluate(async () => {
   const abrir = () =>
     new Promise((res) => {
-      const q = indexedDB.open("concepts-raster", 2);
+      const q = indexedDB.open("concepts-raster", 3);
       q.onsuccess = () => res(q.result);
       q.onerror = () => res(null);
     });

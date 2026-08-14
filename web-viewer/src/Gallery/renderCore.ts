@@ -335,7 +335,11 @@ async function rasterizarEnMain(
     try {
       const pdf = await tarea.promise;
       const page = await pdf.getPage(1);
-      const nativo = page.getViewport({ scale: 1 });
+      // rotation: 0 — ver la explicacion en raster.worker.ts: Concepts guarda
+      // la geometria en el espacio SIN rotar y pone la rotacion en la matriz
+      // del elemento, asi que usar el viewport que pdf.js rota por /Rotate
+      // deformaba el plano.
+      const nativo = page.getViewport({ scale: 1, rotation: 0 });
       const canvas = document.createElement("canvas");
       canvas.width = width;
       canvas.height = height;
@@ -395,7 +399,10 @@ async function tamañoNativo(blob: Blob, vectorial: boolean): Promise<{ w: numbe
     const tarea = pdfjsLib.getDocument({ url });
     try {
       const pdf = await tarea.promise;
-      const vp = (await pdf.getPage(1)).getViewport({ scale: 1 });
+      // Sin rotar, igual que al rasterizar: si aca se devolviera el tamaño
+      // rotado, el clamp razonaria sobre una proporcion distinta de la que
+      // despues se dibuja.
+      const vp = (await pdf.getPage(1)).getViewport({ scale: 1, rotation: 0 });
       return { w: vp.width, h: vp.height };
     } finally {
       void tarea.destroy();

@@ -64,7 +64,7 @@ async function abrir(etiqueta) {
   const idb = await page.evaluate(async () => {
     const abrirDb = () =>
       new Promise((res) => {
-        const req = indexedDB.open("concepts-raster", 2);
+        const req = indexedDB.open("concepts-raster", 3);
         req.onsuccess = () => res(req.result);
         req.onerror = () => res(null);
         req.onupgradeneeded = () => {

@@ -488,3 +488,25 @@ body {
     margin-bottom: 0;
   }
 }
+
+/* Aviso de refinado por zoom. Va arriba a la izquierda y no abajo como la
+   barra de carga: son dos cosas distintas (una es "todavia no cargo", la
+   otra "ya se ve pero se esta afinando") y superponerlas confundiria. */
+.viewer-refinando {
+  position: absolute;
+  top: 2.6rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.8rem;
+  border-radius: 999px;
+  background: var(--carga-fondo);
+  color: var(--carga-texto);
+  font-size: 0.75rem;
+  box-shadow: var(--sombra-suave);
+  pointer-events: none;
+  z-index: 55;
+  animation: fadeIn 0.2s ease-out both;
+}

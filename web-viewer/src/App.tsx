@@ -5,6 +5,7 @@ import { NamePrompt } from './Gallery/NamePrompt';
 import { logCerrar } from './Gallery/analytics';
 import { getUserName, setUserName } from './Gallery/userIdentity';
 import { registrarAbierto } from './Gallery/recientes';
+import { ubicarArchivo } from './Gallery/supabaseClient';
 import { DEMO_FILE_ID, DEMO_FILE_NAME } from './config';
 import { applyTierFromUrl } from './device';
 import { temaGuardado, aplicarTema } from './theme';
@@ -114,8 +115,27 @@ function App() {
     const id = params.has('demo') ? DEMO_FILE_ID : params.get('file');
     if (!id) return;
     autoOpenRef.current = true;
-    const nombre = params.has('demo') ? DEMO_FILE_NAME : `${id}.concepts`;
-    openRemote(id, nombre, null, []);
+    // Se abre enseguida con un nombre provisorio para no retrasar la carga, y
+    // en paralelo se busca el nombre y la carpeta reales en el arbol cacheado.
+    // Sin esto un link `?file=<id>` mostraba el id crudo en "ultimos abiertos"
+    // y dejaba una URL sin carpetas.
+    const provisorio = params.has('demo') ? DEMO_FILE_NAME : id;
+    openRemote(id, provisorio, null, []);
+    void ubicarArchivo(id).then((info) => {
+      if (!info) return;
+      setFileData((actual) =>
+        actual && actual.kind === 'remote' && actual.fileId === id
+          ? { ...actual, name: info.nombre, ruta: info.ruta }
+          : actual
+      );
+      irA(construirRuta(info.ruta, info.nombre), true);
+      void registrarAbierto({
+        id,
+        nombre: info.nombre,
+        ruta: info.ruta,
+        slug: construirRuta(info.ruta, info.nombre),
+      });
+    });
   }, [openRemote]);
 
   // Boton "atras" del navegador: si la URL vuelve a una carpeta, se cierra el

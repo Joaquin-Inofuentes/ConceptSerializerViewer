@@ -32,6 +32,9 @@ interface ViewerProps {
   onResourcesReady?: () => void;
   /** Avance de carga de recursos, para mostrarlo en la UI. */
   onResourceProgress?: (listos: number, total: number) => void;
+  /** true mientras se re-rasterizan los planos por un acercamiento. Sirve
+   * para avisar que lo que se ve todavia es la version de menos resolucion. */
+  onRefinando?: (activo: boolean, cuantos: number) => void;
 }
 
 export interface ViewerHandle {
@@ -111,7 +114,7 @@ function buildPath(points: Stroke["points"], tolerancia: number): Path2D {
   return path;
 }
 
-export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerConfigs, isolatedLayer, onImagesLoaded, onResourcesReady, onResourceProgress }, ref) => {
+export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerConfigs, isolatedLayer, onImagesLoaded, onResourcesReady, onResourceProgress, onRefinando }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -184,10 +187,12 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
   const onImagesLoadedRef = useRef(onImagesLoaded);
   const onResourcesReadyRef = useRef(onResourcesReady);
   const onResourceProgressRef = useRef(onResourceProgress);
+  const onRefinandoRef = useRef(onRefinando);
   useEffect(() => {
     onImagesLoadedRef.current = onImagesLoaded;
     onResourcesReadyRef.current = onResourcesReady;
     onResourceProgressRef.current = onResourceProgress;
+    onRefinandoRef.current = onRefinando;
   });
 
   // Sync props to refs
@@ -856,7 +861,14 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
       // acercarse se vea NITIDO en vez de pixelado. Sin esto, el techo de
       // pixeles por recurso repartia la resolucion por toda la pagina y a
       // partir de ~4x de zoom los planos se veian borrosos.
-      void cargarRecursos(necesaria, abort.signal, visibles, regiones);
+      //
+      // Se avisa mientras dura porque no es instantaneo: hasta que termina se
+      // sigue viendo la version de menos resolucion, y sin un cartelito eso
+      // se lee como "el visor quedo borroso" en vez de "esta afinando".
+      onRefinandoRef.current?.(true, visibles.length);
+      void cargarRecursos(necesaria, abort.signal, visibles, regiones).finally(() => {
+        if (!abort.signal.aborted) onRefinandoRef.current?.(false, 0);
+      });
     }, 400);
   }, [doc, cargarRecursos, recursosVisibles, regionesVisibles, budgets]);
 

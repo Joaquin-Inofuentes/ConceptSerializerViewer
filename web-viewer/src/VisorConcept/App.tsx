@@ -68,6 +68,8 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
   const [recursosListos, setRecursosListos] = useState(false);
   const [progresoRecursos, setProgresoRecursos] = useState<{ listos: number; total: number } | null>(null);
   const [progreso, setProgreso] = useState<EstadoProgreso | null>(null);
+  /** Cuantos planos se estan re-rasterizando por un acercamiento (0 = ninguno). */
+  const [refinando, setRefinando] = useState(0);
   const seguidorRef = useRef<SeguidorProgreso | null>(null);
 
   // Layer State
@@ -455,7 +457,17 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
               setProgresoRecursos({ listos, total });
               seguidorRef.current?.cambiarFase('dibujando', `${listos} de ${total} imágenes`);
             }}
+            onRefinando={(activo, cuantos) => setRefinando(activo ? cuantos : 0)}
           />
+          {/* Al acercarse, los planos se vuelven a rasterizar a mas resolucion.
+              Mientras tanto se sigue viendo la version anterior, y sin avisar
+              eso se lee como "quedo borroso" en vez de "esta afinando". */}
+          {recursosListos && refinando > 0 && (
+            <div className="viewer-refinando">
+              <span className="viewer-loading-dot" />
+              Afinando {refinando} plano{refinando === 1 ? '' : 's'}…
+            </div>
+          )}
           {/* La vista previa se mantiene hasta que aparece la PRIMERA imagen,
               no hasta que se decodifica el documento. En estos dibujos los
               trazos son anotaciones finas sobre los planos, asi que mostrar

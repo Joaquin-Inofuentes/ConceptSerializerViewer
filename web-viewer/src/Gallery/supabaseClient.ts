@@ -139,6 +139,41 @@ export async function upsertFolderCache(
   );
 }
 
+/**
+ * Busca un archivo por id en el arbol de carpetas cacheado y devuelve su
+ * nombre y su ruta.
+ *
+ * Sirve para los links directos (`?file=<id>`): sin esto la app no sabe como
+ * se llama el dibujo ni donde vive, y terminaba mostrando el id crudo como
+ * nombre y una URL sin carpetas.
+ */
+export async function ubicarArchivo(
+  fileId: string
+): Promise<{ nombre: string; ruta: string[] } | null> {
+  const arbol = await fetchAllFolderCache();
+  if (arbol.size === 0) return null;
+
+  // Padre de cada carpeta, para poder reconstruir la ruta hacia arriba.
+  const padre = new Map<string, string>();
+  arbol.forEach((fila) => {
+    fila.subfolders.forEach((sub) => padre.set(sub.id, fila.folder_id));
+  });
+
+  for (const fila of arbol.values()) {
+    const archivo = fila.files.find((f) => f.id === fileId);
+    if (!archivo) continue;
+    const ruta: string[] = [];
+    let actual: string | undefined = fila.folder_id;
+    // Se sube hasta la raiz (la raiz no tiene padre y no entra en la ruta).
+    while (actual && padre.has(actual)) {
+      ruta.unshift(arbol.get(actual)?.name || "");
+      actual = padre.get(actual);
+    }
+    return { nombre: archivo.name.replace(/\.concepts$/i, "").trim(), ruta: ruta.filter(Boolean) };
+  }
+  return null;
+}
+
 /** Inserta un evento de uso (abrir/cerrar/descargar). */
 export async function insertEvento(fila: Record<string, unknown>): Promise<void> {
   await pedir(

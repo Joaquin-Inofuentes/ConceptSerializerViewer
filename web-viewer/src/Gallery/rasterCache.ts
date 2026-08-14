@@ -15,7 +15,14 @@
 import { getBudgets } from "../device";
 
 const DB_NAME = "concepts-raster";
-const DB_VERSION = 2;
+/**
+ * v3: los rasterizados de la v2 estan DEFORMADOS. Se guardaron usando el
+ * viewport que pdf.js rota por /Rotate, cuando la geometria de Concepts vive
+ * en el espacio sin rotar; subir la version borra el store y obliga a
+ * regenerarlos bien. Sin esto, quien ya abrio un dibujo seguiria viendo los
+ * planos aplastados aunque el codigo este arreglado.
+ */
+const DB_VERSION = 3;
 const STORE = "bitmaps";
 /** Cuantos ARCHIVOS distintos se conservan. */
 export const MAX_ARCHIVOS_CACHEADOS = 3;

@@ -56,7 +56,15 @@ async function rasterizar(p: PedidoRaster): Promise<ImageBitmap> {
     const pdf = await tarea.promise;
     try {
       const page = await pdf.getPage(1);
-      const nativo = page.getViewport({ scale: 1 });
+      // rotation: 0 a proposito. Muchos de estos PDFs traen /Rotate=90, y por
+      // defecto pdf.js YA aplica esa rotacion al viewport (una pagina de
+      // 842x3118 se reporta como 3118x842). Pero Concepts guarda la geometria
+      // del recurso en el espacio SIN rotar y mete la rotacion en la matriz
+      // del elemento. Usar el viewport rotado hacia que rasterizaramos una
+      // pagina apaisada dentro de una caja vertical: el plano salia aplastado
+      // (deformacion medida: 0,073) y las anotaciones quedaban "en el aire",
+      // porque ya no caian sobre lo que marcaban.
+      const nativo = page.getViewport({ scale: 1, rotation: 0 });
       const canvas = new OffscreenCanvas(p.width, p.height);
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("sin contexto 2d en el worker");
