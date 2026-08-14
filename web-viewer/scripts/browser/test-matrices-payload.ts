@@ -171,6 +171,19 @@ export async function testMatrices(url: string, headers: Record<string, string>)
     matrixBCentrado: imagenes.map((im) => caja(im.matrixB || IDENT, im.width, im.height, true)),
     intBCentrado: imagenes.map((im) => caja(mul(im.internoMat || IDENT, im.matrixB || IDENT), im.width, im.height, true)),
     bIntCentrado: imagenes.map((im) => caja(mul(im.matrixB || IDENT, im.internoMat || IDENT), im.width, im.height, true)),
+    // Solo centra cuando la parte LINEAL (escala+rotacion, indices 0,1,4,5)
+    // es identidad — sin importar la traslacion (12,13). A diferencia del
+    // fix anterior (que exigia la matriz COMPLETA identica, incluida
+    // traslacion=0), esto trata igual a dos colocaciones del mismo recurso
+    // que comparten "nunca se escalo/roto" aunque esten en lugares
+    // distintos — asi el offset relativo entre ambas queda intacto (la
+    // resta de una constante que solo depende de a,b,c,d,w,h es la misma
+    // para las dos).
+    linealIdentCentrado: imagenes.map((im) => {
+      const m = im.internoMat || IDENT;
+      const esLinealIdent = m[0] === 1 && m[1] === 0 && m[4] === 0 && m[5] === 1;
+      return caja(m, im.width, im.height, esLinealIdent);
+    }),
   };
 
   return {
@@ -196,6 +209,11 @@ export async function testMatrices(url: string, headers: Record<string, string>)
       matrixBCentrado: overlapPct(candidatas.matrixBCentrado),
       intBCentrado: overlapPct(candidatas.intBCentrado),
       bIntCentrado: overlapPct(candidatas.bIntCentrado),
+      linealIdentCentrado: overlapPct(candidatas.linealIdentCentrado),
     },
+    linealIdentidad: imagenes.filter((im) => {
+      const m = im.internoMat || IDENT;
+      return m[0] === 1 && m[1] === 0 && m[4] === 0 && m[5] === 1;
+    }).length,
   };
 }

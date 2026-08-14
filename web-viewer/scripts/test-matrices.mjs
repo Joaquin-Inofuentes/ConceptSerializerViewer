@@ -39,13 +39,7 @@ for (const s of objetivos) {
       { apikey: K, Authorization: `Bearer ${K}` }
     );
     console.log(
-      `${f.name.padEnd(35)} ${s.MB}MB img=${r.imagenes}(t7=${r.tipo7},t8=${r.tipo8}) trz=${r.trazos} | interno=${r.overlap.soloInterno}% centrado=${r.overlap.internoCentrado}% matrixBcentrado=${r.overlap.matrixBCentrado}%`
-    );
-    console.log(
-      `    tipo7(fotos):  interno=${r.porTipo.t7_interno}% matrixBcentrado=${r.porTipo.t7_matrixBcentrado}%`
-    );
-    console.log(
-      `    tipo8(PDFs):   interno=${r.porTipo.t8_interno}% matrixBcentrado=${r.porTipo.t8_matrixBcentrado}% internoCentrado=${r.porTipo.t8_internoCentrado}%`
+      `${f.name.padEnd(35)} ${s.MB}MB img=${r.imagenes}(t7=${r.tipo7},t8=${r.tipo8}) trz=${r.trazos} linealIdent=${r.linealIdentidad} | interno=${r.overlap.soloInterno}% linealIdentCentrado=${r.overlap.linealIdentCentrado}%`
     );
   } catch (e) {
     console.error(`  FALLO ${f.name}: ${String(e).slice(0, 200)}`);

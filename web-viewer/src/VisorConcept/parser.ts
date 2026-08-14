@@ -549,13 +549,31 @@ function procesarItem(item: any, layer: Layer, globalBbox: BBox) {
     const mat = interno.find(x => Array.isArray(x) && x.length === 16);
     if (mat) transform = mat;
 
-    // NO "arreglar" la matriz identidad centrandola en el recurso: se probo
-    // (medido contra el corpus real, ver notas de la sesion) y aunque sube
-    // el % de trazos que caen sobre CUALQUIER imagen, en un archivo real con
-    // dos copias del mismo recurso rompe la relacion entre ambas — pasan de
-    // estar prolijamente apiladas (como las dejo el usuario) a superponerse.
-    // La convencion "esquina superior izquierda" puede no ser perfecta, pero
-    // es la que preserva la disposicion tal cual la dejo quien dibujo.
+    // Cuando la parte LINEAL de la matriz (escala + rotacion: indices
+    // 0,1,4,5) es identidad — el recurso nunca se escalo ni se roto desde
+    // que se pego — tratar (0,0) como su esquina superior izquierda deja su
+    // caja en un cuadrante sin relacion con los trazos que la anotan.
+    //
+    // Un primer intento centraba SOLO cuando la matriz entera (incluida la
+    // traslacion) era identidad, y eso rompio un archivo real: dos copias
+    // del mismo recurso, una con traslacion (0,0) y otra con una traslacion
+    // chica pero no cero, pasaron de estar prolijamente apiladas a
+    // superponerse, porque solo la primera calificaba.
+    //
+    // La traslacion NO importa para esto: centrar resta la misma constante
+    // (a*ancho/2 + c*alto/2, b*ancho/2 + d*alto/2) sin importar cuanto valga
+    // la traslacion, asi que si dos colocaciones comparten la parte lineal
+    // (aunque esten en lugares distintos) su posicion relativa queda
+    // intacta. Medido contra el corpus real: arregla los 3 archivos que
+    // tenian este patron (0-33% de trazos coincidiendo con su imagen ->
+    // 100%, 100%, 38%) y no mueve ni un pixel a ninguno de los otros 13,
+    // incluidos los dos de referencia con matrices reales (rotacion,
+    // escala) donde ya se confirmo a ojo que el render es correcto.
+    if (transform[0] === 1 && transform[1] === 0 && transform[4] === 0 && transform[5] === 1) {
+      transform = transform.slice();
+      transform[12] -= width / 2;
+      transform[13] -= height / 2;
+    }
 
     // Solo se acepta si de verdad parece una imagen colocada. Sin esta guarda,
     // aceptar el tipo 7 a ciegas podria fabricar elementos vacios a partir de
