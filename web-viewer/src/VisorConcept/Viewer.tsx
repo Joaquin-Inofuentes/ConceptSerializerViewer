@@ -200,7 +200,13 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, laye
   // El tema se cambia desde la galeria; el lienzo se entera por este evento.
   useEffect(() => {
     const alCambiar = (e: Event) => {
-      setTema((e as CustomEvent<Tema>).detail);
+      const nuevo = (e as CustomEvent<Tema>).detail;
+      // Los colores se actualizan ACA, no solo en el efecto de `tema`: el
+      // requestRedraw de abajo agenda el frame de inmediato y el efecto corre
+      // despues, asi que dejarlo solo al efecto repintaba con los colores
+      // VIEJOS y el lienzo se quedaba con el tema anterior.
+      coloresRef.current = coloresLienzo(nuevo);
+      setTema(nuevo);
       // El snapshot del gesto tiene el fondo viejo: se descarta.
       if (snapshotRef.current) {
         snapshotRef.current.width = 0;
