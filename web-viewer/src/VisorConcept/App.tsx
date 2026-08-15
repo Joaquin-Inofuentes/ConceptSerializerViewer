@@ -81,6 +81,11 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
   // Layer State
   const [layerConfigs, setLayerConfigs] = useState<Record<string, LayerConfig>>({});
   const [isolatedLayer, setIsolatedLayer] = useState<string | null>(null);
+  /** Opacidad SOLO de las fotos/PDFs, independiente de la opacidad por capa
+   * (esa mezcla trazos e imagenes de la misma capa). Vive aca y no por capa
+   * porque el pedido es "las imagenes mas tenues", sin importar en que capa
+   * este cada una. */
+  const [imageOpacity, setImageOpacity] = useState(1);
   const [exportZoomAll, setExportZoomAll] = useState(true);
   
   // UI State
@@ -478,6 +483,22 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
                 <span>Galería</span>
                 <span style={{fontSize:'0.7rem', color:'#888'}}>ESC para cerrar</span>
               </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', borderBottom: '1px solid rgba(128,128,128,0.2)' }}>
+                <ImageIcon size={14} style={{ flexShrink: 0, opacity: 0.7 }} />
+                <input
+                  type="range"
+                  min="0" max="1" step="0.05"
+                  value={imageOpacity}
+                  onChange={(e) => setImageOpacity(parseFloat(e.target.value))}
+                  className="opacity-slider"
+                  style={{ flex: 1 }}
+                  title="Opacidad de las imágenes"
+                  aria-label="Opacidad de las imágenes"
+                />
+                <span style={{ fontSize: '0.75rem', color: '#888', minWidth: '2.5em', textAlign: 'right' }}>
+                  {Math.round(imageOpacity * 100)}%
+                </span>
+              </div>
               <div className="image-gallery">
                 {/* Las que no tienen preview NO son un error: son fotos que
                     todavia no se bajaron porque a este zoom miden pocos
@@ -518,6 +539,7 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
             fileId={fileId}
             layerConfigs={layerConfigs}
             isolatedLayer={isolatedLayer}
+            imageOpacity={imageOpacity}
             onImagesLoaded={alCargarImagenes}
             onResourcesReady={alTerminarRecursos}
             onResourceProgress={alAvanzarRecursos}

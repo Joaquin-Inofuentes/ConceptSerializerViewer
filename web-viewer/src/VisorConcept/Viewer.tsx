@@ -32,6 +32,11 @@ interface ViewerProps {
   fileId?: string | null;
   layerConfigs: Record<string, LayerConfig>;
   isolatedLayer: string | null;
+  /** Opacidad aplicada SOLO a las imagenes/fotos/PDFs, independiente de la
+   * opacidad por capa: a veces el usuario quiere ver los trazos a pleno pero
+   * las fotos de fondo mas tenues (o al reves), y la opacidad por capa no
+   * sirve para eso porque una capa mezcla trazos e imagenes. */
+  imageOpacity?: number;
   onImagesLoaded?: (images: Record<string, string>) => void;
   /** Avisa cuando terminaron de cargarse los recursos embebidos (fotos/PDFs),
    * que es lo unico lento al abrir un dibujo pesado. */
@@ -185,7 +190,7 @@ function buildPath(points: Stroke["points"], tolerancia: number): Path2D {
   return path;
 }
 
-const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerConfigs, isolatedLayer, onImagesLoaded, onResourcesReady, onResourceProgress, onRefinando, onBytesPrevistos, onPrimerGesto, onFallidos }, ref) => {
+const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerConfigs, isolatedLayer, imageOpacity, onImagesLoaded, onResourcesReady, onResourceProgress, onRefinando, onBytesPrevistos, onPrimerGesto, onFallidos }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -213,6 +218,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
   const relojUsoRef = useRef(0);
   const layerConfigsRef = useRef<Record<string, LayerConfig>>(layerConfigs);
   const isolatedLayerRef = useRef<string | null>(isolatedLayer);
+  const imageOpacityRef = useRef<number>(imageOpacity ?? 1);
   const isDirtyRef = useRef(true);
   const canvasSizeRef = useRef({ width: 0, height: 0 });
 
@@ -292,8 +298,9 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
   useEffect(() => {
     layerConfigsRef.current = layerConfigs;
     isolatedLayerRef.current = isolatedLayer;
+    imageOpacityRef.current = imageOpacity ?? 1;
     requestRedraw();
-  }, [layerConfigs, isolatedLayer, requestRedraw]);
+  }, [layerConfigs, isolatedLayer, imageOpacity, requestRedraw]);
 
   // El tema se cambia desde la galeria; el lienzo se entera por este evento.
   useEffect(() => {
@@ -568,7 +575,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
             const recurso = await proveedor.obtener(item.resourceId);
             if (!recurso) continue;
             ctx.save();
-            ctx.globalAlpha = layerOpacity;
+            ctx.globalAlpha = layerOpacity * imageOpacityRef.current;
             const m = item.transform;
             if (m && m.length === 16) {
               ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
@@ -1485,7 +1492,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
               // drawImage TIRE, y una excepcion aca aborta el frame entero.
               const usable = recurso && anchoUtil(recurso.img);
               ctx.save();
-              ctx.globalAlpha = layerOpacity;
+              ctx.globalAlpha = layerOpacity * imageOpacityRef.current;
               const m = item.transform;
               if (m && m.length === 16) {
                 ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
