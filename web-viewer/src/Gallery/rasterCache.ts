@@ -105,8 +105,16 @@ function escalon(v: number): number {
   return Math.round(Math.pow(1.25, Math.round(Math.log(Math.max(v, 1)) / Math.log(1.25))));
 }
 
+/**
+ * Version del formato guardado. Se sube cuando cambia COMO se rasteriza: las
+ * entradas viejas siguen siendo bitmaps validos pero ya no representan lo que
+ * hoy dibujariamos, y servirlas mostraria el bug recien arreglado. Paso con
+ * las fotos con EXIF de rotacion, que se guardaban aplastadas 1,78x.
+ */
+const VERSION_RASTER = 2;
+
 export function claveRaster(fileId: string, resourceId: string, width: number, height: number): string {
-  return `${fileId}|${resourceId}|${escalon(width)}x${escalon(height)}`;
+  return `v${VERSION_RASTER}|${fileId}|${resourceId}|${escalon(width)}x${escalon(height)}`;
 }
 
 /**

@@ -96,6 +96,8 @@ export interface RecursoRasterizado {
   img: CanvasImageSource;
   /** null = la imagen cubre el recurso completo. */
   region: Region | null;
+  /** El navegador roto la foto por su EXIF y hay que deshacerlo al dibujar. */
+  compensarExif?: boolean;
 }
 
 export interface LoadResourcesOptions {
@@ -526,6 +528,48 @@ async function rasterizarEnMain(
   return chico;
 }
 
+/**
+ * Orientacion EXIF de un JPEG (1..8), o 0 si no tiene. Solo interesan 5..8,
+ * que son las que intercambian ancho y alto.
+ *
+ * Concepts guarda el tamaño CRUDO del archivo (sin aplicar EXIF) pero el
+ * navegador SI lo aplica al decodificar, asi que el bitmap llega girado
+ * respecto de la caja donde el documento lo coloca. `imageOrientation: "none"`
+ * no ayuda: se probo y devuelve el mismo bitmap girado.
+ */
+async function orientacionExif(blob: Blob): Promise<number> {
+  const b = new Uint8Array(await blob.slice(0, 128 * 1024).arrayBuffer());
+  if (b[0] !== 0xff || b[1] !== 0xd8) return 0;
+  let i = 2;
+  while (i + 4 < b.length) {
+    if (b[i] !== 0xff) { i++; continue; }
+    const marcador = b[i + 1];
+    const largo = (b[i + 2] << 8) | b[i + 3];
+    if (marcador === 0xe1) {
+      const t = i + 4;
+      if (b[t] === 0x45 && b[t + 1] === 0x78 && b[t + 2] === 0x69 && b[t + 3] === 0x66) {
+        const tiff = t + 6;
+        const le = b[tiff] === 0x49;
+        const u16 = (o: number) => (le ? b[o] | (b[o + 1] << 8) : (b[o] << 8) | b[o + 1]);
+        const u32 = (o: number) =>
+          le
+            ? b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)
+            : (b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3];
+        const ifd = tiff + u32(tiff + 4);
+        const n = u16(ifd);
+        for (let k = 0; k < n; k++) {
+          const e = ifd + 2 + k * 12;
+          if (u16(e) === 0x0112) return u16(e + 8);
+        }
+      }
+      return 0;
+    }
+    if (marcador >= 0xc0 && marcador <= 0xcf && marcador !== 0xc4) return 0;
+    i += 2 + largo;
+  }
+  return 0;
+}
+
 /** Tamaño nativo de un recurso, sin rasterizarlo (para poder clampear bien
  * antes de gastar el trabajo pesado). */
 async function tamañoNativo(blob: Blob, vectorial: boolean, pagina = 0): Promise<{ w: number; h: number }> {
@@ -696,8 +740,8 @@ export async function loadResourceImages(
       await withTimeout(
         (async () => {
           const target = options.targets?.[resourceId];
-          const pedidoW = (target?.width ?? 0) * opts.quality;
-          const pedidoH = (target?.height ?? 0) * opts.quality;
+          let pedidoW = (target?.width ?? 0) * opts.quality;
+          let pedidoH = (target?.height ?? 0) * opts.quality;
 
           // Cuanto presupuesto queda. Si ya se gasto casi todo, se rasteriza
           // al minimo legible en vez de saltear el recurso.
@@ -727,6 +771,15 @@ export async function loadResourceImages(
           // tamano de la pagina, y despues el worker lo volvia a abrir para
           // dibujarlo. O sea el trabajo pesado por duplicado, con la mitad
           // bloqueando los gestos.
+          let compensarExif = false;
+          if (!vectorial && !region && pedidoW > 0 && pedidoH > 0) {
+            const o = await orientacionExif(blob);
+            if (o >= 5 && o <= 8) {
+              compensarExif = true;
+              const t = pedidoW; pedidoW = pedidoH; pedidoH = t;
+            }
+          }
+
           let natW = Infinity;
           let natH = Infinity;
           if (!(pedidoW > 0) || !(pedidoH > 0)) {
@@ -780,7 +833,7 @@ export async function loadResourceImages(
             return;
           }
 
-          const entrada: RecursoRasterizado = { img, region: region ?? null };
+          const entrada: RecursoRasterizado = { img, region: region ?? null, compensarExif };
           loaded[resourceId] = entrada;
           // Los pixeles REALES del bitmap, no los pedidos: el rasterizador
           // capa los bitmaps a su tamano nativo, asi que una foto chica pedida
@@ -891,6 +944,14 @@ export function dibujarRecurso(
   alto: number
 ) {
   const { img, region } = recurso;
+  if (recurso.compensarExif && !region && ancho && alto) {
+    ctx.save();
+    ctx.translate(0, alto);
+    ctx.rotate(-Math.PI / 2);
+    ctx.drawImage(img, 0, 0, alto, ancho);
+    ctx.restore();
+    return;
+  }
   if (region && ancho && alto) {
     ctx.drawImage(img, region.x * ancho, region.y * alto, region.w * ancho, region.h * alto);
   } else if (ancho && alto) {
