@@ -184,11 +184,79 @@ export async function testMatrices(url: string, headers: Record<string, string>)
       const esLinealIdent = m[0] === 1 && m[1] === 0 && m[4] === 0 && m[5] === 1;
       return caja(m, im.width, im.height, esLinealIdent);
     }),
+    // Generaliza lo de arriba: no solo identidad, cualquier parte lineal
+    // (escala+rotacion) que se REPITE identica en 2+ colocaciones del mismo
+    // documento — senal de "plantilla/pagina repetida en varias posiciones"
+    // en vez de "cada foto rotada a mano, cada una distinta". Centrar ahi
+    // preserva el arreglo relativo entre las copias (misma razon que el
+    // caso identidad) sin tocar fotos rotadas individualmente.
+    compartidaCentrado: (() => {
+      const claveDe = (m: number[]) => `${m[0].toFixed(6)},${m[1].toFixed(6)},${m[4].toFixed(6)},${m[5].toFixed(6)}`;
+      const conteo = new Map<string, number>();
+      for (const im of imagenes) {
+        const k = claveDe(im.internoMat || IDENT);
+        conteo.set(k, (conteo.get(k) || 0) + 1);
+      }
+      return imagenes.map((im) => {
+        const m = im.internoMat || IDENT;
+        const compartida = (conteo.get(claveDe(m)) || 0) >= 2;
+        return caja(m, im.width, im.height, compartida);
+      });
+    })(),
+    // Igual que arriba, pero solo para tipo 8 (PDF): fotos sueltas (tipo 7)
+    // comparten escala por PURA COINCIDENCIA (misma resolucion de camara ->
+    // misma escala por defecto al insertar), no porque sean la misma
+    // plantilla repetida — agruparlas rompe archivos con fotos individuales
+    // rotadas a mano (confirmado: Sanitaria.concepts tiene 5 fotos asi).
+    compartidaTipo8Centrado: (() => {
+      const claveDe = (m: number[]) => `${m[0].toFixed(6)},${m[1].toFixed(6)},${m[4].toFixed(6)},${m[5].toFixed(6)}`;
+      const conteo = new Map<string, number>();
+      for (const im of imagenes) {
+        if (im.tipo !== 8) continue;
+        const k = claveDe(im.internoMat || IDENT);
+        conteo.set(k, (conteo.get(k) || 0) + 1);
+      }
+      return imagenes.map((im) => {
+        const m = im.internoMat || IDENT;
+        const compartida = im.tipo === 8 && (conteo.get(claveDe(m)) || 0) >= 2;
+        return caja(m, im.width, im.height, compartida);
+      });
+    })(),
+    // Combinacion final propuesta: identidad exacta (ya en produccion) O
+    // tipo 8 con parte lineal repetida 2+ veces (nuevo).
+    finalCentrado: (() => {
+      const claveDe = (m: number[]) => `${m[0].toFixed(6)},${m[1].toFixed(6)},${m[4].toFixed(6)},${m[5].toFixed(6)}`;
+      const conteo = new Map<string, number>();
+      for (const im of imagenes) {
+        if (im.tipo !== 8) continue;
+        const k = claveDe(im.internoMat || IDENT);
+        conteo.set(k, (conteo.get(k) || 0) + 1);
+      }
+      return imagenes.map((im) => {
+        const m = im.internoMat || IDENT;
+        const esLinealIdent = m[0] === 1 && m[1] === 0 && m[4] === 0 && m[5] === 1;
+        const compartidaT8 = im.tipo === 8 && (conteo.get(claveDe(m)) || 0) >= 2;
+        return caja(m, im.width, im.height, esLinealIdent || compartidaT8);
+      });
+    })(),
   };
+
+  const claveDeDiag = (m: number[]) => `${m[0].toFixed(6)},${m[1].toFixed(6)},${m[4].toFixed(6)},${m[5].toFixed(6)}`;
+  const conteoDiag = new Map<string, { n: number; tipos: number[]; wh: string[] }>();
+  for (const im of imagenes) {
+    const k = claveDeDiag(im.internoMat || IDENT);
+    const prev = conteoDiag.get(k) || { n: 0, tipos: [], wh: [] };
+    prev.n++;
+    prev.tipos.push(im.tipo);
+    prev.wh.push(`${im.width.toFixed(0)}x${im.height.toFixed(0)}`);
+    conteoDiag.set(k, prev);
+  }
+  const gruposCompartidos = [...conteoDiag.entries()].filter(([, v]) => v.n >= 2);
 
   return {
     imagenes: imagenes.length,
     trazos: trazos.length,
+    gruposCompartidos,
     tipo7: imagenes.filter((im) => im.tipo === 7).length,
     tipo8: imagenes.filter((im) => im.tipo === 8).length,
     internoIdentidad: imagenes.filter((im) => !im.internoMat || im.internoMat.every((v, i) => v === IDENT[i])).length,
@@ -210,6 +278,9 @@ export async function testMatrices(url: string, headers: Record<string, string>)
       intBCentrado: overlapPct(candidatas.intBCentrado),
       bIntCentrado: overlapPct(candidatas.bIntCentrado),
       linealIdentCentrado: overlapPct(candidatas.linealIdentCentrado),
+      compartidaCentrado: overlapPct(candidatas.compartidaCentrado),
+      compartidaTipo8Centrado: overlapPct(candidatas.compartidaTipo8Centrado),
+      finalCentrado: overlapPct(candidatas.finalCentrado),
     },
     linealIdentidad: imagenes.filter((im) => {
       const m = im.internoMat || IDENT;

@@ -39,7 +39,7 @@ for (const s of objetivos) {
       { apikey: K, Authorization: `Bearer ${K}` }
     );
     console.log(
-      `${f.name.padEnd(35)} ${s.MB}MB img=${r.imagenes}(t7=${r.tipo7},t8=${r.tipo8}) trz=${r.trazos} linealIdent=${r.linealIdentidad} | interno=${r.overlap.soloInterno}% linealIdentCentrado=${r.overlap.linealIdentCentrado}%`
+      `${f.name.padEnd(35)} ${s.MB}MB img=${r.imagenes}(t7=${r.tipo7},t8=${r.tipo8}) trz=${r.trazos} | interno=${r.overlap.soloInterno}% final(ident+compartidaT8)=${r.overlap.finalCentrado}%`
     );
   } catch (e) {
     console.error(`  FALLO ${f.name}: ${String(e).slice(0, 200)}`);

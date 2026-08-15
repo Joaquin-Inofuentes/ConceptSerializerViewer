@@ -467,23 +467,15 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
       if (zoomAll) {
-        let hasStrokes = false;
+        // Trazos E imagenes, igual que fitToBounds/computeFit: solo trazos
+        // dejaba fotos afuera del export cuando estan mas extendidas que las
+        // anotaciones.
         for (const item of docCache.items) {
-          if (item.kind === "image" || !visibleItem(item)) continue;
-          hasStrokes = true;
+          if (!visibleItem(item)) continue;
           if (item.minX < minX) minX = item.minX;
           if (item.minY < minY) minY = item.minY;
           if (item.maxX > maxX) maxX = item.maxX;
           if (item.maxY > maxY) maxY = item.maxY;
-        }
-        if (!hasStrokes) {
-          for (const item of docCache.items) {
-            if (item.kind === "stroke" || !visibleItem(item)) continue;
-            if (item.minX < minX) minX = item.minX;
-            if (item.minY < minY) minY = item.minY;
-            if (item.maxX > maxX) maxX = item.maxX;
-            if (item.maxY > maxY) maxY = item.maxY;
-          }
         }
       }
 
@@ -663,24 +655,16 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     const rect = { width: containerRef.current.clientWidth, height: containerRef.current.clientHeight };
     if (rect.width === 0 || rect.height === 0) return null;
 
+    // Trazos E imagenes, siempre los dos: encuadrar solo por trazos dejaba
+    // fotos afuera de la vista cuando estan mas lejos/mas extendidas que las
+    // anotaciones (un dibujo con varias laminas pegadas pero anotaciones
+    // concentradas en una sola mostraba "zoom all" recortando el resto).
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    let hasStrokes = false;
     for (const item of docCache.items) {
-      if (item.kind === "image") continue;
-      hasStrokes = true;
       if (item.minX < minX) minX = item.minX;
       if (item.minY < minY) minY = item.minY;
       if (item.maxX > maxX) maxX = item.maxX;
       if (item.maxY > maxY) maxY = item.maxY;
-    }
-    if (!hasStrokes) {
-      for (const item of docCache.items) {
-        if (item.kind === "stroke") continue;
-        if (item.minX < minX) minX = item.minX;
-        if (item.minY < minY) minY = item.minY;
-        if (item.maxX > maxX) maxX = item.maxX;
-        if (item.maxY > maxY) maxY = item.maxY;
-      }
     }
     if (minX === Infinity) return null;
 

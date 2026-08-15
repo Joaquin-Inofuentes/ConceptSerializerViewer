@@ -230,7 +230,10 @@ body {
 .gallery-item img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* contain, no cover: muchos de estos recursos son laminas de plano MUY
+     apaisadas (3:1 o mas), y "cover" dentro de un cuadrado recortaba una
+     tira central sin sentido, perdiendo casi todo el contenido. */
+  object-fit: contain;
 }
 .gallery-item:hover {
   border-color: var(--primary);

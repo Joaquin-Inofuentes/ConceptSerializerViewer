@@ -939,22 +939,18 @@ export function compararOrdenDibujo(
 
 /**
  * Junta los trazos e imagenes del documento en items dibujables, y calcula
- * el encuadre ("zoom all"). Dos pasadas separadas y no una por capa: primero
- * TODOS los trazos de TODAS las capas para saber si el documento tiene
- * trazos, y recien despues las imagenes. Si se mezclan en una pasada por
- * capa, una capa de solo-imagenes que aparece antes de una capa con trazos
- * alcanza a expandir el encuadre con la imagen antes de saber que hay
- * trazos, dando un encuadre mal ajustado.
+ * el encuadre ("zoom all"). El encuadre SIEMPRE suma trazos e imagenes: solo
+ * trazos dejaba fotos afuera de miniaturas/exports cuando estaban mas
+ * extendidas que las anotaciones (mismo criterio que `computeFit` en
+ * `Viewer.tsx`, que las dos superficies compartan la regla).
  */
 export function buildRenderPlan(doc: Document): RenderPlan {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  let hasStrokes = false;
   const items: RenderItem[] = [];
 
   doc.layers.forEach((layer) => {
     layer.strokes.forEach((stroke) => {
       if (stroke.points.length === 0) return;
-      hasStrokes = true;
       if (stroke.bbox.minX < minX) minX = stroke.bbox.minX;
       if (stroke.bbox.minY < minY) minY = stroke.bbox.minY;
       if (stroke.bbox.maxX > maxX) maxX = stroke.bbox.maxX;
@@ -985,24 +981,22 @@ export function buildRenderPlan(doc: Document): RenderPlan {
         height: img.height,
         layerIndex: layer.index,
       });
-      if (!hasStrokes) {
-        // Con la matriz aplicada, no [tx, ty, tx+ancho, ty+alto]: ese atajo
-        // ignora escala y rotacion, y en los dibujos con planos rotados -90
-        // grados daba un encuadre diez veces mas grande y corrido, o sea una
-        // miniatura casi vacia con el dibujo perdido en una esquina.
-        const m = img.transform;
-        const w = img.width || 500;
-        const h = img.height || 500;
-        if (m && m.length === 16) {
-          const a = m[0], b = m[1], c = m[4], d = m[5], e = m[12], f = m[13];
-          for (const [px, py] of [[0, 0], [w, 0], [0, h], [w, h]]) {
-            const x = a * px + c * py + e;
-            const y = b * px + d * py + f;
-            if (x < minX) minX = x;
-            if (x > maxX) maxX = x;
-            if (y < minY) minY = y;
-            if (y > maxY) maxY = y;
-          }
+      // Con la matriz aplicada, no [tx, ty, tx+ancho, ty+alto]: ese atajo
+      // ignora escala y rotacion, y en los dibujos con planos rotados -90
+      // grados daba un encuadre diez veces mas grande y corrido, o sea una
+      // miniatura casi vacia con el dibujo perdido en una esquina.
+      const m = img.transform;
+      const w = img.width || 500;
+      const h = img.height || 500;
+      if (m && m.length === 16) {
+        const a = m[0], b = m[1], c = m[4], d = m[5], e = m[12], f = m[13];
+        for (const [px, py] of [[0, 0], [w, 0], [0, h], [w, h]]) {
+          const x = a * px + c * py + e;
+          const y = b * px + d * py + f;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
         }
       }
     });

@@ -182,6 +182,82 @@ function girarTransform(m: number[]): number[] {
   return salida;
 }
 
+/**
+ * Ultimo recurso, deliberadamente cauteloso: si NINGUN trazo del documento
+ * cae sobre NINGUNA imagen, es señal de un problema de convencion de
+ * posicionamiento y no de anotaciones sueltas — un archivo real con fotos
+ * anotadas siempre tiene AL MENOS algunas coincidencias, aunque sea un
+ * puñado (medido en todo el corpus de prueba: el peor caso legitimo fue
+ * 2%, nunca 0%).
+ *
+ * En ese caso puntual (0%), los grupos de 2+ imagenes que comparten
+ * exactamente la misma escala y rotacion se tratan como paginas de la
+ * misma plantilla repetida (la razon de que compartan matriz) y se centran
+ * — mismo principio que el ajuste de matriz identidad de arriba, pero
+ * generalizado a escalas/rotaciones reales.
+ *
+ * Por que hace falta el freno del 0%: el mismo patron de "varias imagenes
+ * con la escala identica" tambien aparece por PURA COINCIDENCIA en
+ * archivos sanos (varias fotos de camara comparten la escala por defecto
+ * que la app les da al insertarlas, sin ser copias de una plantilla) — y
+ * ahi centrarlas rompe una colocacion que ya estaba bien. Sin el freno del
+ * 0% este mismo codigo arruinaba un archivo de referencia real (bajaba de
+ * 85% a 6% de trazos coincidiendo). Con el freno, ese archivo nunca entra
+ * a esta funcion porque ya tiene coincidencias.
+ */
+function corregirColocacionesFlotantes(layers: Layer[]) {
+  const trazos: Array<{ cx: number; cy: number }> = [];
+  for (const l of layers) {
+    for (const s of l.strokes) {
+      const b = s.bbox;
+      trazos.push({ cx: (b.minX + b.maxX) / 2, cy: (b.minY + b.maxY) / 2 });
+    }
+  }
+  if (trazos.length === 0) return;
+
+  const todasImagenes: ImageElement[] = [];
+  for (const l of layers) todasImagenes.push(...l.images);
+  if (todasImagenes.length === 0) return;
+
+  const cajaDe = (img: ImageElement) => {
+    const m = img.transform;
+    const a = m[0], b = m[1], c = m[4], d = m[5], e = m[12], f = m[13];
+    const esquinas = [
+      [0, 0],
+      [img.width, 0],
+      [0, img.height],
+      [img.width, img.height],
+    ].map(([x, y]) => [a * x + c * y + e, b * x + d * y + f]);
+    const xs = esquinas.map((p) => p[0]);
+    const ys = esquinas.map((p) => p[1]);
+    return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+  };
+  const cajas = todasImagenes.map(cajaDe);
+
+  const algunaCoincide = trazos.some((t) =>
+    cajas.some((c) => t.cx >= c.x0 && t.cx <= c.x1 && t.cy >= c.y0 && t.cy <= c.y1)
+  );
+  if (algunaCoincide) return;
+
+  const claveDe = (m: number[]) => `${m[0].toFixed(6)},${m[1].toFixed(6)},${m[4].toFixed(6)},${m[5].toFixed(6)}`;
+  const conteo = new Map<string, number>();
+  for (const img of todasImagenes) {
+    const k = claveDe(img.transform);
+    conteo.set(k, (conteo.get(k) || 0) + 1);
+  }
+
+  for (const img of todasImagenes) {
+    const k = claveDe(img.transform);
+    if ((conteo.get(k) || 0) < 2) continue;
+    const m = img.transform;
+    const a = m[0], b = m[1], c = m[4], d = m[5];
+    const nuevo = m.slice();
+    nuevo[12] = m[12] - (a * img.width) / 2 - (c * img.height) / 2;
+    nuevo[13] = m[13] - (b * img.width) / 2 - (d * img.height) / 2;
+    img.transform = nuevo;
+  }
+}
+
 function rgbaToHex(r: number, g: number, b: number, a: number) {
   const clamp = (v: number) => Math.max(0, Math.min(1, v));
   const hexR = Math.round(clamp(r) * 255).toString(16).padStart(2, "0");
@@ -280,6 +356,8 @@ async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Do
       }
     }
   }
+
+  corregirColocacionesFlotantes(layers);
 
   const { ids, sizes, porId } = mapearRecursos(zip, layers);
 
