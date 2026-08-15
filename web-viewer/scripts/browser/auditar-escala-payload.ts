@@ -28,6 +28,8 @@ export interface FilaEscala {
   aspectoDeclarado: number;
   aspectoNativo: number | null;
   numPaginas: number | null;
+  /** Tamaño decodificando CON la orientacion EXIF aplicada. */
+  conExif: { w: number; h: number } | null;
 }
 
 export async function auditarEscala(url: string): Promise<{ error?: string; filas: FilaEscala[] }> {
@@ -44,6 +46,7 @@ export async function auditarEscala(url: string): Promise<{ error?: string; fila
     const pagina = Number(c.id.split("#")[1] ?? 0);
     const blob = await doc.loadResource(c.id);
     let nativo: { w: number; h: number } | null = null;
+    let conExif: { w: number; h: number } | null = null;
     let numPaginas: number | null = null;
     let esPdf = false;
     if (blob) {
@@ -66,9 +69,18 @@ export async function auditarEscala(url: string): Promise<{ error?: string; fila
           URL.revokeObjectURL(url2);
         }
       } else {
+        // Dos decodificaciones: como lo hacemos hoy (sin tocar orientacion) y
+        // respetando el EXIF. Si dan distinto, la foto trae rotacion EXIF y
+        // hoy la estamos ignorando.
         const bm = await createImageBitmap(blob);
         nativo = { w: bm.width, h: bm.height };
         bm.close();
+        try {
+          const bm2 = await createImageBitmap(blob, { imageOrientation: "from-image" } as any);
+          (globalThis as any).__ultimoExif = { w: bm2.width, h: bm2.height };
+          conExif = { w: bm2.width, h: bm2.height };
+          bm2.close();
+        } catch { conExif = null; }
       }
     }
     const factor = nativo ? { x: c.w / nativo.w, y: c.h / nativo.h } : null;
@@ -83,6 +95,7 @@ export async function auditarEscala(url: string): Promise<{ error?: string; fila
       aspectoDeclarado: +(c.w / c.h).toFixed(4),
       aspectoNativo: nativo ? +(nativo.w / nativo.h).toFixed(4) : null,
       numPaginas,
+      conExif,
     });
   }
 

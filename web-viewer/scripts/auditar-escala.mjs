@@ -20,7 +20,10 @@ for (const id of process.argv.slice(2)) {
       const malas = r.filas.filter(x => x.deformacion !== null && x.deformacion > 1.01);
       console.log(`  ${r.filas.length} colocaciones, ${malas.length} DEFORMADAS`);
       for (const x of malas) {
-        console.log(`    ${x.resourceId} pag=${x.pagina} ${x.esPdf?"PDF":"img"} declarado ${x.declarado.w}x${x.declarado.h} (asp ${x.aspectoDeclarado}) vs nativo ${x.nativo.w}x${x.nativo.h} (asp ${x.aspectoNativo}) -> deformacion ${x.deformacion}`);
+        const ce = x.conExif ? `${x.conExif.w}x${x.conExif.h}` : "-";
+        const factorExif = x.conExif ? `${(x.declarado.w/x.conExif.w).toFixed(4)} / ${(x.declarado.h/x.conExif.h).toFixed(4)}` : "-";
+        console.log(`    ${x.resourceId} ${x.esPdf?"PDF":"img"} declarado ${x.declarado.w}x${x.declarado.h} vs nativo ${x.nativo.w}x${x.nativo.h} -> deformacion ${x.deformacion}`);
+        console.log(`        con EXIF aplicado: ${ce}   factor entonces: ${factorExif}`);
       }
     }
   } catch(e) { console.error("FALLO", String(e).slice(0,300)); }
