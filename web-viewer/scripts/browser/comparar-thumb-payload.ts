@@ -1,9 +1,18 @@
 // ¿Nuestro lienzo se parece a lo que dibuja la propia app Concepts?
 //
-// Cada .concepts trae adentro un `thumb.jpg` que renderizo Concepts con el
-// dibujo COMPLETO. Es la unica verdad disponible sobre como tiene que verse:
-// si nuestro "zoom all" coincide con esa imagen, entonces las fotos estan
-// colocadas donde van, escaladas como van, y los trazos caen encima.
+// OJO — LIMITE IMPORTANTE, medido: el `thumb.jpg` que trae cada .concepts NO
+// es un render del dibujo completo, es la VISTA GUARDADA de Concepts (un
+// recorte con zoom sobre un sector). Comprobado en dos archivos: en uno de 96
+// imagenes el thumb muestra una sola planta de cerca, y en otro de 67 lo
+// mismo. Por eso la correlacion contra nuestro "zoom all" da ~0 en TODOS los
+// archivos, incluidos los que ya se confirmaron visualmente correctos: no
+// mide desalineacion, mide que estamos encuadrando cosas distintas.
+//
+// O sea: este numero NO sirve como verdad global sobre si las fotos estan
+// bien colocadas. Para usar el thumb como referencia habria que localizar
+// primero ese recorte dentro de nuestro render (buscar escala y offset que
+// maximicen la correlacion) y recien ahi comparar; sin ese paso, cualquier
+// conclusion sacada de aca es falsa.
 //
 // La comparacion no puede ser pixel a pixel (rasterizamos distinto, y el
 // thumb tiene otra resolucion). Se compara la ESTRUCTURA: se reduce todo a
@@ -124,12 +133,15 @@ export async function compararConThumb(
       const bx0 = Math.min(...xs), bx1 = Math.max(...xs);
       const by0 = Math.min(...ys), by1 = Math.max(...ys);
       cajasImg.push({ id: img.resourceId, m, w: img.width, h: img.height, area: (bx1 - bx0) * (by1 - by0) });
-      if (trazos === 0) {
-        if (bx0 < minX) minX = bx0;
-        if (by0 < minY) minY = by0;
-        if (bx1 > maxX) maxX = bx1;
-        if (by1 > maxY) maxY = by1;
-      }
+      // El encuadre suma SIEMPRE trazos e imagenes, igual que `computeFit` en
+      // Viewer.tsx. Antes las imagenes solo entraban `if (trazos === 0)` —el
+      // criterio viejo de zoom-all—, asi que esta comparacion encuadraba
+      // distinto que la app real y sus numeros no decian nada sobre lo que el
+      // usuario ve de verdad.
+      if (bx0 < minX) minX = bx0;
+      if (by0 < minY) minY = by0;
+      if (bx1 > maxX) maxX = bx1;
+      if (by1 > maxY) maxY = by1;
     }
   }
 
