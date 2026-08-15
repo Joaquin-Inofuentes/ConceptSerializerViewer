@@ -1,0 +1,27 @@
+# nombre	k	dueño	path:linea	modulo	señales
+__cs	g	-	scripts/gen-thumbnails.mjs	scripts	window
+__f	g	-	scripts/e2e-viewer.mjs	scripts	window
+__stop	g	-	scripts/e2e-viewer.mjs	scripts	window
+abrir	fn	-	scripts/bench-reapertura.mjs:25	scripts	async
+abrir	fn	-	scripts/diag-cache-237.mjs:45	scripts	async
+abrir	fn	-	scripts/diag-cache.mjs:28	scripts	async
+cerrarPromptNombre	fn	-	scripts/e2e-funciones.mjs:52	scripts	async
+conceptserializer_tema	key	-	scripts/e2e-funciones.mjs	scripts	-
+correr	fn	-	scripts/run-suite.mjs:83	scripts	-
+crawl	fn	-	scripts/crawl-drive.mjs:76	scripts	async
+destacados	fn	-	scripts/run-suite.mjs:127	scripts	-
+downloadFile	fn	-	scripts/crawl-drive.mjs:58	scripts	async
+ejecutar	fn	-	scripts/recorrido.mjs:28	scripts	-
+esperarDescarga	fn	-	scripts/e2e-export.mjs:67	scripts	async
+exportar	fn	-	scripts/e2e-export.mjs:87	scripts	async
+indexedDB:concepts-raster	key	-	scripts/diag-cache-237.mjs	scripts	-
+indexedDB:concepts-raster	key	-	scripts/diag-cache.mjs	scripts	-
+indexedDB:concepts-raster	key	-	scripts/e2e-funciones.mjs	scripts	-
+indexedDB:concepts-raster	key	-	scripts/e2e-zoom-cache.mjs	scripts	-
+indexedDB:concepts-recientes	key	-	scripts/e2e-funciones.mjs	scripts	-
+leerIndice	fn	-	scripts/peso-recursos.mjs:21	scripts	-
+listFolder	fn	-	scripts/crawl-drive.mjs:45	scripts	async
+mb	fn	-	scripts/e2e-gama-baja.mjs:32	scripts	-
+medirFrames	fn	-	scripts/e2e-viewer.mjs:85	scripts	async
+run	fn	-	screenshot.js:9	-	async
+withRetry	fn	-	scripts/crawl-drive.mjs:29	scripts	async
