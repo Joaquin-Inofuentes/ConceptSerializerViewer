@@ -562,7 +562,9 @@ function mapearRecursos(zip: ZipArchive, layers: Layer[]) {
   const normalizadas = zip.names().map((n) => ({ real: n, norm: n.replace(/-/g, "") }));
 
   for (const uuid of usados) {
-    const plano = uuid.replace(/-/g, "");
+    // El id puede traer el numero de pagina colgado (`uuid#2`); al zip hay que
+    // pedirle el archivo del recurso, que es uno solo para todas sus paginas.
+    const plano = uuid.split("#")[0].replace(/-/g, "");
     const hit = normalizadas.find((n) => n.norm.includes(plano));
     if (!hit) continue;
     porId.set(uuid, hit.real);
@@ -618,6 +620,29 @@ function procesarItem(item: any, layer: Layer, globalBbox: BBox) {
     let resourceId = "";
     const ru = cuerpo.find(x => typeof x === "string" && x.includes("-"));
     if (ru) resourceId = ru;
+
+    // UN MISMO PDF puede estar colocado varias veces, una por pagina: en el
+    // item, justo despues del uuid del recurso, viene el numero de pagina.
+    // Sin leerlo, todas esas colocaciones comparten el mismo id y terminan
+    // mostrando LA MISMA pagina (la primera), porque tanto el cache como el
+    // rasterizador indexan por id de recurso. El plano dibujado no era el que
+    // corresponde, asi que las anotaciones de la pagina 2 caian sobre el
+    // dibujo de la pagina 1 — se veia como un problema de posicion cuando en
+    // realidad la posicion estaba bien y el CONTENIDO estaba mal.
+    //
+    // El numero se cuelga del id (`uuid#2`) para que el cache, el pool de
+    // workers y el rasterizado queden separados por pagina sin tener que
+    // cambiar la forma de todo lo que ya indexa por resourceId. La pagina 0
+    // se deja SIN sufijo a proposito: es la unica que existe en un PDF de una
+    // sola pagina (la enorme mayoria del corpus), asi que esos archivos
+    // conservan exactamente el id de antes y no cambian en nada.
+    if (ru) {
+      const iRu = cuerpo.indexOf(ru);
+      const pag = iRu >= 0 ? cuerpo[iRu + 1] : null;
+      if (typeof pag === "number" && Number.isInteger(pag) && pag > 0) {
+        resourceId = `${ru}#${pag}`;
+      }
+    }
 
     let width = 0, height = 0;
     const tam = cuerpo.find(x => Array.isArray(x) && x.length === 2 && typeof x[0] === "number");

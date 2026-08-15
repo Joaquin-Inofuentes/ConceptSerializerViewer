@@ -153,7 +153,11 @@ async function abrirPdf(resourceId: string, blob: Blob): Promise<PdfAbierto> {
     FilterFactory: FabricaFiltrosWorker,
   } as Parameters<typeof pdfjsLib.getDocument>[0]);
   const pdf = await tarea.promise;
-  const page = await pdf.getPage(1);
+  // El id puede venir como `uuid#2`: ese numero es la pagina del PDF que esta
+  // colocada. pdf.js numera desde 1. Antes esto era `getPage(1)` fijo, asi que
+  // un PDF colocado como varias paginas dibujaba la primera en todas.
+  const nPagina = Number(resourceId.split("#")[1] ?? 0) + 1;
+  const page = await pdf.getPage(Math.min(Math.max(1, nPagina), pdf.numPages));
   // rotation: 0 a proposito. Muchos de estos PDFs traen /Rotate=90, y por
   // defecto pdf.js YA aplica esa rotacion al viewport (una pagina de 842x3118
   // se reporta como 3118x842). Pero Concepts guarda la geometria del recurso

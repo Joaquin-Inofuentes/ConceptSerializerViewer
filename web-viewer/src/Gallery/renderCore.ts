@@ -459,7 +459,9 @@ async function rasterizarEnMain(
   width: number,
   height: number,
   vectorial: boolean,
-  region?: Region
+  region?: Region,
+  /** Id del recurso; puede traer la pagina colgada (`uuid#2`). */
+  idRecurso?: string
 ): Promise<CanvasImageSource> {
   if (vectorial) {
     const pdfjsLib = await getPdfjs();
@@ -469,7 +471,9 @@ async function rasterizarEnMain(
     const tarea = pdfjsLib.getDocument({ url });
     try {
       const pdf = await tarea.promise;
-      const page = await pdf.getPage(1);
+      // Igual que en el worker: el id puede traer la pagina colgada (`uuid#2`).
+      const nP = Math.min(Math.max(1, Number(idRecurso?.split("#")[1] ?? 0) + 1), pdf.numPages);
+      const page = await pdf.getPage(nP);
       // rotation: 0 — misma razon que en raster.worker.ts.
       const nativo = page.getViewport({ scale: 1, rotation: 0 });
       const canvas = document.createElement("canvas");
@@ -524,7 +528,7 @@ async function rasterizarEnMain(
 
 /** Tamaño nativo de un recurso, sin rasterizarlo (para poder clampear bien
  * antes de gastar el trabajo pesado). */
-async function tamañoNativo(blob: Blob, vectorial: boolean): Promise<{ w: number; h: number }> {
+async function tamañoNativo(blob: Blob, vectorial: boolean, pagina = 0): Promise<{ w: number; h: number }> {
   if (vectorial) {
     const pdfjsLib = await getPdfjs();
     const url = URL.createObjectURL(blob);
@@ -534,7 +538,11 @@ async function tamañoNativo(blob: Blob, vectorial: boolean): Promise<{ w: numbe
       // Sin rotar, igual que al rasterizar: si aca se devolviera el tamaño
       // rotado, el clamp razonaria sobre una proporcion distinta de la que
       // despues se dibuja.
-      const vp = (await pdf.getPage(1)).getViewport({ scale: 1, rotation: 0 });
+      // La pagina importa: en un PDF con paginas de distinto tamaño, medir
+      // siempre la primera hacia que el clamp razonara con la proporcion
+      // equivocada para las demas.
+      const nP = Math.min(Math.max(1, pagina + 1), pdf.numPages);
+      const vp = (await pdf.getPage(nP)).getViewport({ scale: 1, rotation: 0 });
       return { w: vp.width, h: vp.height };
     } finally {
       void tarea.destroy();
@@ -722,7 +730,7 @@ export async function loadResourceImages(
           let natW = Infinity;
           let natH = Infinity;
           if (!(pedidoW > 0) || !(pedidoH > 0)) {
-            const nativo = await tamañoNativo(blob, vectorial);
+            const nativo = await tamañoNativo(blob, vectorial, Number(resourceId.split("#")[1] ?? 0));
             // Con region, el "nativo" relevante es el del pedazo, no el de la
             // pagina entera: si no, el clamp de un bitmap creeria que se le
             // pide mas resolucion de la que tiene y lo achicaria de mas.
@@ -745,7 +753,7 @@ export async function loadResourceImages(
           }
           const enMain = async () => {
             const t = performance.now();
-            const r = await rasterizarEnMain(blob, width, height, vectorial, region);
+            const r = await rasterizarEnMain(blob, width, height, vectorial, region, resourceId);
             tiempos.enMain++;
             tiempos.enMainMs += performance.now() - t;
             return r;
