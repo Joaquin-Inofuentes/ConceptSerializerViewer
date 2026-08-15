@@ -163,6 +163,24 @@ extensionCodec.register({
  * planos derechos pero deja los trazos al reves, y ahi las anotaciones dejan de
  * caer sobre lo que marcan — que es peor que tener todo consistentemente al
  * reves.
+ *
+ * PENDIENTE, medido en `Fede y Franco/Concepts/HO/Drawing`: ahi pasa
+ * justamente eso que este comentario dice que hay que evitar, y pasa HOY. Al
+ * acercarse a las anotaciones sueltas se lee "+0,10" y "+0,40" ESPEJADAS,
+ * mientras el rotulo del plano que tienen al lado ("Holmberg 1764", "RESs",
+ * "R0", "Subsuelo", "ESCALA 1:50") se lee perfecto. O sea: trazos y planos
+ * quedaron a media vuelta uno del otro dentro de nuestro propio render.
+ *
+ * Eso NO deberia poder pasar: `girarPunto` y `girarTransform` aplican el mismo
+ * giro de 180 grados alrededor del origen, asi que la geometria relativa entre
+ * trazos e imagenes tendria que quedar intacta y o se leen los dos derechos o
+ * los dos al reves. Que discrepen significa que el giro se esta aplicando de
+ * forma asimetrica en algun punto entre leer los puntos y colocar la pagina
+ * rasterizada.
+ *
+ * Dato que lo confirma: esas dos anotaciones son EXACTAMENTE las que el
+ * thumb.jpg del archivo muestra apoyadas sobre las cocheras, asi que el
+ * desface medido contra el thumb (~800 unidades) es real y no un thumb viejo.
  */
 function girarPunto(x: number, y: number): [number, number] {
   return [-x, -y];
