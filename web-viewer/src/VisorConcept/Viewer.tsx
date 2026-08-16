@@ -1914,6 +1914,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           y0: it.minY,
           x1: it.maxX,
           y1: it.maxY,
+          isPhoto: it.isPhoto,
         }));
 
     // Leer y fijar el encuadre, para poder volver EXACTAMENTE a la misma vista

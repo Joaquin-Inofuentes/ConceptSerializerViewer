@@ -55,7 +55,7 @@ export async function medirGamaBaja(url: string) {
 
   // --- Cuantos bytes del archivo hacen falta para cada etapa -------------
   // (para planear descarga parcial por rangos HTTP)
-  const zip = ZipArchive.open(buf);
+  const zip = await ZipArchive.open(buf);
   const entradaBytes = (pred: (n: string) => boolean) => {
     let suma = 0;
     for (const [n, e] of zip.entries) if (pred(n)) suma += e.compressedSize;
@@ -106,8 +106,9 @@ export async function medirGamaBaja(url: string) {
   muestrear();
 
   let pxImagenes = 0;
-  for (const img of Object.values(images)) {
-    pxImagenes += ((img as any).width || 0) * ((img as any).height || 0);
+  for (const rec of Object.values(images)) {
+    const img = (rec as any)?.img;
+    pxImagenes += ((img as any)?.width || 0) * ((img as any)?.height || 0);
   }
 
   // Frames de pan sobre canvas de tamaño telefono.
@@ -133,7 +134,9 @@ export async function medirGamaBaja(url: string) {
   // Viewer), medido aparte porque corre en el hilo principal despues de
   // cargar los recursos.
   const p0 = performance.now();
-  for (const fuente of Object.values(images)) {
+  for (const rec of Object.values(images)) {
+    const fuente = (rec as any)?.img;
+    if (!(fuente instanceof ImageBitmap) && !(fuente instanceof HTMLCanvasElement) && !(fuente instanceof HTMLImageElement)) continue;
     const w = (fuente as any).width || 384;
     const h = (fuente as any).height || 384;
     const k = Math.min(384 / Math.max(w, h), 1);
