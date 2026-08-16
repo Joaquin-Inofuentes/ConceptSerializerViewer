@@ -945,7 +945,8 @@ export function dibujarRecurso(
   ctx: CanvasRenderingContext2D,
   recurso: RecursoRasterizado,
   ancho: number,
-  alto: number
+  alto: number,
+  esFoto?: boolean
 ) {
   const { img, region } = recurso;
 
@@ -954,6 +955,18 @@ export function dibujarRecurso(
   // recurso listo para pintarse de frente). Se probo agregar aca un volteo
   // vertical y el resultado fue el plano espejado ("XOBNU" en vez de "UNBOX").
   ctx.save();
+
+  // Las fotos (tipo 7, JPG) son la unica excepcion: la COLOCACION esta bien
+  // con el espejo de `espejarX`, pero el CONTENIDO del bitmap decodificado
+  // sale invertido en X (confirmado comparando contra el thumb.jpg embebido
+  // en archivos con fotos "NPt : +0,10" etc: el texto de la foto se leia al
+  // reves aunque la posicion coincidia). Se voltea aca, scopeado SOLO al
+  // draw de la foto, en vez de tocar la matriz de colocacion (eso desalinea
+  // la foto de la etiqueta que la nombra, ver nota en el parser).
+  if (esFoto && ancho) {
+    ctx.translate(ancho, 0);
+    ctx.scale(-1, 1);
+  }
 
   if (recurso.compensarExif && ancho && alto) {
     // El navegador ya aplico la orientacion EXIF al decodificar, pero Concepts
@@ -1001,6 +1014,7 @@ export type RenderItem =
       width: number;
       height: number;
       layerIndex: number;
+      isPhoto?: boolean;
     }
   | {
       type: "text";
@@ -1118,6 +1132,7 @@ export function buildRenderPlan(doc: Document): RenderPlan {
         width: img.width,
         height: img.height,
         layerIndex: layer.index,
+        isPhoto: img.isPhoto,
       });
       // Con la matriz aplicada, no [tx, ty, tx+ancho, ty+alto]: ese atajo
       // ignora escala y rotacion, y en los dibujos con planos rotados -90
@@ -1176,7 +1191,7 @@ export function drawItems(
       ctx.save();
       const m = item.transform;
       if (m && m.length === 16) ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
-      dibujarRecurso(ctx, recurso, item.width, item.height);
+      dibujarRecurso(ctx, recurso, item.width, item.height, item.isPhoto);
       ctx.restore();
     } else if (item.type === "text") {
       dibujarTexto(ctx, item);

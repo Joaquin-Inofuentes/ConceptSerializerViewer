@@ -159,6 +159,7 @@ interface CachedImage {
   height: number;
   layerId: string;
   layerIndex: number;
+  isPhoto?: boolean;
 }
 
 interface CachedText {
@@ -429,6 +430,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           width: img.width, height: img.height,
           layerId: layer.id,
           layerIndex: layer.index,
+          isPhoto: img.isPhoto,
         });
       });
 
@@ -623,7 +625,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
             if (m && m.length === 16) {
               ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
             }
-            dibujarRecurso(ctx, recurso, item.width, item.height);
+            dibujarRecurso(ctx, recurso, item.width, item.height, item.isPhoto);
             ctx.restore();
           } else if (item.kind === "text") {
             dibujarTexto(ctx, {
@@ -1550,7 +1552,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
                 ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
               }
               if (usable) {
-                dibujarRecurso(ctx, recurso!, item.width, item.height);
+                dibujarRecurso(ctx, recurso!, item.width, item.height, item.isPhoto);
               } else {
                 // Marcador de posicion: un recuadro solido en el lugar exacto
                 // que ocupa el recurso. Sin esto, una imagen que todavia no

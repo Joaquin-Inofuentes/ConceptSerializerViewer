@@ -32,6 +32,14 @@ export interface ImageElement {
   width: number;
   height: number;
   transform: number[];
+  /**
+   * true para fotos (item tipo 7, JPG), false/undefined para paginas de PDF
+   * (item tipo 8). El BITMAP de las fotos sale espejado en X del recurso
+   * decodificado (la colocacion en si esta bien, ver nota en `emitirImagen`),
+   * asi que el dibujante necesita saber cual es cual para voltear solo el
+   * contenido de las fotos al dibujarlas, sin tocar la matriz de colocacion.
+   */
+  isPhoto?: boolean;
 }
 
 /**
@@ -742,7 +750,7 @@ function procesarItem(item: any, layer: Layer, globalBbox: BBox) {
 
   // Imagen colocada: si de verdad lo es, ya quedo emitida y no hay que seguir
   // recorriendo adentro.
-  if ((tipo === 8 || tipo === 7) && Array.isArray(item[1]) && emitirImagen(item, layer)) return;
+  if ((tipo === 8 || tipo === 7) && Array.isArray(item[1]) && emitirImagen(item, layer, tipo === 7)) return;
 
   // Texto de la herramienta de texto.
   if (tipo === 13 && Array.isArray(item[1]) && emitirTexto(item, layer)) return;
@@ -821,7 +829,7 @@ function emitirTexto(item: any, layer: Layer): boolean {
   return true;
 }
 
-function emitirImagen(item: any, layer: Layer): boolean {
+function emitirImagen(item: any, layer: Layer, esFoto: boolean): boolean {
   const cuerpo: any[] = item[1];
   {
     const interno = Array.isArray(cuerpo) && cuerpo.length > 1 && Array.isArray(cuerpo[1]) ? cuerpo[1] : [];
@@ -892,13 +900,15 @@ function emitirImagen(item: any, layer: Layer): boolean {
         resourceId,
         width,
         height,
-        // PENDIENTE (medido, sin resolver): en las fotos (tipo 7) el CONTENIDO
-        // del bitmap sale espejado, no su ubicacion. Se comprobo que sacarles
-        // el espejo de la matriz NO es la solucion: la foto se va de lugar y
-        // se despega de la etiqueta que la nombra, o sea que la colocacion con
-        // espejo es la correcta y lo que falta es voltear el bitmap al
-        // dibujarlo. Los PDF (tipo 8) no tienen el problema, probablemente
-        // porque pdf.js los rasteriza pidiendo `rotation: 0`.
+        // En las fotos (tipo 7) el CONTENIDO del bitmap sale espejado, no su
+        // ubicacion: sacarle el espejo a la matriz de colocacion desalinea la
+        // foto de la etiqueta que la nombra, asi que la colocacion CON espejo
+        // es la correcta. `isPhoto` le avisa al dibujante (Viewer.tsx) que
+        // voltee solo el bitmap, con una transformacion de canvas separada
+        // scopeada al draw de la imagen, sin tocar esta matriz. Los PDF (tipo
+        // 8) no tienen el problema, probablemente porque pdf.js los rasteriza
+        // pidiendo `rotation: 0`.
+        isPhoto: esFoto,
         transform: aCanvasTransform(espejarX(transform))
       });
       return true;
@@ -924,7 +934,7 @@ function buscarElementos(o: any, layer: Layer, globalBbox: BBox) {
   // de la capa. Antes esta funcion solo sabia reconocer trazos, asi que esas
   // imagenes nunca se emitian y desaparecian en silencio: no se dibujaban mal
   // ubicadas, directamente no se dibujaban.
-  if ((o[0] === 7 || o[0] === 8) && Array.isArray(o[1]) && emitirImagen(o, layer)) return;
+  if ((o[0] === 7 || o[0] === 8) && Array.isArray(o[1]) && emitirImagen(o, layer, o[0] === 7)) return;
   if (o[0] === 13 && Array.isArray(o[1]) && emitirTexto(o, layer)) return;
 
   for (const x of o) {
