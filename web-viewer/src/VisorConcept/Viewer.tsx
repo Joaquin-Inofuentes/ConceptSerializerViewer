@@ -128,6 +128,19 @@ const DEBOUNCE_SINCRONIZAR = 220;
  */
 const LADO_MINIMO_PX = 24;
 
+/**
+ * Lado en pixeles a partir del cual un recurso cargado cuenta como
+ * "resolucion plena" para el tope FIFO de 2 (ver hotFifoRef).
+ *
+ * Hace falta para no confundir esto con una vista general: al encuadrar un
+ * dibujo entero, TODOS sus planos estan "visibles" a la vez pero cada uno
+ * ocupa poco lado en pantalla (miniaturas), no algo parecido a full HD. Sin
+ * este umbral el primer render ya llenaba (y de sobra) el tope con esas
+ * miniaturas. 900 px separa con margen una miniatura de overview (decenas a
+ * pocos cientos de px) de un plano al que el usuario se acerco de verdad.
+ */
+const UMBRAL_HOT_LADO_PX = 900;
+
 /** Un grupo de trazos que comparten estado de dibujo, unidos en un solo
  * Path2D para poder pintarlos con una sola llamada. */
 interface FusionTrazos {
@@ -230,6 +243,26 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
    * tienen que quedar ordenadas igual. */
   const usoRef = useRef<Record<string, number>>({});
   const relojUsoRef = useRef(0);
+  /**
+   * Cola FIFO de recursos rasterizados a resolucion PLENA (no el anillo, que
+   * va a media escala como adelanto).
+   *
+   * Reportado por un usuario: acercarse a un plano hasta full HD y panear
+   * volvia a cargar el plano de vuelta. Causa: `desalojarLejanos` desaloja
+   * por LRU contra el presupuesto de RAM del dispositivo, y con varios
+   * planos en pantalla el que se acaba de ver en full HD podia salir del
+   * presupuesto apenas dejaba de estar "cerca" (fuera del anillo), asi que
+   * volver a el rerasterizaba el PDF entero (~4,7 s por plano).
+   *
+   * Se agrega un tope aparte, chico y fijo (2 planos), que protege del
+   * desalojo por RAM a los ultimos dos que llegaron a resolucion plena. Es
+   * FIFO y no LRU a proposito: el usuario pidio explicitamente que
+   * "volver a mirar" un plano viejo no lo salve de salir cuando entra un
+   * tercero, para que el comportamiento sea predecible (los ultimos DOS que
+   * se enfocaron, no los mas usados).
+   */
+  const hotFifoRef = useRef<string[]>([]);
+  const MAX_HOT_FIFO = 2;
   const layerConfigsRef = useRef<Record<string, LayerConfig>>(layerConfigs);
   const isolatedLayerRef = useRef<string | null>(isolatedLayer);
   const imageOpacityRef = useRef<number>(imageOpacity ?? 1);
@@ -981,7 +1014,14 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
    */
   const desalojarLejanos = useCallback(
     (protegidos: string[]) => {
-      const salvo = new Set(protegidos);
+      // Los ultimos dos planos a resolucion plena tambien se protegen aca:
+      // el tope de RAM del dispositivo no debe ser lo que los desaloje, ese
+      // trabajo ya lo hace `marcarHot` con su propio tope fijo de 2 (ver
+      // comentario en hotFifoRef). Sin esto, en un dibujo con muchos planos
+      // visibles a la vez el LRU por RAM podia desalojar un "hot" antes de
+      // que llegara un tercero, y entonces la cola FIFO ya no reflejaba lo
+      // que de verdad seguia en memoria.
+      const salvo = new Set([...protegidos, ...hotFifoRef.current]);
       let total = 0;
       Object.values(imagesRef.current).forEach((r) => {
         total += pixelesDe(r);
@@ -1012,11 +1052,52 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     [budgets, recalcularPixeles]
   );
 
+  /**
+   * Anota un recurso como recien llegado a resolucion PLENA y hace cumplir
+   * el tope de la cola (ver hotFifoRef). Estrictamente FIFO: si el recurso
+   * ya estaba en la cola no se lo reordena, asi que volver a mirarlo no lo
+   * "renueva" ni lo salva de salir cuando entra un tercero — eso es lo que
+   * el usuario pidio (predecible: los ultimos DOS que se enfocaron, sin
+   * sorpresas por reuso).
+   *
+   * No desaloja lo que esta actualmente en pantalla (`visibles`): sacar de
+   * memoria algo que se esta mirando ahi mismo no libera nada (se vuelve a
+   * pedir en la proxima sincronizacion) y solo fabricaria un parpadeo.
+   */
+  const marcarHot = useCallback((id: string, visibles: string[]) => {
+    if (hotFifoRef.current.includes(id)) return;
+    hotFifoRef.current.push(id);
+    if (hotFifoRef.current.length <= MAX_HOT_FIFO) return;
+
+    const enPantalla = new Set(visibles);
+    // Busca el mas viejo que ya no este en pantalla; si todos lo estan (caso
+    // raro: 3+ planos a resolucion plena a la vez en el viewport) no se
+    // desaloja nada y la cola queda temporalmente mas larga que el tope.
+    const idx = hotFifoRef.current.findIndex((x) => !enPantalla.has(x));
+    if (idx === -1) return;
+    const [viejo] = hotFifoRef.current.splice(idx, 1);
+    const r = imagesRef.current[viejo];
+    if (r) {
+      const siguiente = { ...imagesRef.current };
+      delete siguiente[viejo];
+      delete escalaPorRecursoRef.current[viejo];
+      liberarImagen(r.img);
+      imagesRef.current = siguiente;
+      statsRef.current.recursosCargados = Object.keys(siguiente).length;
+      recalcularPixeles();
+    }
+  }, [recalcularPixeles]);
+
   const cargarRecursos = useCallback(async (
     escala: number,
     signal?: AbortSignal,
     only?: string[],
-    regiones?: Record<string, Region>
+    regiones?: Record<string, Region>,
+    // El anillo (preview a media escala) NO cuenta para el tope FIFO de
+    // resolucion plena: es a proposito mas chico y transitorio, y contarlo
+    // desalojaria un "hot" de verdad por un adelanto que ni se esta mirando.
+    hot = false,
+    visiblesActuales: string[] = []
   ) => {
     if (!doc) return;
     if (Object.keys(dibujado).length === 0) return;
@@ -1087,6 +1168,14 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         escalaPorRecursoRef.current[id] =
           anchoDoc > 0 && anchoReal > 0 ? anchoReal / (anchoDoc * fraccion) : escala * RESOURCE_QUALITY;
         usoRef.current[id] = ++relojUsoRef.current;
+        // Solo cuenta para el tope FIFO si de verdad llego a resolucion
+        // "full HD": en una vista general de un dibujo con muchos planos,
+        // TODOS estan "visibles" (hot=true) pero cada uno ocupa poco lado en
+        // pantalla, y contarlos ahi desactivaria el tope de entrada (el
+        // primer sync ya deja 19 recursos "hot"). El umbral distingue esa
+        // vista general de haberse acercado a un plano en particular.
+        const altoReal = (recurso.img as any).height ?? 0;
+        if (hot && Math.max(anchoReal, altoReal) >= UMBRAL_HOT_LADO_PX) marcarHot(id, visiblesActuales);
         listos++;
         statsRef.current.recursosCargados = Object.keys(imagesRef.current).length;
         onResourceProgressRef.current?.(listos, total);
@@ -1111,7 +1200,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     recalcularPixeles();
     requestRedraw();
     return nuevas;
-  }, [doc, fileId, budgets, dibujado, requestRedraw, recalcularPixeles]);
+  }, [doc, fileId, budgets, dibujado, requestRedraw, recalcularPixeles, marcarHot]);
 
   const cargaInicialRef = useRef<AbortController | null>(null);
 
@@ -1163,6 +1252,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       escalaPorRecursoRef.current = {};
       usoRef.current = {};
       fallosRef.current = {};
+      hotFifoRef.current = [];
       // Los workers guardan los ultimos PDFs parseados para abaratar el
       // refinado por zoom. Al cerrar el dibujo ya no sirven, y si no se
       // sueltan se suman a la RAM del siguiente.
@@ -1284,10 +1374,10 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         // varios segundos mirando algo borroso mientras la CPU trabaja para
         // pixeles que no se ven.
         if (soloVisibles.length > 0) {
-          await cargarRecursos(necesaria, signal, soloVisibles, regiones);
+          await cargarRecursos(necesaria, signal, soloVisibles, regiones, true, visibles);
         }
         if (aRefinar.length > 0 && !signal?.aborted) {
-          await cargarRecursos(necesaria, signal, aRefinar, regiones);
+          await cargarRecursos(necesaria, signal, aRefinar, regiones, true, visibles);
         }
         if (soloAnillo.length > 0 && !signal?.aborted) {
           // El anillo va a MEDIA escala: es un cuarto de los pixeles. Todavia
@@ -1295,6 +1385,8 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           // plena ahi le come presupuesto a los planos que si se ven. Cuando
           // el usuario panea hacia alla, `necesita()` lo ve corto de
           // resolucion y lo refina solo — que es el mecanismo que ya existe.
+          // No cuenta como "hot": es un adelanto a media escala, no la
+          // resolucion plena que gobierna el tope FIFO de 2.
           await cargarRecursos(necesaria * ESCALA_ANILLO, signal, soloAnillo);
         }
       } finally {
@@ -1861,6 +1953,14 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       tiempos: { ...tiempos },
     });
 
+    // Diagnostico del tope FIFO de resolucion plena (ver hotFifoRef), para
+    // que los benchmarks puedan verificar el tope de 2 y el orden FIFO sin
+    // instrumentar la UI.
+    (window as any).__viewerHotCache = () => ({
+      hotFifo: [...hotFifoRef.current],
+      enMemoria: Object.keys(imagesRef.current),
+    });
+
     // Cuantas de las imagenes que CAEN EN PANTALLA tienen de verdad un bitmap
     // dibujable. Es la medida directa de "se pierden imagenes con el zoom o el
     // paneo": si visiblesConBitmap baja despues de un gesto, se perdieron.
@@ -1937,6 +2037,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     return () => {
       delete (window as any).__conceptsPedirPreviews;
       delete (window as any).__viewerStats;
+      delete (window as any).__viewerHotCache;
       delete (window as any).__viewerCobertura;
       delete (window as any).__viewerCajas;
       delete (window as any).__viewerVista;
