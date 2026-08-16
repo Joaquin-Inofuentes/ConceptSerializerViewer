@@ -3,8 +3,8 @@
 > Documento maestro para agentes IA. Leer este archivo primero: contiene el mapa
 > completo del proyecto web (entrypoints, módulos, funciones, relaciones, APIs).
 
-- Generado: 2026-08-15 10:18
-- Archivos propios analizados: 102 (18835 líneas)
+- Generado: 2026-08-15 17:03
+- Archivos propios analizados: 120 (20941 líneas)
 - Archivos vendor/excluidos: 0
 - package.json: web-viewer v0.0.0
 - Cómo correr (scripts npm):
@@ -29,40 +29,52 @@ scratch/test_local.cjs
 scratch/test_ui.cjs
 scratch/update_css.cjs
 screenshot.js
+scripts/alinear-thumb.mjs
+scripts/audit-alineacion-corpus.mjs
 scripts/audit-colocacion.mjs
 scripts/audit-estructura.mjs
 scripts/audit-geometria.mjs
 scripts/audit-imagenes.mjs
+scripts/auditar-escala.mjs
 scripts/bench-arranque.mjs
 scripts/bench-lowend.mjs
 scripts/bench-pesado.mjs
 scripts/bench-reapertura.mjs
 scripts/bench-viewer.mjs
+scripts/browser/alinear-thumb-payload.ts
+scripts/browser/anclaje-payload.ts
 scripts/browser/audit-colocacion-payload.ts
 scripts/browser/audit-estructura-payload.ts
 scripts/browser/audit-imagen-payload.ts
 scripts/browser/audit-payload.ts
+scripts/browser/auditar-escala-payload.ts
 scripts/browser/bench-payload.ts
+scripts/browser/centrado-ab-payload.ts
 scripts/browser/centro-payload.ts
 scripts/browser/comparar-thumb-payload.ts
 scripts/browser/dump-item8-payload.ts
 scripts/browser/lowend-payload.ts
+scripts/browser/medir-desface-payload.ts
+scripts/browser/pdf-render-payload.ts
 scripts/browser/profile-payload.ts
 scripts/browser/sentido-texto-payload.ts
 scripts/browser/stats-payload.ts
 scripts/browser/test-matrices-payload.ts
 scripts/browser/thumb-probe.ts
 scripts/cap-centro.mjs
+scripts/cap-desface-local.mjs
 scripts/cap-desface.mjs
 scripts/cap-detalle.mjs
 scripts/cap-galeria-menu.mjs
 scripts/cap-gesto.mjs
+scripts/cap-recurso.mjs
 scripts/cap-rotar-export.mjs
 scripts/cap-rotar.mjs
 scripts/cap-ruta.mjs
 scripts/cap-trazo.mjs
 scripts/cap-zoomall.mjs
 scripts/captura-visual.mjs
+scripts/centrado-ab.mjs
 scripts/comparar-thumb.mjs
 scripts/crawl-drive.mjs
 scripts/diag-cache-237.mjs
@@ -78,9 +90,12 @@ scripts/e2e-nombres-rutas.mjs
 scripts/e2e-perdida-imagenes.mjs
 scripts/e2e-viewer.mjs
 scripts/e2e-zoom-cache.mjs
+scripts/exportar-pdf.mjs
 scripts/gen-thumbnails.mjs
+scripts/medir-desface.mjs
 scripts/perfil-gestos.mjs
 scripts/peso-recursos.mjs
+scripts/probar-anclajes.mjs
 scripts/profile-heavy.mjs
 scripts/recorrido.mjs
 scripts/resolve-url.mjs
@@ -88,7 +103,10 @@ scripts/run-suite.mjs
 scripts/sentido-texto.mjs
 scripts/servir-corpus.mjs
 scripts/stats-corpus.mjs
+scripts/test-matrices-local.mjs
 scripts/test-matrices.mjs
+scripts/validar-regla-centrado.mjs
+scripts/variance-scan.mjs
 src/App.tsx
 src/config.ts
 src/device.ts
@@ -137,40 +155,52 @@ vite.config.ts
 | `scratch/test_ui.cjs` | 73 | - | - |
 | `scratch/update_css.cjs` | 63 | - | - |
 | `screenshot.js` | 46 | - | - |
+| `scripts/alinear-thumb.mjs` | 30 | - | - |
+| `scripts/audit-alineacion-corpus.mjs` | 154 | - | Corre la logica de overlap (identica a la de produccion en parser.ts) |
 | `scripts/audit-colocacion.mjs` | 88 | - | ¿Las imagenes estan colocadas donde corresponde, o hay dibujos "flotan… |
 | `scripts/audit-estructura.mjs` | 72 | - | ¿Por que un .concepts con recursos pesados no muestra ninguna imagen? |
 | `scripts/audit-geometria.mjs` | 56 | - | Audita la geometria de los .concepts mas pesados: ¿las imagenes estan |
 | `scripts/audit-imagenes.mjs` | 90 | - | ¿Los planos se ven estirados? Compara el tamaño que el parser cree que |
+| `scripts/auditar-escala.mjs` | 37 | - | - |
 | `scripts/bench-arranque.mjs` | 177 | - | Mide el ARRANQUE del build de produccion (dist/) como en un telefono d… |
 | `scripts/bench-lowend.mjs` | 114 | - | Benchmark "gama baja": corre el pipeline real del visor con CPU thrott… |
 | `scripts/bench-pesado.mjs` | 379 | - | Banco de pruebas del PEOR CASO: el dibujo mas pesado, en un telefono d… |
 | `scripts/bench-reapertura.mjs` | 83 | - | Mide cuanto se gana al REABRIR un dibujo ya visto (cache persistente d… |
 | `scripts/bench-viewer.mjs` | 101 | - | Benchmark del visor sobre uno o varios .concepts locales, usando el co… |
+| `scripts/browser/alinear-thumb-payload.ts` | 204 | - | Alineacion PRECISA contra el thumb, para responder donde tendrian que … |
+| `scripts/browser/anclaje-payload.ts` | 240 | - | ¿Donde esta el (0,0) local de un recurso colocado? |
 | `scripts/browser/audit-colocacion-payload.ts` | 138 | - | ¿Las imagenes que el parser dice que hay estan DE VERDAD colocadas en … |
 | `scripts/browser/audit-estructura-payload.ts` | 124 | - | Vuelca la ESTRUCTURA del arbol de un .concepts: que tipos de item hay … |
 | `scripts/browser/audit-imagen-payload.ts` | 122 | - | Audita, recurso por recurso, si el tamaño que el parser cree que tiene… |
 | `scripts/browser/audit-payload.ts` | 81 | - | Audita la geometria de un .concepts: matrices de transform de cada ima… |
+| `scripts/browser/auditar-escala-payload.ts` | 106 | - | ¿El tamaño con el que dibujamos cada recurso es el que el recurso tien… |
 | `scripts/browser/bench-payload.ts` | 126 | - | Mide el pipeline REAL del visor, end to end, con el codigo que corre e… |
+| `scripts/browser/centrado-ab-payload.ts` | 165 | - | Renderiza el MISMO documento dos veces, con las dos convenciones de or… |
 | `scripts/browser/centro-payload.ts` | 169 | - | Prueba DECISIVA y no circular: agarra un trazo que HOY queda flotando |
-| `scripts/browser/comparar-thumb-payload.ts` | 261 | - | ¿Nuestro lienzo se parece a lo que dibuja la propia app Concepts? |
+| `scripts/browser/comparar-thumb-payload.ts` | 273 | - | ¿Nuestro lienzo se parece a lo que dibuja la propia app Concepts? |
 | `scripts/browser/dump-item8-payload.ts` | 96 | - | Vuelca, ya decodificado con el ExtensionCodec real (UUIDs como string, |
 | `scripts/browser/lowend-payload.ts` | 183 | - | Mide el pipeline REAL del visor como si corriera en un telefono de gam… |
+| `scripts/browser/medir-desface-payload.ts` | 313 | - | Mide el desplazamiento REAL entre trazos e imagenes, usando el thumb.j… |
+| `scripts/browser/pdf-render-payload.ts` | 27 | - | Renderiza un PDF a PNG usando el mismo pdf.js que usa la app. Sirve pa… |
 | `scripts/browser/profile-payload.ts` | 127 | - | Corre DENTRO del navegador (lo sirve Vite en dev). Vive en un modulo r… |
 | `scripts/browser/sentido-texto-payload.ts` | 116 | - | ¿El visor dibuja el documento cabeza abajo? |
 | `scripts/browser/stats-payload.ts` | 45 | - | Corre dentro del navegador: parsea un .concepts y devuelve solo metric… |
 | `scripts/browser/test-matrices-payload.ts` | 291 | - | Prueba, para cada imagen colocada, tres candidatas de matriz de posici… |
 | `scripts/browser/thumb-probe.ts` | 63 | - | Mide, recurso por recurso, cuanto cuesta generar la miniatura de un |
 | `scripts/cap-centro.mjs` | 60 | - | Prueba decisiva: agarra un trazo que HOY (esquina superior-izquierda) … |
+| `scripts/cap-desface-local.mjs` | 74 | - | Igual que cap-desface.mjs pero contra el corpus LOCAL servido por |
 | `scripts/cap-desface.mjs` | 74 | - | Captura el plano completo y un detalle de la zona limite entre trazos … |
 | `scripts/cap-detalle.mjs` | 64 | - | Captura un plano MUY de cerca, para leer a ojo si el texto sale bien |
 | `scripts/cap-galeria-menu.mjs` | 26 | - | - |
 | `scripts/cap-gesto.mjs` | 119 | - | Captura el lienzo EN MEDIO de un paneo y de un pinch. |
+| `scripts/cap-recurso.mjs` | 37 | - | Captura UN recurso concreto encuadrado en pantalla, para comparar como… |
 | `scripts/cap-rotar-export.mjs` | 58 | - | - |
 | `scripts/cap-rotar.mjs` | 68 | - | Prueba a mano el boton nuevo de "rotar 90 a la derecha" en la vista de |
 | `scripts/cap-ruta.mjs` | 33 | - | - |
 | `scripts/cap-trazo.mjs` | 112 | - | Zoom MUY cerrado sobre un trazo puntual que cae dentro de una imagen, … |
 | `scripts/cap-zoomall.mjs` | 73 | - | Prueba "zoom all" de verdad: abre el dibujo, hace click en el boton re… |
 | `scripts/captura-visual.mjs` | 89 | - | Captura pantallas del visor real para comprobar A OJO que las imagenes |
+| `scripts/centrado-ab.mjs` | 31 | - | - |
 | `scripts/comparar-thumb.mjs` | 86 | - | ¿Nuestro render coincide con el que hace la propia app Concepts? |
 | `scripts/crawl-drive.mjs` | 137 | - | Recorre TODO el arbol de la carpeta publica de Drive (via el edge func… |
 | `scripts/diag-cache-237.mjs` | 88 | - | Por que el cache del dibujo de 237 MB acierta 4 de 6: compara las clav… |
@@ -186,9 +216,12 @@ vite.config.ts
 | `scripts/e2e-perdida-imagenes.mjs` | 234 | - | ¿Se pierden imagenes al hacer zoom o al panear? |
 | `scripts/e2e-viewer.mjs` | 147 | - | Test end to end de la app real: abre la galeria, sube un .concepts por… |
 | `scripts/e2e-zoom-cache.mjs` | 163 | - | Dos comprobaciones puntuales que el test general no cubria bien: |
+| `scripts/exportar-pdf.mjs` | 77 | - | Exporta el PDF REAL que produce la app: abre el dibujo, aprieta |
 | `scripts/gen-thumbnails.mjs` | 208 | - | Genera las miniaturas de todos los .concepts bajados por crawl-drive.m… |
+| `scripts/medir-desface.mjs` | 40 | - | - |
 | `scripts/perfil-gestos.mjs` | 144 | - | ¿QUE bloquea el hilo principal mientras se panea y se hace zoom? |
 | `scripts/peso-recursos.mjs` | 128 | - | ¿Cuanto pesa cada recurso y cuanto espacio ocupa en el dibujo? |
+| `scripts/probar-anclajes.mjs` | 34 | - | - |
 | `scripts/profile-heavy.mjs` | 61 | - | Perfila EN DETALLE un .concepts pesado, reproduciendo lo que hace el v… |
 | `scripts/recorrido.mjs` | 480 | - | RECORRIDO COMPLETO: es el instrumento con el que se compara una iterac… |
 | `scripts/resolve-url.mjs` | 11 | - | - |
@@ -196,7 +229,10 @@ vite.config.ts
 | `scripts/sentido-texto.mjs` | 32 | - | ¿Cuantos dibujos de la carpeta se estan viendo cabeza abajo? |
 | `scripts/servir-corpus.mjs` | 95 | - | Sirve los .concepts del corpus local por HTTP con soporte de Range. |
 | `scripts/stats-corpus.mjs` | 73 | - | Mide TODO el corpus local de .concepts: tiempo de parseo, trazos, punt… |
+| `scripts/test-matrices-local.mjs` | 156 | - | Corre la logica de overlap de test-matrices-payload.ts contra archivos |
 | `scripts/test-matrices.mjs` | 50 | - | - |
+| `scripts/validar-regla-centrado.mjs` | 94 | - | Valida la regla "centrar las colocaciones con traslacion exactamente (… |
+| `scripts/variance-scan.mjs` | 122 | - | Escanea el corpus LOCAL cacheado (.cache/concepts) y mide, para cada |
 | `src/App.tsx` | 234 | - | - |
 | `src/config.ts` | 23 | - | Config publica del viewer. La anon key de Supabase esta pensada para |
 | `src/device.ts` | 146 | - | Deteccion de gama del dispositivo y presupuestos derivados.     Todo e… |
@@ -209,10 +245,10 @@ vite.config.ts
 | `src/Gallery/Gallery.css` | 651 | - | - |
 | `src/Gallery/Gallery.tsx` | 914 | - | - |
 | `src/Gallery/NamePrompt.tsx` | 57 | - | - |
-| `src/Gallery/raster.worker.ts` | 364 | - | Rasteriza PDFs y fotos FUERA del hilo principal.       Es la diferenci… |
-| `src/Gallery/rasterCache.ts` | 313 | - | Cache persistente (IndexedDB) de recursos ya rasterizados.     Rasteri… |
+| `src/Gallery/raster.worker.ts` | 368 | - | Rasteriza PDFs y fotos FUERA del hilo principal.       Es la diferenci… |
+| `src/Gallery/rasterCache.ts` | 321 | - | Cache persistente (IndexedDB) de recursos ya rasterizados.       Raste… |
 | `src/Gallery/recientes.ts` | 98 | - | Ultimos dibujos abiertos.     Guarda SOLO la ruta y el id (unos ciento… |
-| `src/Gallery/renderCore.ts` | 1053 | - | - |
+| `src/Gallery/renderCore.ts` | 1122 | - | - |
 | `src/Gallery/supabaseClient.ts` | 189 | - | Acceso a Supabase por REST directo (PostgREST), sin el SDK.     El SDK… |
 | `src/Gallery/thumbnail.ts` | 222 | - | - |
 | `src/Gallery/userIdentity.ts` | 18 | - | - |
@@ -221,12 +257,12 @@ vite.config.ts
 | `src/rutas.ts` | 65 | - | Rutas compartibles: la URL refleja donde estas.       /               … |
 | `src/theme.ts` | 69 | - | Tema claro/oscuro, con oscuro por defecto.     El tema se aplica como … |
 | `src/VisorConcept/App.css` | 560 | - | La fuente se define en src/fonts.css (self-hosted, subset latin). Ante… |
-| `src/VisorConcept/App.tsx` | 572 | - | - |
+| `src/VisorConcept/App.tsx` | 594 | - | - |
 | `src/VisorConcept/index.tsx` | 49 | - | - |
 | `src/VisorConcept/InteractivePreview.tsx` | 389 | - | - |
-| `src/VisorConcept/parser.ts` | 754 | - | - |
+| `src/VisorConcept/parser.ts` | 797 | - | - |
 | `src/VisorConcept/progreso.ts` | 142 | - | Progreso REAL de apertura de un dibujo, con fase y tiempo estimado.   … |
-| `src/VisorConcept/Viewer.tsx` | 2107 | - | - |
+| `src/VisorConcept/Viewer.tsx` | 2114 | - | - |
 | `src/VisorConcept/zip.ts` | 684 | - | Lector de ZIP minimo, pensado para archivos .concepts.     Reemplaza a… |
 | `supabase/functions/concepts-drive/index.ts` | 368 | - | Proxy publico (sin API key) para leer una carpeta publica de Google Dr… |
 | `test-msgpack.ts` | 31 | - | - |
@@ -237,6 +273,11 @@ vite.config.ts
 
 ### screenshot.js
 - async run() @línea 9
+
+### scripts/audit-alineacion-corpus.mjs
+- dummyEncode() @línea 16
+- girarTransform(m) @línea 24
+- async analizar(localPath) @línea 26
 
 ### scripts/bench-reapertura.mjs
 - async abrir(browser, f, etiqueta) @línea 25
@@ -276,6 +317,21 @@ vite.config.ts
 - correr(t) @línea 83
 - destacados(r) @línea 127
 
+### scripts/test-matrices-local.mjs
+- dummyEncode() @línea 16
+- girarTransform(m) @línea 24
+- async analizar(localPath) @línea 26
+
+### scripts/validar-regla-centrado.mjs
+- de() @línea 25
+- async analizar(f) @línea 38
+
+### scripts/variance-scan.mjs
+- dummyEncode() @línea 18
+- stats(arr) @línea 26
+- async analizar(f) @línea 32
+- async writeTop(out) @línea 118
+
 ## 5. Grafo de relaciones
 
 - `debug.ts` → **importa** → `fs`
@@ -293,6 +349,13 @@ vite.config.ts
 - `screenshot.js` → **importa** → `child_process`
 - `screenshot.js` → **importa** → `path`
 - `screenshot.js` → **importa** → `url`
+- `scripts/alinear-thumb.mjs` → **importa** → `node:fs/promises`
+- `scripts/alinear-thumb.mjs` → **importa** → `node:path`
+- `scripts/alinear-thumb.mjs` → **importa** → `puppeteer`
+- `scripts/audit-alineacion-corpus.mjs` → **importa** → `node:fs/promises`
+- `scripts/audit-alineacion-corpus.mjs` → **importa** → `node:path`
+- `scripts/audit-alineacion-corpus.mjs` → **importa** → `@msgpack/msgpack`
+- `scripts/audit-alineacion-corpus.mjs` → **importa** → `src/VisorConcept/zip.ts`
 - `scripts/audit-colocacion.mjs` → **importa** → `node:fs/promises`
 - `scripts/audit-colocacion.mjs` → **importa** → `node:path`
 - `scripts/audit-colocacion.mjs` → **importa** → `puppeteer`
@@ -305,6 +368,9 @@ vite.config.ts
 - `scripts/audit-imagenes.mjs` → **importa** → `node:fs/promises`
 - `scripts/audit-imagenes.mjs` → **importa** → `node:path`
 - `scripts/audit-imagenes.mjs` → **importa** → `puppeteer`
+- `scripts/auditar-escala.mjs` → **importa** → `node:fs/promises`
+- `scripts/auditar-escala.mjs` → **importa** → `node:path`
+- `scripts/auditar-escala.mjs` → **importa** → `puppeteer`
 - `scripts/bench-arranque.mjs` → **importa** → `node:fs/promises`
 - `scripts/bench-arranque.mjs` → **importa** → `node:http`
 - `scripts/bench-arranque.mjs` → **importa** → `node:zlib`
@@ -338,6 +404,10 @@ vite.config.ts
 - `scripts/bench-viewer.mjs` → **importa** → `node:http`
 - `scripts/bench-viewer.mjs` → **importa** → `node:path`
 - `scripts/bench-viewer.mjs` → **importa** → `puppeteer`
+- `scripts/browser/alinear-thumb-payload.ts` → **importa** → `../../src/VisorConcept/parser`
+- `scripts/browser/alinear-thumb-payload.ts` → **importa** → `../../src/Gallery/renderCore`
+- `scripts/browser/anclaje-payload.ts` → **importa** → `../../src/VisorConcept/parser`
+- `scripts/browser/anclaje-payload.ts` → **importa** → `../../src/Gallery/renderCore`
 - `scripts/browser/audit-colocacion-payload.ts` → **importa** → `../../src/VisorConcept/parser`
 - `scripts/browser/audit-estructura-payload.ts` → **importa** → `../../src/VisorConcept/parser`
 - `scripts/browser/audit-estructura-payload.ts` → **importa** → `../../src/VisorConcept/zip`
@@ -345,7 +415,11 @@ vite.config.ts
 - `scripts/browser/audit-imagen-payload.ts` → **importa** → `../../src/VisorConcept/parser`
 - `scripts/browser/audit-imagen-payload.ts` → **importa** → `pdfjs-dist`
 - `scripts/browser/audit-payload.ts` → **importa** → `../../src/VisorConcept/parser`
+- `scripts/browser/auditar-escala-payload.ts` → **importa** → `../../src/VisorConcept/parser`
+- `scripts/browser/auditar-escala-payload.ts` → **importa** → `pdfjs-dist`
 - `scripts/browser/bench-payload.ts` → **importa** → `../../src/VisorConcept/parser`
+- `scripts/browser/centrado-ab-payload.ts` → **importa** → `../../src/VisorConcept/parser`
+- `scripts/browser/centrado-ab-payload.ts` → **importa** → `../../src/Gallery/renderCore`
 - `scripts/browser/centro-payload.ts` → **importa** → `../../src/VisorConcept/parser`
 - `scripts/browser/comparar-thumb-payload.ts` → **importa** → `../../src/VisorConcept/parser`
 - `scripts/browser/comparar-thumb-payload.ts` → **importa** → `../../src/Gallery/renderCore`
@@ -353,6 +427,9 @@ vite.config.ts
 - `scripts/browser/dump-item8-payload.ts` → **importa** → `@msgpack/msgpack`
 - `scripts/browser/lowend-payload.ts` → **importa** → `../../src/VisorConcept/parser`
 - `scripts/browser/lowend-payload.ts` → **importa** → `../../src/VisorConcept/zip`
+- `scripts/browser/medir-desface-payload.ts` → **importa** → `../../src/VisorConcept/parser`
+- `scripts/browser/medir-desface-payload.ts` → **importa** → `../../src/Gallery/renderCore`
+- `scripts/browser/pdf-render-payload.ts` → **importa** → `pdfjs-dist`
 - `scripts/browser/profile-payload.ts` → **importa** → `../../src/VisorConcept/parser`
 - `scripts/browser/profile-payload.ts` → **importa** → `../../src/Gallery/renderCore`
 - `scripts/browser/sentido-texto-payload.ts` → **importa** → `../../src/VisorConcept/parser`
@@ -365,6 +442,13 @@ vite.config.ts
 - `scripts/cap-centro.mjs` → **importa** → `node:fs/promises`
 - `scripts/cap-centro.mjs` → **importa** → `node:path`
 - `scripts/cap-centro.mjs` → **importa** → `puppeteer`
+- `scripts/cap-desface-local.mjs` → **importa** → `node:fs/promises`
+- `scripts/cap-desface-local.mjs` → **importa** → `node:path`
+- `scripts/cap-desface-local.mjs` → **importa** → `puppeteer`
+- `scripts/cap-desface-local.mjs` → **lee-global** → `__viewerCajas`
+- `scripts/cap-desface-local.mjs` → **lee-global** → `__viewerFijarVista`
+- `scripts/cap-desface-local.mjs` → **manipula** → `#canvas`
+- `scripts/cap-desface-local.mjs` → **manipula** → `.viewer-carga`
 - `scripts/cap-desface.mjs` → **importa** → `node:fs/promises`
 - `scripts/cap-desface.mjs` → **importa** → `node:path`
 - `scripts/cap-desface.mjs` → **importa** → `puppeteer`
@@ -393,6 +477,13 @@ vite.config.ts
 - `scripts/cap-gesto.mjs` → **manipula** → `#canvas`
 - `scripts/cap-gesto.mjs` → **manipula** → `.viewer-carga`
 - `scripts/cap-gesto.mjs` → **manipula** → `#[aria-label="Ver todo el dibujo"]`
+- `scripts/cap-recurso.mjs` → **importa** → `node:fs/promises`
+- `scripts/cap-recurso.mjs` → **importa** → `node:path`
+- `scripts/cap-recurso.mjs` → **importa** → `puppeteer`
+- `scripts/cap-recurso.mjs` → **lee-global** → `__viewerCajas`
+- `scripts/cap-recurso.mjs` → **lee-global** → `__viewerFijarVista`
+- `scripts/cap-recurso.mjs` → **manipula** → `#canvas`
+- `scripts/cap-recurso.mjs` → **manipula** → `.viewer-carga`
 - `scripts/cap-rotar-export.mjs` → **importa** → `node:fs/promises`
 - `scripts/cap-rotar-export.mjs` → **importa** → `node:path`
 - `scripts/cap-rotar-export.mjs` → **importa** → `puppeteer`
@@ -433,6 +524,9 @@ vite.config.ts
 - `scripts/captura-visual.mjs` → **lee-global** → `__viewerStats`
 - `scripts/captura-visual.mjs` → **manipula** → `#canvas`
 - `scripts/captura-visual.mjs` → **manipula** → `.viewer-carga`
+- `scripts/centrado-ab.mjs` → **importa** → `node:fs/promises`
+- `scripts/centrado-ab.mjs` → **importa** → `node:path`
+- `scripts/centrado-ab.mjs` → **importa** → `puppeteer`
 - `scripts/comparar-thumb.mjs` → **importa** → `node:fs/promises`
 - `scripts/comparar-thumb.mjs` → **importa** → `node:path`
 - `scripts/comparar-thumb.mjs` → **importa** → `puppeteer`
@@ -549,6 +643,14 @@ vite.config.ts
 - `scripts/e2e-zoom-cache.mjs` → **lee-global** → `__viewerStats`
 - `scripts/e2e-zoom-cache.mjs` → **manipula** → `#canvas`
 - `scripts/e2e-zoom-cache.mjs` → **manipula** → `.viewer-carga`
+- `scripts/exportar-pdf.mjs` → **importa** → `node:fs/promises`
+- `scripts/exportar-pdf.mjs` → **importa** → `node:path`
+- `scripts/exportar-pdf.mjs` → **importa** → `puppeteer`
+- `scripts/exportar-pdf.mjs` → **lee-global** → `__viewerStats`
+- `scripts/exportar-pdf.mjs` → **manipula** → `#canvas`
+- `scripts/exportar-pdf.mjs` → **manipula** → `.viewer-carga`
+- `scripts/exportar-pdf.mjs` → **manipula** → `#button.btn-tool`
+- `scripts/exportar-pdf.mjs` → **manipula** → `#button`
 - `scripts/gen-thumbnails.mjs` → **escribe-global** → `__cs`
 - `scripts/gen-thumbnails.mjs` → **importa** → `node:fs/promises`
 - `scripts/gen-thumbnails.mjs` → **importa** → `node:http`
@@ -557,6 +659,9 @@ vite.config.ts
 - `scripts/gen-thumbnails.mjs` → **lee-global** → `__cs`
 - `scripts/gen-thumbnails.mjs` → **llama-api** → `fetch `http://localhost:/…``
 - `scripts/gen-thumbnails.mjs` → **llama-api** → `fetch `/rest/v1/concept_thumbnails…``
+- `scripts/medir-desface.mjs` → **importa** → `node:fs/promises`
+- `scripts/medir-desface.mjs` → **importa** → `node:path`
+- `scripts/medir-desface.mjs` → **importa** → `puppeteer`
 - `scripts/perfil-gestos.mjs` → **importa** → `node:fs/promises`
 - `scripts/perfil-gestos.mjs` → **importa** → `node:path`
 - `scripts/perfil-gestos.mjs` → **importa** → `puppeteer`
@@ -564,6 +669,9 @@ vite.config.ts
 - `scripts/perfil-gestos.mjs` → **manipula** → `#canvas`
 - `scripts/peso-recursos.mjs` → **importa** → `node:fs/promises`
 - `scripts/peso-recursos.mjs` → **importa** → `node:path`
+- `scripts/probar-anclajes.mjs` → **importa** → `node:fs/promises`
+- `scripts/probar-anclajes.mjs` → **importa** → `node:path`
+- `scripts/probar-anclajes.mjs` → **importa** → `puppeteer`
 - `scripts/profile-heavy.mjs` → **importa** → `node:fs/promises`
 - `scripts/profile-heavy.mjs` → **importa** → `node:http`
 - `scripts/profile-heavy.mjs` → **importa** → `node:path`
@@ -597,9 +705,21 @@ vite.config.ts
 - `scripts/stats-corpus.mjs` → **importa** → `node:http`
 - `scripts/stats-corpus.mjs` → **importa** → `node:path`
 - `scripts/stats-corpus.mjs` → **importa** → `puppeteer`
+- `scripts/test-matrices-local.mjs` → **importa** → `node:fs/promises`
+- `scripts/test-matrices-local.mjs` → **importa** → `node:path`
+- `scripts/test-matrices-local.mjs` → **importa** → `@msgpack/msgpack`
+- `scripts/test-matrices-local.mjs` → **importa** → `src/VisorConcept/zip.ts`
 - `scripts/test-matrices.mjs` → **importa** → `node:fs/promises`
 - `scripts/test-matrices.mjs` → **importa** → `node:path`
 - `scripts/test-matrices.mjs` → **importa** → `puppeteer`
+- `scripts/validar-regla-centrado.mjs` → **importa** → `node:fs/promises`
+- `scripts/validar-regla-centrado.mjs` → **importa** → `node:path`
+- `scripts/validar-regla-centrado.mjs` → **importa** → `@msgpack/msgpack`
+- `scripts/validar-regla-centrado.mjs` → **importa** → `src/VisorConcept/zip.ts`
+- `scripts/variance-scan.mjs` → **importa** → `node:fs/promises`
+- `scripts/variance-scan.mjs` → **importa** → `node:path`
+- `scripts/variance-scan.mjs` → **importa** → `@msgpack/msgpack`
+- `scripts/variance-scan.mjs` → **importa** → `src/VisorConcept/zip.ts`
 - `src/App.tsx` → **importa** → `react`
 - `src/App.tsx` → **importa** → `motion/react`
 - `src/App.tsx` → **importa** → `./Gallery/Gallery`
@@ -832,6 +952,7 @@ vite.config.ts
 - `.filename-display` ⚠ no encontrado en HTML
 - `.viewer-refinando` ⚠ no encontrado en HTML
 - `.canvas-wrapper canvas` ⚠ no encontrado en HTML
+- `#button.btn-tool` ⚠ no encontrado en HTML
 - `.btn-close-viewer` ⚠ no encontrado en HTML
 
 ## 8. Dependencias

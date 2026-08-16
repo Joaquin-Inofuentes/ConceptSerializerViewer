@@ -1,4 +1,4 @@
-web-viewer/    46 .mjs · 38 .ts · 8 .tsx · 7 .json
+web-viewer/    58 .mjs · 44 .ts · 8 .tsx · 7 .json
 ├── public/
 ├── scratch/    4 .cjs
 │   ├── downloads/    [DATOS · ]
@@ -6,10 +6,10 @@ web-viewer/    46 .mjs · 38 .ts · 8 .tsx · 7 .json
 │   ├── test_local.cjs
 │   ├── test_ui.cjs
 │   └── update_css.cjs
-├── scripts/    46 .mjs · 14 .ts
-│   ├── browser/    14 .ts
-│   │   └── [14 archivos] audit-colocacion-payload.ts, audit-estructura-payload.ts, audit-imagen-payload.ts, audit-payload.ts, bench-payload.ts, centro-payload.ts (+8)
-│   └── [46 archivos] audit-colocacion.mjs, audit-estructura.mjs, audit-geometria.mjs, audit-imagenes.mjs, bench-arranque.mjs, bench-lowend.mjs (+40)
+├── scripts/    58 .mjs · 20 .ts
+│   ├── browser/    20 .ts
+│   │   └── [20 archivos] alinear-thumb-payload.ts, anclaje-payload.ts, audit-colocacion-payload.ts, audit-estructura-payload.ts, audit-imagen-payload.ts, audit-payload.ts (+14)
+│   └── [58 archivos] alinear-thumb.mjs, audit-alineacion-corpus.mjs, audit-colocacion.mjs, audit-estructura.mjs, audit-geometria.mjs, audit-imagenes.mjs (+52)
 ├── src/    19 .ts · 8 .tsx · 4 .css
 │   ├── assets/
 │   ├── Gallery/    12 .ts · 2 .tsx · 1 .css

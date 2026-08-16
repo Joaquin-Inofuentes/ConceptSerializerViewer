@@ -1,11 +1,11 @@
 # web-viewer — Mapa IA (Web · frontend)
 
-102 archivos propios (18.835 líneas), 0 vendor. Módulos ES (`import`/`export`).
+120 archivos propios (20.941 líneas), 0 vendor. Módulos ES (`import`/`export`).
 
 ## Capas (por carpeta)
 | Capa | Archivos | Rol dominante |
 |---|---|---|
-| `scripts` | 60 | script |
+| `scripts` | 78 | script |
 | `Gallery` | 15 | src |
 | `src` | 8 | src |
 | `VisorConcept` | 8 | src |
@@ -13,7 +13,7 @@
 | `scratch` | 4 | test |
 | `supabase` | 1 | src |
 
-**61 archivos clasificados como `script`/`throwaway`** (scripts sueltos de migración y prueba): no forman parte del producto. `grep '"role"' IA_20_INDICE.jsonl` para verlos.
+**78 archivos clasificados como `script`/`throwaway`** (scripts sueltos de migración y prueba): no forman parte del producto. `grep '"role"' IA_20_INDICE.jsonl` para verlos.
 
 ## Entrypoints
 - `index.html`

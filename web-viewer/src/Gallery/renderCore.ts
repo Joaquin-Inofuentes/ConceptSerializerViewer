@@ -771,8 +771,12 @@ export async function loadResourceImages(
           // tamano de la pagina, y despues el worker lo volvia a abrir para
           // dibujarlo. O sea el trabajo pesado por duplicado, con la mitad
           // bloqueando los gestos.
+          // La orientacion EXIF se consulta TAMBIEN cuando hay recorte por
+          // zoom. Antes esto estaba guardado por `!region`, asi que una foto
+          // con EXIF 5-8 se veia bien de lejos y girada en cuanto el zoom
+          // activaba el camino de recorte.
           let compensarExif = false;
-          if (!vectorial && !region && pedidoW > 0 && pedidoH > 0) {
+          if (!vectorial && pedidoW > 0 && pedidoH > 0) {
             const o = await orientacionExif(blob);
             if (o >= 5 && o <= 8) {
               compensarExif = true;
@@ -944,14 +948,30 @@ export function dibujarRecurso(
   alto: number
 ) {
   const { img, region } = recurso;
-  if (recurso.compensarExif && !region && ancho && alto) {
-    ctx.save();
+
+  // El bitmap se dibuja SIN voltear: la caja ya llega orientada como el bitmap
+  // (ver `espejarX` y `aCanvasTransform` en el parser, que juntas dejan el
+  // recurso listo para pintarse de frente). Se probo agregar aca un volteo
+  // vertical y el resultado fue el plano espejado ("XOBNU" en vez de "UNBOX").
+  ctx.save();
+
+  if (recurso.compensarExif && ancho && alto) {
+    // El navegador ya aplico la orientacion EXIF al decodificar, pero Concepts
+    // guardo el tamaño CRUDO: hay que deshacer ese giro. Se aplica tambien
+    // cuando el bitmap es un recorte por zoom (antes estaba limitado al caso
+    // sin recorte, asi que una foto con EXIF 5-8 se veia bien de lejos y
+    // girada al acercarse).
     ctx.translate(0, alto);
     ctx.rotate(-Math.PI / 2);
-    ctx.drawImage(img, 0, 0, alto, ancho);
+    if (region) {
+      ctx.drawImage(img, region.y * alto, region.x * ancho, region.h * alto, region.w * ancho);
+    } else {
+      ctx.drawImage(img, 0, 0, alto, ancho);
+    }
     ctx.restore();
     return;
   }
+
   if (region && ancho && alto) {
     ctx.drawImage(img, region.x * ancho, region.y * alto, region.w * ancho, region.h * alto);
   } else if (ancho && alto) {
@@ -959,6 +979,7 @@ export function dibujarRecurso(
   } else {
     ctx.drawImage(img, 0, 0);
   }
+  ctx.restore();
 }
 
 /** Libera una fuente suelta. Los canvas se sueltan poniendolos en 0x0: en

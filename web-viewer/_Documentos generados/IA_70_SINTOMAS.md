@@ -8,8 +8,8 @@ El agente entra por acá. Cada fila trae el comando listo; el costo es ~1 línea
 | Vi un texto/error en la consola | `grep -F "trozo del mensaje" IA_60_LOGS.jsonl` | archivo:línea + método que lo emite |
 | Falla algo de `[error]` | `grep '"t":"error"' IA_60_LOGS.jsonl` | todos los logs de ese subsistema, con línea |
 | Falla algo de `[console]` | `grep '"t":"console"' IA_60_LOGS.jsonl` | todos los logs de ese subsistema, con línea |
+| Falla algo de `[err]` | `grep '"t":"err"' IA_60_LOGS.jsonl` | todos los logs de ese subsistema, con línea |
 | Falla algo de `[page error]` | `grep '"t":"page error"' IA_60_LOGS.jsonl` | todos los logs de ese subsistema, con línea |
-| Falla algo de `[carpeta]` | `grep '"t":"carpeta"' IA_60_LOGS.jsonl` | todos los logs de ese subsistema, con línea |
 | Falla algo de `[/]` | `grep '"t":"/"' IA_60_LOGS.jsonl` | todos los logs de ese subsistema, con línea |
 | ¿Dónde está el símbolo X? / ¿ya existe algo llamado *X*? | `grep -iP '^X\t' IA_15_SIMBOLOS.tsv` (o `grep -i x` para parcial) | 1 línea con path:línea exacta |
 | Va lento / se traba en el celular | `head -6 IA_55_COSTOS.jsonl` | top 5 de costo runtime con `why` y `fix` |

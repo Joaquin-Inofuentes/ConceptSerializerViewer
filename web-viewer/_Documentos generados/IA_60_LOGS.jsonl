@@ -1,4 +1,4 @@
-{"_":"meta","n":396,"tagged":13,"lv":{"i":342,"w":2,"e":52},"tags":["error:6","console:2","page error:2","carpeta:1","/:1","CANVAS EXPORT:1"],"how":"grep -F 'texto que viste en consola' IA_60_LOGS.jsonl"}
+{"_":"meta","n":463,"tagged":18,"lv":{"i":384,"w":2,"e":77},"tags":["error:7","console:3","err:2","page error:2","/:2","carpeta:1","CANVAS EXPORT:1"],"how":"grep -F 'texto que viste en consola' IA_60_LOGS.jsonl"}
 {"lv":"i","txt":"Starting server...","p":"screenshot.js","l":10,"in":"run"}
 {"lv":"i","txt":"Launching browser...","p":"screenshot.js","l":16,"in":"run"}
 {"lv":"i","txt":"Navigating to http://localhost:5000...","p":"screenshot.js","l":21,"in":"run"}
@@ -6,6 +6,19 @@
 {"lv":"i","txt":"Waiting for viewer...","p":"screenshot.js","l":30,"in":"run"}
 {"lv":"i","txt":"Screenshot saved to:","p":"screenshot.js","l":38,"in":"run"}
 {"lv":"i","txt":"Done.","p":"screenshot.js","l":42,"in":"run"}
+{"lv":"e","txt":"[err]","p":"scripts/alinear-thumb.mjs","l":10}
+{"lv":"i","txt":"n  (thumb )","p":"scripts/alinear-thumb.mjs","l":17}
+{"lv":"i","txt":"","p":"scripts/alinear-thumb.mjs","l":18,"junk":true}
+{"lv":"i","txt":"imagen que muestra el thumb: # corr=","p":"scripts/alinear-thumb.mjs","l":20}
+{"lv":"i","txt":"","p":"scripts/alinear-thumb.mjs","l":21,"junk":true}
+{"lv":"i","txt":"tinta segun THUMB   :","p":"scripts/alinear-thumb.mjs","l":22}
+{"lv":"i","txt":"tinta NUESTRA       :","p":"scripts/alinear-thumb.mjs","l":23}
+{"lv":"i","txt":"DESFACE (mover nuestros trazos):","p":"scripts/alinear-thumb.mjs","l":24}
+{"lv":"e","txt":"FALLO","p":"scripts/alinear-thumb.mjs","l":26}
+{"lv":"e","txt":"... /","p":"scripts/audit-alineacion-corpus.mjs","l":143,"in":"analizar"}
+{"lv":"i","txt":"n archivos con trazos+imagenes (de  totales)","p":"scripts/audit-alineacion-corpus.mjs","l":148,"in":"analizar"}
+{"lv":"i","txt":"n== Sospechosos (overlap < 15%%, no es el caso 0%% ya cubierto por el fallback):  ==","p":"scripts/audit-alineacion-corpus.mjs","l":150,"in":"analizar"}
+{"lv":"i","txt":"%  trazos= imgs=    ()","p":"scripts/audit-alineacion-corpus.mjs","l":152,"in":"analizar"}
 {"lv":"e","txt":"Solo corre contra el dev server (importa modulos .ts sueltos).","p":"scripts/audit-colocacion.mjs","l":16}
 {"lv":"e","txt":"[error]","p":"scripts/audit-colocacion.mjs","l":35}
 {"lv":"i","txt":"nn ( MB)n","p":"scripts/audit-colocacion.mjs","l":37}
@@ -52,6 +65,14 @@
 {"lv":"i","txt":"","p":"scripts/audit-imagenes.mjs","l":73}
 {"lv":"i","txt":"","p":"scripts/audit-imagenes.mjs","l":76}
 {"lv":"e","txt":"FALLO:","p":"scripts/audit-imagenes.mjs","l":84}
+{"lv":"e","txt":"[err]","p":"scripts/auditar-escala.mjs","l":10}
+{"lv":"i","txt":"n","p":"scripts/auditar-escala.mjs","l":17,"junk":true}
+{"lv":"i","txt":"","p":"scripts/auditar-escala.mjs","l":18,"junk":true}
+{"lv":"i","txt":"colocaciones ·  fotos ·  con EXIF 5-8 ·  deformadas","p":"scripts/auditar-escala.mjs","l":24}
+{"lv":"i","txt":"RIESGO (EXIF 5-8 pero NO deformadas, el fix las rompería):","p":"scripts/auditar-escala.mjs","l":25}
+{"lv":"i","txt":"declarado x vs nativo x -> deformacion","p":"scripts/auditar-escala.mjs","l":29}
+{"lv":"i","txt":"con EXIF aplicado:    factor entonces:","p":"scripts/auditar-escala.mjs","l":30}
+{"lv":"e","txt":"FALLO","p":"scripts/auditar-escala.mjs","l":33}
 {"lv":"i","txt":"Arranque produccion — CPU x, red  (Fast 3G por defecto), 360x700","p":"scripts/bench-arranque.mjs","l":96}
 {"lv":"i","txt":"FCP ms | domInteractive ms | DCL ms","p":"scripts/bench-arranque.mjs","l":167}
 {"lv":"i","txt":"","p":"scripts/bench-arranque.mjs","l":168}
@@ -104,6 +125,10 @@
 {"lv":"i","txt":"caja esquina (actual):","p":"scripts/cap-centro.mjs","l":48}
 {"lv":"i","txt":"caja centro (hipotesis):","p":"scripts/cap-centro.mjs","l":49}
 {"lv":"i","txt":"guardado: centro-A-esquina-actual.png (como esta HOY) / centro-B-centrado-hipotesis.png (…","p":"scripts/cap-centro.mjs","l":57}
+{"lv":"e","txt":"Uso: node scripts/cap-desface-local.mjs <fileId> <etiqueta>","p":"scripts/cap-desface-local.mjs","l":17}
+{"t":"error","lv":"e","txt":"[error]","p":"scripts/cap-desface-local.mjs","l":25}
+{"lv":"i","txt":"completo:","p":"scripts/cap-desface-local.mjs","l":51}
+{"lv":"i","txt":"detalle:","p":"scripts/cap-desface-local.mjs","l":70}
 {"lv":"e","txt":"Uso: node scripts/cap-desface.mjs <driveFileId>","p":"scripts/cap-desface.mjs","l":14}
 {"t":"error","lv":"e","txt":"[error]","p":"scripts/cap-desface.mjs","l":22}
 {"lv":"i","txt":"completo:","p":"scripts/cap-desface.mjs","l":49}
@@ -117,6 +142,9 @@
 {"lv":"i","txt":"pinch en curso -> transform: \"\"","p":"scripts/cap-gesto.mjs","l":102}
 {"lv":"i","txt":"tras \"ver todo\" -> transform: \"\"","p":"scripts/cap-gesto.mjs","l":114}
 {"lv":"i","txt":"capturas en .cache/gesto/","p":"scripts/cap-gesto.mjs","l":117}
+{"t":"err","lv":"e","txt":"[err]","p":"scripts/cap-recurso.mjs","l":13}
+{"lv":"e","txt":"","p":"scripts/cap-recurso.mjs","l":31}
+{"lv":"i","txt":": caja x aspecto  ->","p":"scripts/cap-recurso.mjs","l":35}
 {"t":"error","lv":"e","txt":"[error]","p":"scripts/cap-rotar-export.mjs","l":13}
 {"lv":"i","txt":"capturado:","p":"scripts/cap-rotar-export.mjs","l":55}
 {"lv":"e","txt":"Uso: node scripts/cap-rotar.mjs <driveFileId>","p":"scripts/cap-rotar.mjs","l":15}
@@ -151,6 +179,9 @@
 {"lv":"i","txt":"stats:","p":"scripts/captura-visual.mjs","l":80}
 {"lv":"i","txt":"ERROR:","p":"scripts/captura-visual.mjs","l":82}
 {"lv":"i","txt":"nCapturas en","p":"scripts/captura-visual.mjs","l":88}
+{"lv":"e","txt":"[err]","p":"scripts/centrado-ab.mjs","l":16}
+{"lv":"i","txt":": imgs= (nuncaMovidas=) trazos= | desborde: actual= reglaAcotada= centrarTodas=","p":"scripts/centrado-ab.mjs","l":26}
+{"lv":"e","txt":"FALLO","p":"scripts/centrado-ab.mjs","l":27}
 {"lv":"e","txt":"Solo corre contra el dev server (importa modulos .ts sueltos).","p":"scripts/comparar-thumb.mjs","l":21}
 {"lv":"e","txt":"[error]","p":"scripts/comparar-thumb.mjs","l":45}
 {"lv":"i","txt":"nn ( MB)n","p":"scripts/comparar-thumb.mjs","l":47}
@@ -268,6 +299,14 @@
 {"lv":"i","txt":"ncache:  archivos antes ->  despues (tope )","p":"scripts/e2e-zoom-cache.mjs","l":154}
 {"lv":"i","txt":"quedaron:","p":"scripts/e2e-zoom-cache.mjs","l":155}
 {"lv":"i","txt":"","p":"scripts/e2e-zoom-cache.mjs","l":156}
+{"t":"err","lv":"e","txt":"[err]","p":"scripts/exportar-pdf.mjs","l":21}
+{"t":"console","lv":"e","txt":"[console]","p":"scripts/exportar-pdf.mjs","l":22}
+{"lv":"e","txt":"no encontre el boton Exportar","p":"scripts/exportar-pdf.mjs","l":46}
+{"lv":"e","txt":"no encontre el boton","p":"scripts/exportar-pdf.mjs","l":55}
+{"lv":"i","txt":"click en , esperando la descarga...","p":"scripts/exportar-pdf.mjs","l":56}
+{"lv":"e","txt":"la descarga no aparecio","p":"scripts/exportar-pdf.mjs","l":72}
+{"lv":"i","txt":"guardado:","p":"scripts/exportar-pdf.mjs","l":74}
+{"lv":"i","txt":"tamaño:  MB","p":"scripts/exportar-pdf.mjs","l":75}
 {"lv":"e","txt":"[page error]","p":"scripts/gen-thumbnails.mjs","l":65}
 {"lv":"i","txt":"","p":"scripts/gen-thumbnails.mjs","l":142}
 {"lv":"e","txt":"n    !","p":"scripts/gen-thumbnails.mjs","l":171}
@@ -278,6 +317,13 @@
 {"lv":"i","txt":". ms () —  ( MB)","p":"scripts/gen-thumbnails.mjs","l":201}
 {"lv":"i","txt":"nFallaron:","p":"scripts/gen-thumbnails.mjs","l":205}
 {"lv":"i","txt":"- :","p":"scripts/gen-thumbnails.mjs","l":206,"junk":true}
+{"lv":"e","txt":"[err]","p":"scripts/medir-desface.mjs","l":16}
+{"lv":"i","txt":":","p":"scripts/medir-desface.mjs","l":23,"junk":true}
+{"lv":"i","txt":"","p":"scripts/medir-desface.mjs","l":25}
+{"lv":"i","txt":"zona thumb: corr= girado=","p":"scripts/medir-desface.mjs","l":26}
+{"lv":"i","txt":"DESFACE trazos vs imagenes = (, ) unidades doc","p":"scripts/medir-desface.mjs","l":27}
+{"lv":"i","txt":"correlacion: sin corregir  -> corregido","p":"scripts/medir-desface.mjs","l":28}
+{"lv":"e","txt":"FALLO","p":"scripts/medir-desface.mjs","l":35}
 {"lv":"i","txt":"—  MB — perfilando fase \"\"","p":"scripts/perfil-gestos.mjs","l":43}
 {"lv":"i","txt":"nperfil de  s de hilo principaln","p":"scripts/perfil-gestos.mjs","l":121}
 {"lv":"i","txt":"ms     %   funcion","p":"scripts/perfil-gestos.mjs","l":122}
@@ -294,6 +340,11 @@
 {"lv":"i","txt":"MB  lado  px  caja x","p":"scripts/peso-recursos.mjs","l":121,"in":"leerIndice"}
 {"lv":"i","txt":"los 6 mas chicos en pantalla:","p":"scripts/peso-recursos.mjs","l":123,"in":"leerIndice"}
 {"lv":"i","txt":"MB  lado  px  caja x","p":"scripts/peso-recursos.mjs","l":125,"in":"leerIndice"}
+{"lv":"e","txt":"[err]","p":"scripts/probar-anclajes.mjs","l":12}
+{"lv":"i","txt":":","p":"scripts/probar-anclajes.mjs","l":19,"junk":true}
+{"lv":"i","txt":"n","p":"scripts/probar-anclajes.mjs","l":21,"junk":true}
+{"lv":"i","txt":"zona=  TINTA=","p":"scripts/probar-anclajes.mjs","l":24}
+{"lv":"e","txt":"FALLO","p":"scripts/probar-anclajes.mjs","l":30}
 {"t":"page error","lv":"e","txt":"[page error]","p":"scripts/profile-heavy.mjs","l":42}
 {"t":"console","lv":"e","txt":"[console]","p":"scripts/profile-heavy.mjs","l":44}
 {"lv":"i","txt":"n==  ( MB) — n","p":"scripts/profile-heavy.mjs","l":55}
@@ -336,9 +387,25 @@
 {"lv":"i","txt":"parse ms max:n","p":"scripts/stats-corpus.mjs","l":70}
 {"lv":"i","txt":"recursos max:n","p":"scripts/stats-corpus.mjs","l":71}
 {"lv":"i","txt":"MB de recursos max:n","p":"scripts/stats-corpus.mjs","l":72}
+{"lv":"e","txt":"Uso: node scripts/test-matrices-local.mjs <substring del nombre> [...]","p":"scripts/test-matrices-local.mjs","l":144,"in":"analizar"}
+{"lv":"i","txt":"n (MB) —","p":"scripts/test-matrices-local.mjs","l":148,"in":"analizar"}
+{"lv":"i","txt":"","p":"scripts/test-matrices-local.mjs","l":151,"in":"analizar"}
+{"lv":"e","txt":"FALLO:","p":"scripts/test-matrices-local.mjs","l":153,"in":"analizar"}
 {"lv":"e","txt":"[error]","p":"scripts/test-matrices.mjs","l":30}
 {"lv":"i","txt":"","p":"scripts/test-matrices.mjs","l":41}
 {"lv":"e","txt":"FALLO :","p":"scripts/test-matrices.mjs","l":45}
+{"lv":"e","txt":"... /","p":"scripts/validar-regla-centrado.mjs","l":80,"in":"analizar"}
+{"lv":"i","txt":"n archivos con imagenes+trazos","p":"scripts/validar-regla-centrado.mjs","l":86,"in":"analizar"}
+{"lv":"i","txt":"con alguna colocacion nunca-movida:","p":"scripts/validar-regla-centrado.mjs","l":87,"in":"analizar"}
+{"lv":"i","txt":"MEJORAN:    EMPEORAN:    sin cambio:","p":"scripts/validar-regla-centrado.mjs","l":88,"in":"analizar"}
+{"lv":"i","txt":"n== Los que mejoran ==","p":"scripts/validar-regla-centrado.mjs","l":89,"in":"analizar"}
+{"lv":"i","txt":"->   (/ nunca-movidas)","p":"scripts/validar-regla-centrado.mjs","l":91,"in":"analizar"}
+{"lv":"i","txt":"n== LOS QUE EMPEORAN (hay que mirarlos) ==","p":"scripts/validar-regla-centrado.mjs","l":92,"in":"analizar"}
+{"lv":"i","txt":"->   (/)    []","p":"scripts/validar-regla-centrado.mjs","l":93,"in":"analizar"}
+{"t":"/","lv":"e","txt":"[/] ERROR :","p":"scripts/variance-scan.mjs","l":104,"in":"analizar"}
+{"lv":"e","txt":"... /","p":"scripts/variance-scan.mjs","l":106,"in":"analizar"}
+{"lv":"i","txt":"n== TOP 15 por variedad (escala+rotacion+cantidad+grupos unicos) ==","p":"scripts/variance-scan.mjs","l":110,"in":"analizar"}
+{"lv":"i","txt":"","p":"scripts/variance-scan.mjs","l":112,"in":"analizar"}
 {"lv":"i","txt":"Starting Local UI Test for Export...","p":"scratch/test_export.cjs","l":7}
 {"lv":"i","txt":"Navigating to local dev server...","p":"scratch/test_export.cjs","l":33}
 {"lv":"i","txt":"Clicking 'Probar Ejemplo'...","p":"scratch/test_export.cjs","l":36}

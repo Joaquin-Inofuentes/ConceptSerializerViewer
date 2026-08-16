@@ -8,40 +8,52 @@ web-viewer/
 │   └── update_css.cjs
 ├── scripts/
 │   ├── browser/
+│   │   ├── alinear-thumb-payload.ts
+│   │   ├── anclaje-payload.ts
 │   │   ├── audit-colocacion-payload.ts
 │   │   ├── audit-estructura-payload.ts
 │   │   ├── audit-imagen-payload.ts
 │   │   ├── audit-payload.ts
+│   │   ├── auditar-escala-payload.ts
 │   │   ├── bench-payload.ts
+│   │   ├── centrado-ab-payload.ts
 │   │   ├── centro-payload.ts
 │   │   ├── comparar-thumb-payload.ts
 │   │   ├── dump-item8-payload.ts
 │   │   ├── lowend-payload.ts
+│   │   ├── medir-desface-payload.ts
+│   │   ├── pdf-render-payload.ts
 │   │   ├── profile-payload.ts
 │   │   ├── sentido-texto-payload.ts
 │   │   ├── stats-payload.ts
 │   │   ├── test-matrices-payload.ts
 │   │   └── thumb-probe.ts
+│   ├── alinear-thumb.mjs
+│   ├── audit-alineacion-corpus.mjs
 │   ├── audit-colocacion.mjs
 │   ├── audit-estructura.mjs
 │   ├── audit-geometria.mjs
 │   ├── audit-imagenes.mjs
+│   ├── auditar-escala.mjs
 │   ├── bench-arranque.mjs
 │   ├── bench-lowend.mjs
 │   ├── bench-pesado.mjs
 │   ├── bench-reapertura.mjs
 │   ├── bench-viewer.mjs
 │   ├── cap-centro.mjs
+│   ├── cap-desface-local.mjs
 │   ├── cap-desface.mjs
 │   ├── cap-detalle.mjs
 │   ├── cap-galeria-menu.mjs
 │   ├── cap-gesto.mjs
+│   ├── cap-recurso.mjs
 │   ├── cap-rotar-export.mjs
 │   ├── cap-rotar.mjs
 │   ├── cap-ruta.mjs
 │   ├── cap-trazo.mjs
 │   ├── cap-zoomall.mjs
 │   ├── captura-visual.mjs
+│   ├── centrado-ab.mjs
 │   ├── comparar-thumb.mjs
 │   ├── crawl-drive.mjs
 │   ├── diag-cache-237.mjs
@@ -57,9 +69,12 @@ web-viewer/
 │   ├── e2e-perdida-imagenes.mjs
 │   ├── e2e-viewer.mjs
 │   ├── e2e-zoom-cache.mjs
+│   ├── exportar-pdf.mjs
 │   ├── gen-thumbnails.mjs
+│   ├── medir-desface.mjs
 │   ├── perfil-gestos.mjs
 │   ├── peso-recursos.mjs
+│   ├── probar-anclajes.mjs
 │   ├── profile-heavy.mjs
 │   ├── recorrido.mjs
 │   ├── resolve-url.mjs
@@ -67,7 +82,10 @@ web-viewer/
 │   ├── sentido-texto.mjs
 │   ├── servir-corpus.mjs
 │   ├── stats-corpus.mjs
-│   └── test-matrices.mjs
+│   ├── test-matrices-local.mjs
+│   ├── test-matrices.mjs
+│   ├── validar-regla-centrado.mjs
+│   └── variance-scan.mjs
 ├── src/
 │   ├── assets/
 │   ├── Gallery/

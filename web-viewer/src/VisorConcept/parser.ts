@@ -41,6 +41,21 @@ export interface Layer {
   images: ImageElement[];
 }
 
+/**
+ * Encuadre guardado por la app dentro de `workspace.pack`.
+ *
+ * El nodo trae `[1, ext1(ancho,alto de viewport), ext2(zoom min,max),
+ * ext0(pan x,y), zoom, rotacion]`. La rotacion viene en VUELTAS (el motor la
+ * llama `RotationTurn`), no en grados ni radianes.
+ */
+export interface Camara {
+  viewport: { w: number; h: number };
+  pan: { x: number; y: number };
+  zoom: number;
+  /** Rotacion de la vista, en vueltas (0..1). Casi siempre ~0. */
+  rotacionVueltas: number;
+}
+
 export interface Document {
   layers: Layer[];
   bbox: BBox;
@@ -71,6 +86,12 @@ export interface Document {
   close(): void;
   /** Total de bytes del archivo (para diagnostico y metricas). */
   totalBytes: number;
+  /**
+   * Encuadre con el que la app dejo guardado el dibujo (`workspace.pack`), si
+   * el archivo lo trae. Sirve para abrirlo mirando la misma parte que mostraba
+   * Concepts en vez de encuadrar todo el contenido.
+   */
+  camara: Camara | null;
   /**
    * Bytes que hay que transferir de verdad para mostrar el dibujo completo:
    * el arbol del documento mas los recursos efectivamente colocados. Es la
@@ -145,135 +166,116 @@ extensionCodec.register({
 });
 
 /**
- * Concepts guarda el documento girado 180 grados respecto de como lo muestra.
+ * Concepts guarda el documento con Y hacia ARRIBA (convencion matematica); el
+ * canvas del navegador tiene Y hacia abajo. La conversion correcta es invertir
+ * SOLO Y.
  *
- * Se nota en cuanto se mira texto: los planos salian con el rotulo del lado
- * equivocado y las anotaciones a mano ("FALTA COLOCAR", "CASA") se leian cabeza
- * abajo. No era cosa de un dibujo ni de un PDF puntual — se midio la direccion
- * en la que corre el texto de cada plano, ya pasada por la matriz con la que el
- * documento lo coloca, y dio hacia la izquierda en los 25 planos de los 5
- * archivos mas pesados. O sea: el documento entero.
+ * Antes aca se negaban las dos coordenadas, que es una ROTACION DE 180 grados.
+ * La diferencia entre rotar 180 e invertir Y es un espejado horizontal, y por
+ * eso todo el dibujo salia en espejo: se veia "derecho" de lejos (por eso paso
+ * desapercibido y quedo escrito que el documento venia girado media vuelta),
+ * pero cada glifo estaba dado vuelta. Se comprobo renderizando la misma region
+ * del mismo archivo con las dos convenciones: con inversion de Y se lee
+ * "7,60x12,60x0,50 = 4,66 m3", con la rotacion de 180 se lee al reves.
  *
- * Girar 180 es lo mismo que negar las dos coordenadas, asi que se corrige en el
- * unico lugar por el que pasan todos: el parseo. De ahi para abajo (encuadre,
- * descarte por frustum, recortes, export, miniaturas) todo trabaja con
- * coordenadas ya derechas y no hay que acordarse de nada.
- *
- * OJO con arreglarlo mas arriba, en el rasterizado de los PDF: eso pone los
- * planos derechos pero deja los trazos al reves, y ahi las anotaciones dejan de
- * caer sobre lo que marcan — que es peor que tener todo consistentemente al
- * reves.
- *
- * PENDIENTE, medido en `Fede y Franco/Concepts/HO/Drawing`: ahi pasa
- * justamente eso que este comentario dice que hay que evitar, y pasa HOY. Al
- * acercarse a las anotaciones sueltas se lee "+0,10" y "+0,40" ESPEJADAS,
- * mientras el rotulo del plano que tienen al lado ("Holmberg 1764", "RESs",
- * "R0", "Subsuelo", "ESCALA 1:50") se lee perfecto. O sea: trazos y planos
- * quedaron a media vuelta uno del otro dentro de nuestro propio render.
- *
- * Eso NO deberia poder pasar: `girarPunto` y `girarTransform` aplican el mismo
- * giro de 180 grados alrededor del origen, asi que la geometria relativa entre
- * trazos e imagenes tendria que quedar intacta y o se leen los dos derechos o
- * los dos al reves. Que discrepen significa que el giro se esta aplicando de
- * forma asimetrica en algun punto entre leer los puntos y colocar la pagina
- * rasterizada.
- *
- * Dato que lo confirma: esas dos anotaciones son EXACTAMENTE las que el
- * thumb.jpg del archivo muestra apoyadas sobre las cocheras, asi que el
- * desface medido contra el thumb (~800 unidades) es real y no un thumb viejo.
+ * El sintoma que lo delataba en `Fede y Franco/Concepts/HO/Drawing`: las
+ * anotaciones "+0,10" y "+0,40" se leian ESPEJADAS mientras el rotulo del plano
+ * de al lado ("Holmberg 1764") se leia perfecto — porque las imagenes, al
+ * dibujarse como bitmap, recibian ademas el volteo vertical propio del mapa de
+ * pixeles y eso les cancelaba media vuelta. Ahora la convencion es una sola y
+ * el volteo del bitmap se hace explicito al dibujar (ver `dibujarRecurso`).
  */
-function girarPunto(x: number, y: number): [number, number] {
-  return [-x, -y];
+function aCanvasPunto(x: number, y: number): [number, number] {
+  return [x, -y];
 }
 
 /**
- * La misma media vuelta, aplicada a la matriz con la que se coloca un recurso.
+ * La misma inversion de Y, compuesta con la matriz que coloca un recurso.
  *
- * Solo se tocan las 6 componentes de la afin 2D (las unicas que se usan al
- * dibujar): negarlas equivale a componer la matriz con un giro de 180 grados,
- * asi que la imagen queda derecha Y en el lugar que le corresponde.
+ * Es `F . M` con `F = diag(1,-1)`: el recurso primero se coloca donde dice su
+ * matriz (en coordenadas del documento, Y arriba) y recien despues se pasa a
+ * coordenadas de canvas. NO alcanza con negar las 6 componentes — eso es rotar
+ * 180 grados, que es justamente el error que se corrigio.
  */
-function girarTransform(m: number[]): number[] {
+function aCanvasTransform(m: number[]): number[] {
   if (!m || m.length !== 16) return m;
-  const salida = m.slice();
-  for (const i of [0, 1, 4, 5, 12, 13]) salida[i] = -salida[i];
-  return salida;
+  // OJO con los indices: en la matriz 4x4 la afin 2D vive en
+  // [0]=a [1]=b [4]=c [5]=d [12]=e [13]=f. Componer con diag(1,-1) por
+  // izquierda niega la FILA de las Y, o sea b, d y f (1, 5 y 13).
+  const s = m.slice();
+  s[1] = -s[1];   // b
+  s[5] = -s[5];   // d
+  s[13] = -s[13]; // f
+  return s;
 }
 
 /**
- * Ultimo recurso, deliberadamente cauteloso: si NINGUN trazo del documento
- * cae sobre NINGUNA imagen, es señal de un problema de convencion de
- * posicionamiento y no de anotaciones sueltas — un archivo real con fotos
- * anotadas siempre tiene AL MENOS algunas coincidencias, aunque sea un
- * puñado (medido en todo el corpus de prueba: el peor caso legitimo fue
- * 2%, nunca 0%).
+ * Espeja en X una matriz de colocacion.
  *
- * En ese caso puntual (0%), los grupos de 2+ imagenes que comparten
- * exactamente la misma escala y rotacion se tratan como paginas de la
- * misma plantilla repetida (la razon de que compartan matriz) y se centran
- * — mismo principio que el ajuste de matriz identidad de arriba, pero
- * generalizado a escalas/rotaciones reales.
+ * Las matrices de los recursos vienen con el eje X invertido respecto del
+ * espacio en el que estan guardados los puntos de los trazos. Se midio: con la
+ * misma conversion a canvas para los dos, o el plano queda espejado (se lee
+ * "XOBNU" en vez de "UNBOX") o quedan espejadas las anotaciones — nunca los dos
+ * derechos. Aplicando este espejo a la matriz, ambos comparten UNA sola
+ * conversion a canvas (`aCanvasTransform`) y los dos salen derechos.
  *
- * Por que hace falta el freno del 0%: el mismo patron de "varias imagenes
- * con la escala identica" tambien aparece por PURA COINCIDENCIA en
- * archivos sanos (varias fotos de camara comparten la escala por defecto
- * que la app les da al insertarlas, sin ser copias de una plantilla) — y
- * ahi centrarlas rompe una colocacion que ya estaba bien. Sin el freno del
- * 0% este mismo codigo arruinaba un archivo de referencia real (bajaba de
- * 85% a 6% de trazos coincidiendo). Con el freno, ese archivo nunca entra
- * a esta funcion porque ya tiene coincidencias.
+ * Comprobado contra el thumb.jpg que genera la propia app en
+ * `Fede y Franco/Concepts/HO/Drawing`: rotulo "Holmberg 1764" y anotaciones
+ * "+0,10"/"+0,40" legibles, y las anotaciones caen sobre las cocheras.
  */
-function corregirColocacionesFlotantes(layers: Layer[]) {
-  const trazos: Array<{ cx: number; cy: number }> = [];
-  for (const l of layers) {
-    for (const s of l.strokes) {
-      const b = s.bbox;
-      trazos.push({ cx: (b.minX + b.maxX) / 2, cy: (b.minY + b.maxY) / 2 });
-    }
-  }
-  if (trazos.length === 0) return;
+function espejarX(m: number[]): number[] {
+  // Componer con diag(-1,1) por izquierda niega la FILA de las X: a, c y e.
+  const s = m.slice();
+  s[0] = -s[0];   // a
+  s[4] = -s[4];   // c
+  s[12] = -s[12]; // e
+  return s;
+}
 
-  const todasImagenes: ImageElement[] = [];
-  for (const l of layers) todasImagenes.push(...l.images);
-  if (todasImagenes.length === 0) return;
+/**
+ * Aplica la afin guardada en una matriz 4x4 a un punto 2D.
+ * Solo se usan las 6 componentes de la afin (0,1,4,5,12,13).
+ */
+function aplicarMatriz(m: number[], x: number, y: number): [number, number] {
+  return [m[0] * x + m[4] * y + m[12], m[1] * x + m[5] * y + m[13]];
+}
 
-  const cajaDe = (img: ImageElement) => {
-    const m = img.transform;
-    const a = m[0], b = m[1], c = m[4], d = m[5], e = m[12], f = m[13];
-    const esquinas = [
-      [0, 0],
-      [img.width, 0],
-      [0, img.height],
-      [img.width, img.height],
-    ].map(([x, y]) => [a * x + c * y + e, b * x + d * y + f]);
-    const xs = esquinas.map((p) => p[0]);
-    const ys = esquinas.map((p) => p[1]);
-    return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
-  };
-  const cajas = todasImagenes.map(cajaDe);
+/** Factor de escala de una afin, para poder escalar el ancho de un trazo. */
+function escalaDe(m: number[]): number {
+  const det = m[0] * m[5] - m[1] * m[4];
+  const s = Math.sqrt(Math.abs(det));
+  return Number.isFinite(s) && s > 1e-6 ? s : 1;
+}
 
-  const algunaCoincide = trazos.some((t) =>
-    cajas.some((c) => t.cx >= c.x0 && t.cx <= c.x1 && t.cy >= c.y0 && t.cy <= c.y1)
+/** ¿La parte afin de la matriz es la identidad? (el caso abrumadoramente
+ * mayoritario: un trazo que nadie movio desde que se dibujo). */
+function esIdentidad(m: number[]): boolean {
+  return (
+    Math.abs(m[0] - 1) < 1e-6 && Math.abs(m[1]) < 1e-6 &&
+    Math.abs(m[4]) < 1e-6 && Math.abs(m[5] - 1) < 1e-6 &&
+    Math.abs(m[12]) < 1e-6 && Math.abs(m[13]) < 1e-6
   );
-  if (algunaCoincide) return;
+}
 
-  const claveDe = (m: number[]) => `${m[0].toFixed(6)},${m[1].toFixed(6)},${m[4].toFixed(6)},${m[5].toFixed(6)}`;
-  const conteo = new Map<string, number>();
-  for (const img of todasImagenes) {
-    const k = claveDe(img.transform);
-    conteo.set(k, (conteo.get(k) || 0) + 1);
-  }
-
-  for (const img of todasImagenes) {
-    const k = claveDe(img.transform);
-    if ((conteo.get(k) || 0) < 2) continue;
-    const m = img.transform;
-    const a = m[0], b = m[1], c = m[4], d = m[5];
-    const nuevo = m.slice();
-    nuevo[12] = m[12] - (a * img.width) / 2 - (c * img.height) / 2;
-    nuevo[13] = m[13] - (b * img.width) / 2 - (d * img.height) / 2;
-    img.transform = nuevo;
-  }
+/**
+ * Matriz de colocacion de un elemento, si la cabecera la trae.
+ *
+ * Trazos e imagenes comparten EXACTAMENTE la misma cabecera:
+ *
+ *   [3, <estilo>, UUID, null, null, 0, <timestamp>, MATRIZ, false, <int>]
+ *                                                   ^ indice 7
+ *
+ * Durante mucho tiempo se leyo solo para las imagenes. Concepts NO reescribe
+ * los puntos cuando moves, rotas o escalas trazos: actualiza esta matriz. Al
+ * ignorarla, los trazos que el usuario habia movido se dibujaban en su posicion
+ * ORIGINAL — medido sobre el corpus, el 30,6% de los trazos (9.813 de 32.085)
+ * tiene matriz distinta de identidad, y hay archivos donde son el 73%. Ese es
+ * el bug de "las anotaciones vuelan lejos del plano".
+ */
+function matrizDeCabecera(cabecera: unknown): number[] | null {
+  if (!Array.isArray(cabecera) || cabecera[0] !== 3) return null;
+  const m = cabecera[7];
+  return Array.isArray(m) && m.length === 16 ? (m as number[]) : null;
 }
 
 function rgbaToHex(r: number, g: number, b: number, a: number) {
@@ -344,6 +346,53 @@ export async function parseConceptsSource(
   return documentoDesdeZip(await ZipArchive.open(fuente), fuente);
 }
 
+/**
+ * Lee el encuadre guardado de `workspace.pack`.
+ *
+ * `workspace.pack` es el estado de la interfaz con el que se cerro el dibujo:
+ * posicion de los paneles, paleta, herramienta activa... y al final, la camara.
+ * Se busca el nodo por FORMA en vez de por indice fijo (`[1, par, par, par,
+ * numero, numero]`, con un viewport de tamaño plausible) porque el resto del
+ * archivo son estructuras de UI que pueden cambiar entre versiones de la app y
+ * correrian las posiciones.
+ *
+ * Nunca es un error que falte: si no aparece, el visor encuadra el contenido
+ * como venia haciendo.
+ */
+async function leerCamara(zip: ZipArchive): Promise<Camara | null> {
+  try {
+    const nombre = zip.names().find((n) => /(^|\/)workspace\.pack$/.test(n));
+    if (!nombre) return null;
+    const ws = decode(await zip.read(nombre), { extensionCodec }) as any;
+    if (!Array.isArray(ws)) return null;
+
+    let hallada: Camara | null = null;
+    const esPar = (v: any) => Array.isArray(v) && v.length === 2 && typeof v[0] === "number" && typeof v[1] === "number";
+    const buscar = (o: any) => {
+      if (hallada || !Array.isArray(o)) return;
+      if (
+        o.length === 6 && o[0] === 1 &&
+        esPar(o[1]) && esPar(o[2]) && esPar(o[3]) &&
+        typeof o[4] === "number" && typeof o[5] === "number" &&
+        o[1][0] > 100 && o[1][1] > 100 && o[4] > 0
+      ) {
+        hallada = {
+          viewport: { w: o[1][0], h: o[1][1] },
+          pan: { x: o[3][0], y: o[3][1] },
+          zoom: o[4],
+          rotacionVueltas: o[5],
+        };
+        return;
+      }
+      for (const x of o) buscar(x);
+    };
+    buscar(ws);
+    return hallada;
+  } catch {
+    return null;
+  }
+}
+
 async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Document> {
   const nombreTree = zip.has("tree.pack")
     ? "tree.pack"
@@ -374,8 +423,6 @@ async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Do
       }
     }
   }
-
-  corregirColocacionesFlotantes(layers);
 
   const { ids, sizes, porId } = mapearRecursos(zip, layers);
 
@@ -411,12 +458,15 @@ async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Do
   const bytesRecursos = ids.reduce((n, id) => n + (sizes[id] || 0), 0);
   const bytesTree = zip.get(nombreTree)?.compressedSize ?? 0;
 
+  const camara = await leerCamara(zip);
+
   const doc: Document = {
     layers,
     bbox: globalBbox,
     resourceIds: ids,
     resourceSizes: sizes,
     totalBytes: fuente.size,
+    camara,
     bytesNecesarios: bytesTree + bytesRecursos,
     async loadResource(id: string) {
       if (cerrado) return null;
@@ -600,35 +650,107 @@ function procesarCapa(nodo: any, idx: number, globalBbox: BBox): Layer {
   const hdr = nodo[1];
   let capaId = "";
   if (Array.isArray(hdr) && hdr.length > 1) {
-     capaId = hdr[1]; 
+     capaId = hdr[1];
   }
-  
+
   const layer: Layer = { id: capaId, index: idx, strokes: [], images: [] };
-  
+
   const items = Array.isArray(nodo) && nodo.length > 2 && Array.isArray(nodo[2]) ? nodo[2] : [];
   for (const item of items) {
     procesarItem(item, layer, globalBbox);
   }
+
+  // La capa tambien puede estar transformada (su cabecera trae una matriz en el
+  // indice 4). En todo el corpus local viene siempre en identidad, asi que esto
+  // hoy no mueve nada — esta para que un archivo con una capa movida no se
+  // dibuje en silencio en el lugar equivocado, que es justo el modo de fallar
+  // que tenian los trazos antes de leer SU matriz.
+  const mCapa = Array.isArray(hdr) && hdr.length > 4 && Array.isArray(hdr[4]) && hdr[4].length === 16
+    ? (hdr[4] as number[])
+    : null;
+  if (mCapa && !esIdentidad(mCapa)) {
+    aplicarTransformDeCapa(layer, mCapa, globalBbox);
+  }
+
   return layer;
+}
+
+/**
+ * Aplica la matriz de una capa a todo lo que contiene.
+ *
+ * Se aplica DESPUES de procesar los hijos y en coordenadas de canvas, asi que
+ * la matriz tiene que venir por la misma conversion que el resto.
+ */
+function aplicarTransformDeCapa(layer: Layer, mDoc: number[], globalBbox: BBox) {
+  const m = aCanvasTransform(espejarX(mDoc));
+  const escala = escalaDe(m);
+  for (const s of layer.strokes) {
+    s.bbox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+    s.width *= escala;
+    for (const p of s.points) {
+      const [x, y] = aplicarMatriz(m, p.x, p.y);
+      p.x = x; p.y = y;
+      if (x < s.bbox.minX) s.bbox.minX = x;
+      if (x > s.bbox.maxX) s.bbox.maxX = x;
+      if (y < s.bbox.minY) s.bbox.minY = y;
+      if (y > s.bbox.maxY) s.bbox.maxY = y;
+      if (x < globalBbox.minX) globalBbox.minX = x;
+      if (x > globalBbox.maxX) globalBbox.maxX = x;
+      if (y < globalBbox.minY) globalBbox.minY = y;
+      if (y > globalBbox.maxY) globalBbox.maxY = y;
+    }
+  }
+  for (const img of layer.images) img.transform = componerAfin(m, img.transform);
+}
+
+/** Compone dos afines guardadas en matrices 4x4 (solo 0,1,4,5,12,13). */
+function componerAfin(A: number[], B: number[]): number[] {
+  const r = B.slice();
+  r[0] = A[0] * B[0] + A[4] * B[1];
+  r[1] = A[1] * B[0] + A[5] * B[1];
+  r[4] = A[0] * B[4] + A[4] * B[5];
+  r[5] = A[1] * B[4] + A[5] * B[5];
+  r[12] = A[0] * B[12] + A[4] * B[13] + A[12];
+  r[13] = A[1] * B[12] + A[5] * B[13] + A[13];
+  return r;
 }
 
 function procesarItem(item: any, layer: Layer, globalBbox: BBox) {
   if (!Array.isArray(item) || item.length === 0) return;
-  
+
   const tipo = item[0];
-  const cuerpo = item.length > 1 ? item[1] : null;
-  
-  // Elemento con un recurso embebido colocado en el lienzo. Hay DOS tipos:
-  //
-  //   8 = el que usa Concepts para los PDF
-  //   7 = el que usa para las fotos (jpg)
-  //
-  // Los dos traen las mismas piezas (uuid del recurso, tamaño y matriz), solo
-  // que con campos intermedios distintos, asi que se extraen igual. Soportar
-  // solo el 8 hacia que un dibujo de fotos no mostrara NINGUNA imagen: un
-  // archivo de 87 MB con 29 fotos se abria con el lienzo vacio y las
-  // anotaciones sueltas, porque el parser no encontraba nada que colocar.
-  if ((tipo === 8 || tipo === 7) && Array.isArray(cuerpo)) {
+
+  // Imagen colocada: si de verdad lo es, ya quedo emitida y no hay que seguir
+  // recorriendo adentro.
+  if ((tipo === 8 || tipo === 7) && Array.isArray(item[1]) && emitirImagen(item, layer)) return;
+
+  // Todo lo demas (incluidos los envoltorios de trazo — tipo 11 y tipo 9 — y
+  // las subcapas tipo 1/4) se recorre igual: `buscarElementos` despacha por
+  // tipo en cualquier nivel de anidamiento.
+  buscarElementos(item, layer, globalBbox);
+}
+
+/**
+ * Emite una imagen colocada en el lienzo. Devuelve `true` si el item de verdad
+ * era una imagen (y quedo agregada a la capa).
+ *
+ * Hay DOS tipos:
+ *   8 = el que usa Concepts para los PDF
+ *   7 = el que usa para las fotos (jpg)
+ *
+ * Los dos traen las mismas piezas (uuid del recurso, tamaño y matriz), solo
+ * que con campos intermedios distintos, asi que se extraen igual. Soportar
+ * solo el 8 hacia que un dibujo de fotos no mostrara NINGUNA imagen: un
+ * archivo de 87 MB con 29 fotos se abria con el lienzo vacio y las
+ * anotaciones sueltas, porque el parser no encontraba nada que colocar.
+ *
+ * IMPORTANTE: esta funcion NO vuelve a llamar al recorrido. Antes la rama de
+ * imagen llamaba a `buscarElementos` cuando el item no validaba, y ahora que
+ * `buscarElementos` tambien reconoce imagenes eso seria un bucle infinito.
+ */
+function emitirImagen(item: any, layer: Layer): boolean {
+  const cuerpo: any[] = item[1];
+  {
     const interno = Array.isArray(cuerpo) && cuerpo.length > 1 && Array.isArray(cuerpo[1]) ? cuerpo[1] : [];
 
     let elementoId = "";
@@ -670,31 +792,23 @@ function procesarItem(item: any, layer: Layer, globalBbox: BBox) {
     const mat = interno.find(x => Array.isArray(x) && x.length === 16);
     if (mat) transform = mat;
 
-    // Cuando la parte LINEAL de la matriz (escala + rotacion: indices
-    // 0,1,4,5) es identidad — el recurso nunca se escalo ni se roto desde
-    // que se pego — tratar (0,0) como su esquina superior izquierda deja su
-    // caja en un cuadrante sin relacion con los trazos que la anotan.
+    // La matriz posiciona el CENTRO del recurso, no su esquina superior
+    // izquierda: hay que trasladar el contenido media caja antes de aplicarla.
     //
-    // Un primer intento centraba SOLO cuando la matriz entera (incluida la
-    // traslacion) era identidad, y eso rompio un archivo real: dos copias
-    // del mismo recurso, una con traslacion (0,0) y otra con una traslacion
-    // chica pero no cero, pasaron de estar prolijamente apiladas a
-    // superponerse, porque solo la primera calificaba.
+    // Aca vivio mucho tiempo esta misma resta pero condicionada a que la parte
+    // lineal fuera la identidad. Con esa condicion arreglaba los 3 archivos del
+    // corpus que tenian recursos sin rotar ni escalar y dejaba mal TODOS los
+    // demas — que son la enorme mayoria, porque un plano insertado casi siempre
+    // viene rotado 90 grados y a media escala.
     //
-    // La traslacion NO importa para esto: centrar resta la misma constante
-    // (a*ancho/2 + c*alto/2, b*ancho/2 + d*alto/2) sin importar cuanto valga
-    // la traslacion, asi que si dos colocaciones comparten la parte lineal
-    // (aunque esten en lugares distintos) su posicion relativa queda
-    // intacta. Medido contra el corpus real: arregla los 3 archivos que
-    // tenian este patron (0-33% de trazos coincidiendo con su imagen ->
-    // 100%, 100%, 38%) y no mueve ni un pixel a ninguno de los otros 13,
-    // incluidos los dos de referencia con matrices reales (rotacion,
-    // escala) donde ya se confirmo a ojo que el render es correcto.
-    if (transform[0] === 1 && transform[1] === 0 && transform[4] === 0 && transform[5] === 1) {
-      transform = transform.slice();
-      transform[12] -= width / 2;
-      transform[13] -= height / 2;
-    }
+    // Como se confirmo que el centro es lo correcto: en `Fede y Franco/HO/
+    // Drawing` las anotaciones caen, segun el thumb.jpg que renderiza la propia
+    // app, entre el 32% y el 75% del ancho de la hoja. Tratando la traslacion
+    // como esquina caian entre el 80% y el 100% (o sea, encima del rotulo y
+    // afuera de la hoja); tratandola como centro caen entre el 26% y el 66%.
+    transform = transform.slice();
+    transform[12] -= (transform[0] * width) / 2 + (transform[4] * height) / 2;
+    transform[13] -= (transform[1] * width) / 2 + (transform[5] * height) / 2;
 
     // Solo se acepta si de verdad parece una imagen colocada. Sin esta guarda,
     // aceptar el tipo 7 a ciegas podria fabricar elementos vacios a partir de
@@ -705,36 +819,33 @@ function procesarItem(item: any, layer: Layer, globalBbox: BBox) {
         resourceId,
         width,
         height,
-        transform: girarTransform(transform)
+        transform: aCanvasTransform(espejarX(transform))
       });
-      return;
+      return true;
     }
-    // Si no cumple, se sigue buscando trazos adentro como con cualquier item.
-    buscarElementos(item, layer, globalBbox);
-
-  } else if (tipo === 1 && item.length > 1 && Array.isArray(item[1]) && item[1].length > 0 && item[1][0] === 4) {
-    // subcapa: a diferencia de cualquier otro tipo de item, esta rama no
-    // recorria adentro — si una subcapa tiene trazos anidados (no se pudo
-    // confirmar que nunca los tenga), quedaban descartados en silencio. Se
-    // busca igual que en el resto de los casos: `buscarElementos` solo
-    // extrae trazos (tipo 6 con su blob de puntos), asi que no hay riesgo de
-    // fabricar una imagen de la nada si la subcapa viene vacia.
-    buscarElementos(item, layer, globalBbox);
-  } else {
-    buscarElementos(item, layer, globalBbox);
+    // Si no cumple, el que llamo sigue recorriendo adentro. Devolver false (en
+    // vez de llamar al recorrido desde aca) es lo que evita el bucle infinito
+    // ahora que `buscarElementos` tambien reconoce imagenes.
+    return false;
   }
 }
 
 function buscarElementos(o: any, layer: Layer, globalBbox: BBox) {
   if (!Array.isArray(o)) return;
-  
+
   const blobs = o.filter(x => x instanceof Uint8Array && x.length >= 32 && x.length % 16 === 0);
-  
+
   if (blobs.length > 0 && o.length > 2 && o[0] === 6 && Array.isArray(o[1])) {
     emitirTrazo(o, blobs[0], layer, globalBbox);
     return;
   }
-  
+
+  // Una imagen puede estar ANIDADA dentro de un grupo en vez de colgar directo
+  // de la capa. Antes esta funcion solo sabia reconocer trazos, asi que esas
+  // imagenes nunca se emitian y desaparecian en silencio: no se dibujaban mal
+  // ubicadas, directamente no se dibujaban.
+  if ((o[0] === 7 || o[0] === 8) && Array.isArray(o[1]) && emitirImagen(o, layer)) return;
+
   for (const x of o) {
     buscarElementos(x, layer, globalBbox);
   }
@@ -742,7 +853,7 @@ function buscarElementos(o: any, layer: Layer, globalBbox: BBox) {
 
 function emitirTrazo(o: any, blob: Uint8Array, layer: Layer, globalBbox: BBox) {
   const hdr = o[1];
-  
+
   const stroke: Stroke = {
     id: "",
     points: [],
@@ -750,7 +861,7 @@ function emitirTrazo(o: any, blob: Uint8Array, layer: Layer, globalBbox: BBox) {
     width: 1,
     bbox: { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
   };
-  
+
   try {
     const bw = hdr[1][1];
     const core = bw[1];
@@ -765,32 +876,44 @@ function emitirTrazo(o: any, blob: Uint8Array, layer: Layer, globalBbox: BBox) {
   } catch {
     // fallback
   }
-  
+
   const u = hdr.find((x: any) => typeof x === "string" && x.includes("-"));
   if (u) stroke.id = u;
-  
+
+  // Matriz de colocacion del trazo (ver `matrizDeCabecera`). Si el usuario lo
+  // movio/roto/escalo, los puntos guardados siguen siendo los originales y toda
+  // la edicion vive aca.
+  const mat = matrizDeCabecera(hdr);
+  const transformar = mat !== null && !esIdentidad(mat);
+  // Un trazo escalado tiene que engordar/adelgazar con su escala: sin esto una
+  // anotacion agrandada al doble se dibuja del grosor con el que se trazo.
+  if (transformar) stroke.width *= escalaDe(mat!);
+
   const n = Math.floor(blob.length / 16);
   const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
-  
+
   for (let i = 0; i < n; i++) {
-    // Media vuelta al documento entero, ver `girarPunto`.
-    const [x, y] = girarPunto(view.getFloat32(i * 16, true), view.getFloat32(i * 16 + 4, true));
+    let px = view.getFloat32(i * 16, true);
+    let py = view.getFloat32(i * 16 + 4, true);
+    if (transformar) [px, py] = aplicarMatriz(mat!, px, py);
+    // Documento (Y arriba) -> canvas (Y abajo). Ver `aCanvasPunto`.
+    const [x, y] = aCanvasPunto(px, py);
     const p = view.getUint16(i * 16 + 8, true);
     const t1 = view.getUint16(i * 16 + 10, true);
     const t2 = view.getUint16(i * 16 + 12, true);
-    
+
     stroke.points.push({ x, y, p, t1, t2 });
-    
+
     if (x < stroke.bbox.minX) stroke.bbox.minX = x;
     if (x > stroke.bbox.maxX) stroke.bbox.maxX = x;
     if (y < stroke.bbox.minY) stroke.bbox.minY = y;
     if (y > stroke.bbox.maxY) stroke.bbox.maxY = y;
-    
+
     if (x < globalBbox.minX) globalBbox.minX = x;
     if (x > globalBbox.maxX) globalBbox.maxX = x;
     if (y < globalBbox.minY) globalBbox.minY = y;
     if (y > globalBbox.maxY) globalBbox.maxY = y;
   }
-  
+
   layer.strokes.push(stroke);
 }

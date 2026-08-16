@@ -4,3 +4,14 @@ dist/
 .DS_Store
 *.pem
 .vercel
+
+# APK descompilado (ingenieria inversa de la app oficial de Concepts).
+# Se versionan SOLO el analisis escrito y la evidencia visual: el .apk (310 MB),
+# el arbol descompilado (~590 MB), el zip crudo (~306 MB) y las herramientas
+# portables (jadx + JRE) se regeneran corriendo jadx sobre el .apk y no tienen
+# por que vivir en el repo.
+APK/Concepts.apk
+APK/decompiled/
+APK/raw_unzip/
+APK/_tools/
+APK/jadx_log.txt
