@@ -34,11 +34,31 @@ export interface ImageElement {
   transform: number[];
 }
 
+/**
+ * Texto escrito con la herramienta de texto (item tipo 13), a diferencia de una
+ * anotacion a mano alzada (que es un trazo comun).
+ *
+ * El cuerpo del item es `[1, <cabecera>, "el texto", <matriz extra>]`. La
+ * posicion sale de la matriz de la CABECERA, igual que en las imagenes; la
+ * matriz extra se descarta a proposito: se repite identica entre textos que
+ * estan en lugares distintos del mismo dibujo (medido: cuatro "Corregir en
+ * obra" separados por miles de unidades comparten `tr=[-1359,569]`), asi que no
+ * es una colocacion.
+ */
+export interface TextElement {
+  id: string;
+  /** Puede tener saltos de linea. */
+  text: string;
+  color: { r: number; g: number; b: number; a: number; hex: string };
+  transform: number[];
+}
+
 export interface Layer {
   id: string;
   index: number;
   strokes: Stroke[];
   images: ImageElement[];
+  texts: TextElement[];
 }
 
 /**
@@ -416,9 +436,9 @@ async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Do
         layers.push(procesarCapa(capa, index, globalBbox));
       });
     } else {
-      const fallbackLayer: Layer = { id: "fallback", index: 0, strokes: [], images: [] };
+      const fallbackLayer: Layer = { id: "fallback", index: 0, strokes: [], images: [], texts: [] };
       buscarElementos(docData, fallbackLayer, globalBbox);
-      if (fallbackLayer.strokes.length > 0 || fallbackLayer.images.length > 0) {
+      if (fallbackLayer.strokes.length > 0 || fallbackLayer.images.length > 0 || fallbackLayer.texts.length > 0) {
         layers.push(fallbackLayer);
       }
     }
@@ -653,7 +673,7 @@ function procesarCapa(nodo: any, idx: number, globalBbox: BBox): Layer {
      capaId = hdr[1];
   }
 
-  const layer: Layer = { id: capaId, index: idx, strokes: [], images: [] };
+  const layer: Layer = { id: capaId, index: idx, strokes: [], images: [], texts: [] };
 
   const items = Array.isArray(nodo) && nodo.length > 2 && Array.isArray(nodo[2]) ? nodo[2] : [];
   for (const item of items) {
@@ -724,6 +744,9 @@ function procesarItem(item: any, layer: Layer, globalBbox: BBox) {
   // recorriendo adentro.
   if ((tipo === 8 || tipo === 7) && Array.isArray(item[1]) && emitirImagen(item, layer)) return;
 
+  // Texto de la herramienta de texto.
+  if (tipo === 13 && Array.isArray(item[1]) && emitirTexto(item, layer)) return;
+
   // Todo lo demas (incluidos los envoltorios de trazo — tipo 11 y tipo 9 — y
   // las subcapas tipo 1/4) se recorre igual: `buscarElementos` despacha por
   // tipo en cualquier nivel de anidamiento.
@@ -748,6 +771,56 @@ function procesarItem(item: any, layer: Layer, globalBbox: BBox) {
  * imagen llamaba a `buscarElementos` cuando el item no validaba, y ahora que
  * `buscarElementos` tambien reconoce imagenes eso seria un bucle infinito.
  */
+/**
+ * Emite un texto (item tipo 13). Devuelve `true` si el item lo era.
+ *
+ * Cuerpo: `[1, <cabecera>, "el texto", <matriz extra>]`. Ver `TextElement` para
+ * por que se usa la matriz de la cabecera y se descarta la extra.
+ *
+ * El tamaño de la letra NO viene como un numero aparte: esta metido en la
+ * escala de la matriz. Se dibuja con una altura de 1 unidad en el espacio del
+ * elemento y la matriz se encarga del resto, que es lo mismo que hacemos con
+ * las imagenes.
+ */
+function emitirTexto(item: any, layer: Layer): boolean {
+  const cuerpo = item[1];
+  if (!Array.isArray(cuerpo)) return false;
+
+  const texto = cuerpo.find((x: any) => typeof x === "string");
+  if (!texto) return false;
+
+  const hdr = Array.isArray(cuerpo[1]) ? cuerpo[1] : null;
+  const mat = hdr ? matrizDeCabecera(hdr) : null;
+  if (!mat) return false;
+
+  let elementoId = "";
+  if (hdr) {
+    const u = hdr.find((x: any) => typeof x === "string" && x.includes("-"));
+    if (u) elementoId = u;
+  }
+
+  // El color vive dentro del estilo, a una profundidad que cambia segun la
+  // herramienta; se busca el primer RGBA (los ext type 4 se decodifican como
+  // array de 4 numeros) en vez de indexar a ciegas.
+  let color = { r: 0, g: 0, b: 0, a: 1, hex: "#000000" };
+  const buscarColor = (o: any): number[] | null => {
+    if (!Array.isArray(o)) return null;
+    if (o.length === 4 && o.every((v) => typeof v === "number") && o.every((v) => v >= 0 && v <= 1)) return o;
+    for (const x of o) { const r = buscarColor(x); if (r) return r; }
+    return null;
+  };
+  const col = hdr ? buscarColor(hdr) : null;
+  if (col) color = { r: col[0], g: col[1], b: col[2], a: col[3], hex: rgbaToHex(col[0], col[1], col[2], col[3]) };
+
+  layer.texts.push({
+    id: elementoId,
+    text: texto,
+    color,
+    transform: aCanvasTransform(espejarX(mat)),
+  });
+  return true;
+}
+
 function emitirImagen(item: any, layer: Layer): boolean {
   const cuerpo: any[] = item[1];
   {
@@ -819,6 +892,13 @@ function emitirImagen(item: any, layer: Layer): boolean {
         resourceId,
         width,
         height,
+        // PENDIENTE (medido, sin resolver): en las fotos (tipo 7) el CONTENIDO
+        // del bitmap sale espejado, no su ubicacion. Se comprobo que sacarles
+        // el espejo de la matriz NO es la solucion: la foto se va de lugar y
+        // se despega de la etiqueta que la nombra, o sea que la colocacion con
+        // espejo es la correcta y lo que falta es voltear el bitmap al
+        // dibujarlo. Los PDF (tipo 8) no tienen el problema, probablemente
+        // porque pdf.js los rasteriza pidiendo `rotation: 0`.
         transform: aCanvasTransform(espejarX(transform))
       });
       return true;
@@ -845,6 +925,7 @@ function buscarElementos(o: any, layer: Layer, globalBbox: BBox) {
   // imagenes nunca se emitian y desaparecian en silencio: no se dibujaban mal
   // ubicadas, directamente no se dibujaban.
   if ((o[0] === 7 || o[0] === 8) && Array.isArray(o[1]) && emitirImagen(o, layer)) return;
+  if (o[0] === 13 && Array.isArray(o[1]) && emitirTexto(o, layer)) return;
 
   for (const x of o) {
     buscarElementos(x, layer, globalBbox);

@@ -1001,7 +1001,28 @@ export type RenderItem =
       width: number;
       height: number;
       layerIndex: number;
+    }
+  | {
+      type: "text";
+      lineas: string[];
+      color: string;
+      alpha: number;
+      transform: number[];
+      layerIndex: number;
     };
+
+/**
+ * Alto de una linea de texto en el espacio del elemento, antes de que la matriz
+ * la escale.
+ *
+ * El archivo no guarda el cuerpo de la letra como numero aparte: viene metido
+ * en la escala de la matriz. Este es el factor que convierte esa escala en
+ * pixeles, y esta calibrado a ojo contra el `thumb.jpg` que renderiza la propia
+ * app (los textos "Corregir en obra" de `Fede y Franco/Concepts/v1/Muebles`).
+ * Si algun dia los textos salen sistematicamente grandes o chicos, este es el
+ * unico numero que hay que tocar.
+ */
+export const ALTO_LINEA_TEXTO = 16;
 
 export interface RenderPlan {
   items: RenderItem[];
@@ -1058,6 +1079,33 @@ export function buildRenderPlan(doc: Document): RenderPlan {
         width: stroke.width || 1.5,
         layerIndex: layer.index,
       });
+    });
+  });
+
+  doc.layers.forEach((layer) => {
+    layer.texts.forEach((t) => {
+      const lineas = t.text.split(/\r?\n/);
+      items.push({
+        type: "text",
+        lineas,
+        color: t.color.hex.slice(0, 7),
+        alpha: t.color.a,
+        transform: t.transform,
+        layerIndex: layer.index,
+      });
+      // Caja aproximada para el encuadre: alto = lineas, ancho estimado por la
+      // linea mas larga. No hace falta que sea exacta (medir de verdad exige un
+      // contexto de canvas, que aca no hay); solo tiene que evitar que un texto
+      // quede fuera del "ver todo".
+      const m = t.transform;
+      const alto = lineas.length * ALTO_LINEA_TEXTO;
+      const ancho = Math.max(...lineas.map((l) => l.length)) * ALTO_LINEA_TEXTO * 0.55;
+      for (const [x, y] of [[0, 0], [ancho, 0], [0, alto], [ancho, alto]]) {
+        const px = m[0] * x + m[4] * y + m[12];
+        const py = m[1] * x + m[5] * y + m[13];
+        if (px < minX) minX = px; if (px > maxX) maxX = px;
+        if (py < minY) minY = py; if (py > maxY) maxY = py;
+      }
     });
   });
 
@@ -1130,6 +1178,8 @@ export function drawItems(
       if (m && m.length === 16) ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
       dibujarRecurso(ctx, recurso, item.width, item.height);
       ctx.restore();
+    } else if (item.type === "text") {
+      dibujarTexto(ctx, item);
     } else {
       ctx.strokeStyle = item.color;
       ctx.globalAlpha = item.alpha;
@@ -1139,4 +1189,41 @@ export function drawItems(
       ctx.stroke(item.path);
     }
   }
+}
+
+/**
+ * Dibuja un texto de la herramienta de texto.
+ *
+ * Se pinta en el espacio del elemento (una linea mide `ALTO_LINEA_TEXTO`) y la
+ * matriz se encarga de ubicarlo, rotarlo y escalarlo, igual que con una imagen.
+ *
+ * El `scale(-1,-1)` NO es un ajuste a ojo: la matriz de colocacion deja el
+ * marco local con los DOS ejes invertidos respecto de la pantalla, asi que un
+ * texto dibujado "hacia la derecha y hacia abajo" sale hacia la izquierda y
+ * hacia arriba, o sea girado media vuelta (se vio: "Dicroicas" y "Panel led"
+ * cabeza abajo y al reves). Al invertir los dos ejes el marco vuelve a ser uno
+ * normal de pantalla y el ancla (0,0) no se mueve, porque escalar no traslada
+ * el origen: el texto sigue arrancando en el mismo punto del documento.
+ *
+ * Una imagen no necesita esto porque su contenido se estira sobre una caja de
+ * ancho x alto —da igual en que direccion crezca la caja—, mientras que un
+ * texto se dibuja desde un punto y crece solo.
+ */
+export function dibujarTexto(
+  ctx: CanvasRenderingContext2D,
+  item: Extract<RenderItem, { type: "text" }>
+) {
+  const m = item.transform;
+  ctx.save();
+  if (m && m.length === 16) ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
+  ctx.scale(-1, -1);
+  ctx.fillStyle = item.color;
+  ctx.globalAlpha = item.alpha;
+  ctx.font = `${ALTO_LINEA_TEXTO}px Inter, system-ui, sans-serif`;
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+  item.lineas.forEach((linea, i) => {
+    ctx.fillText(linea, 0, i * ALTO_LINEA_TEXTO);
+  });
+  ctx.restore();
 }

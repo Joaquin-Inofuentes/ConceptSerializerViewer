@@ -15,6 +15,8 @@ import {
   programarCierreWorkers,
   cancelarCierreWorkers,
   compararOrdenDibujo,
+  dibujarTexto,
+  ALTO_LINEA_TEXTO,
 } from "../Gallery/renderCore";
 import type { RecursoRasterizado, Region } from "../Gallery/renderCore";
 import { getBudgets } from "../device";
@@ -159,7 +161,18 @@ interface CachedImage {
   layerIndex: number;
 }
 
-type CachedItem = CachedStroke | CachedImage;
+interface CachedText {
+  kind: "text";
+  lineas: string[];
+  transform: number[];
+  minX: number; minY: number; maxX: number; maxY: number;
+  color: string;
+  globalAlpha: number;
+  layerId: string;
+  layerIndex: number;
+}
+
+type CachedItem = CachedStroke | CachedImage | CachedText;
 
 /**
  * Arma el Path2D de un trazo salteando puntos que estan a menos de
@@ -418,6 +431,36 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           layerIndex: layer.index,
         });
       });
+
+      // Texto de la herramienta de texto. La caja es aproximada (medirla de
+      // verdad exige el contexto de canvas, que aca no esta); alcanza para el
+      // encuadre y el descarte por frustum.
+      layer.texts.forEach((t) => {
+        const lineas = t.text.split(/\r?\n/);
+        const m = t.transform;
+        const alto = lineas.length * ALTO_LINEA_TEXTO;
+        const ancho = Math.max(...lineas.map((l) => l.length)) * ALTO_LINEA_TEXTO * 0.55;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        const a = m[0], b = m[1], c = m[4], d = m[5], e = m[12], f = m[13];
+        for (const [px, py] of [[0, 0], [ancho, 0], [0, -alto], [ancho, -alto]]) {
+          const x = a * px + c * py + e;
+          const y = b * px + d * py + f;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+        items.push({
+          kind: "text",
+          lineas,
+          transform: t.transform,
+          minX, minY, maxX, maxY,
+          color: t.color.hex.slice(0, 7),
+          globalAlpha: t.color.a,
+          layerId: layer.id,
+          layerIndex: layer.index,
+        });
+      });
     });
 
     // Las notas (trazos) tienen que quedar SIEMPRE arriba de las fotos, sin
@@ -582,6 +625,15 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
             }
             dibujarRecurso(ctx, recurso, item.width, item.height);
             ctx.restore();
+          } else if (item.kind === "text") {
+            dibujarTexto(ctx, {
+              type: "text",
+              lineas: item.lineas,
+              color: item.color,
+              alpha: item.globalAlpha * layerOpacity,
+              transform: item.transform,
+              layerIndex: item.layerIndex,
+            });
           } else {
             ctx.strokeStyle = item.color;
             ctx.lineJoin = "round";
@@ -1517,6 +1569,16 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
               }
               ctx.restore();
               // El save/restore invalida el estado de trazo cacheado.
+              color = ""; alpha = -1; ancho = -1;
+            } else if (item.kind === "text") {
+              dibujarTexto(ctx, {
+                type: "text",
+                lineas: item.lineas,
+                color: item.color,
+                alpha: item.globalAlpha * layerOpacity,
+                transform: item.transform,
+                layerIndex: item.layerIndex,
+              });
               color = ""; alpha = -1; ancho = -1;
             } else {
               // Cambiar strokeStyle/lineWidth/globalAlpha tiene costo; se

@@ -3,6 +3,7 @@ import {
   proveedorEnStreaming,
   buildRenderPlan,
   dibujarRecurso,
+  dibujarTexto,
   drawnSizes,
   safeExportScale,
 } from "./renderCore";
@@ -79,6 +80,8 @@ export async function renderDocumentCanvas(doc: Document): Promise<RenderedCanva
         if (m && m.length === 16) ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
         dibujarRecurso(ctx, recurso, item.width, item.height);
         ctx.restore();
+      } else if (item.type === "text") {
+        dibujarTexto(ctx, item);
       } else {
         ctx.strokeStyle = item.color;
         ctx.globalAlpha = item.alpha;
