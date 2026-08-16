@@ -963,7 +963,15 @@ export function dibujarRecurso(
   // reves aunque la posicion coincidia). Se voltea aca, scopeado SOLO al
   // draw de la foto, en vez de tocar la matriz de colocacion (eso desalinea
   // la foto de la etiqueta que la nombra, ver nota en el parser).
-  if (esFoto && ancho) {
+  //
+  // El volteo tiene que aplicarse DESPUES de deshacer el EXIF (mas abajo), no
+  // antes: flip-y-despues-rotar no es lo mismo que rotar-y-despues-flip (no
+  // conmutan), asi que voltear en el frame ORIGINAL y despues rotar -90
+  // terminaba espejando en un eje distinto al querido. Resultado real: fotos
+  // con EXIF portrait (la mayoria, sacadas con el telefono en vertical)
+  // seguian mostrando texto/carteles al reves pese al fix. Por eso el volteo
+  // se hace en cada rama, en el frame que ya tiene la orientacion final.
+  if (esFoto && ancho && !recurso.compensarExif) {
     ctx.translate(ancho, 0);
     ctx.scale(-1, 1);
   }
@@ -976,6 +984,12 @@ export function dibujarRecurso(
     // girada al acercarse).
     ctx.translate(0, alto);
     ctx.rotate(-Math.PI / 2);
+    // Frame post-rotacion: el ancho "visible" aca es `alto` (se intercambian
+    // con la rotacion de 90). El volteo de foto va aca, no antes de rotar.
+    if (esFoto) {
+      ctx.translate(alto, 0);
+      ctx.scale(-1, 1);
+    }
     if (region) {
       ctx.drawImage(img, region.y * alto, region.x * ancho, region.h * alto, region.w * ancho);
     } else {
