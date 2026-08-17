@@ -43,6 +43,12 @@ export interface ThumbnailRow {
   file_name: string;
   thumbnail_base64: string;
   updated_at: string;
+  /** modifiedAt de Drive al momento de generar esta miniatura. Null en filas
+   * generadas antes de que se guardara este dato: se siguen sirviendo tal
+   * cual. Cuando esta presente y no coincide con el modifiedAt actual del
+   * archivo, la miniatura quedo vieja (el archivo se re-subio con otro
+   * contenido) y hay que regenerarla en vez de servirla. */
+  source_modified_at: string | null;
 }
 
 /** Trae del cache de Supabase las miniaturas ya generadas para estos ids. */
@@ -57,7 +63,7 @@ export async function fetchCachedThumbnails(
   const lista = ids.map((id) => `"${id}"`).join(",");
   const url =
     `${REST}/concept_thumbnails` +
-    `?select=drive_file_id,file_name,thumbnail_base64,updated_at` +
+    `?select=drive_file_id,file_name,thumbnail_base64,updated_at,source_modified_at` +
     `&drive_file_id=in.(${encodeURIComponent(lista)})`;
 
   const data = await pedir<ThumbnailRow[]>(url, { headers: headers() }, "leer thumbnails");
@@ -71,6 +77,9 @@ export async function upsertThumbnail(row: {
   file_name: string;
   thumbnail_base64: string;
   source_size_bytes: number;
+  /** modifiedAt de Drive del archivo del que se genero esta miniatura, para
+   * poder detectar despues si el archivo cambio y la miniatura quedo vieja. */
+  source_modified_at: string | null;
 }): Promise<void> {
   await pedir(
     `${REST}/concept_thumbnails`,
@@ -82,6 +91,7 @@ export async function upsertThumbnail(row: {
         file_name: row.file_name,
         thumbnail_base64: row.thumbnail_base64,
         source_size_bytes: row.source_size_bytes,
+        source_modified_at: row.source_modified_at,
         width: THUMBNAIL_SIZE,
         height: THUMBNAIL_SIZE,
         updated_at: new Date().toISOString(),

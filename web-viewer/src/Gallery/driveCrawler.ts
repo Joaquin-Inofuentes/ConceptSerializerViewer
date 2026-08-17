@@ -56,6 +56,7 @@ export async function crawlAndCacheEverything(
           file_name: file.name,
           thumbnail_base64: thumbnail,
           source_size_bytes: bytesFuente,
+          source_modified_at: file.modifiedAt,
         });
       } catch (e) {
         console.error("Error regenerando thumbnail", file.id, file.name, e);

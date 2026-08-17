@@ -21,7 +21,7 @@ import { alternarTema, temaGuardado } from "../theme";
 import type { Tema } from "../theme";
 import { listarRecientes, vaciarRecientes } from "./recientes";
 import type { Reciente } from "./recientes";
-import { vaciarCache } from "./rasterCache";
+import { vaciarCache, invalidarSiCambio } from "./rasterCache";
 import "./Gallery.css";
 
 type ItemStatus = "queued" | "processing" | "ready" | "error";
@@ -145,7 +145,7 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
     toastTimerRef.current = window.setTimeout(() => setToast(null), 3000);
   };
 
-  const processItem = useCallback(async (file: { id: string; name: string }) => {
+  const processItem = useCallback(async (file: { id: string; name: string; modifiedAt: string | null }) => {
     setItems((prev) =>
       prev.map((it) => (it.id === file.id ? { ...it, status: "processing", error: undefined } : it))
     );
@@ -173,6 +173,7 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
         file_name: file.name,
         thumbnail_base64: thumbnail,
         source_size_bytes: bytesFuente,
+        source_modified_at: file.modifiedAt,
       });
     } catch (err: any) {
       setItems((prev) =>
@@ -247,7 +248,15 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
 
         const nextItems: GalleryItem[] = listing.files.map((f) => {
           const cached = cache.get(f.id);
-          if (cached) {
+          // Si la miniatura cacheada se genero para un modifiedAt distinto al
+          // actual, el archivo se re-subio con otro contenido y esa miniatura
+          // ya no representa lo que hay: se descarta para que se regenere,
+          // en vez de mostrarla para siempre (filas viejas sin este dato
+          // guardado no se tocan: cached.source_modified_at da null y se usa
+          // igual que antes).
+          const cachedEstaVieja =
+            !!cached?.source_modified_at && cached.source_modified_at !== f.modifiedAt;
+          if (cached && !cachedEstaVieja) {
             return {
               id: f.id,
               name: cleanName(f.name),
@@ -258,7 +267,10 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
               hasTime: f.hasTime,
             };
           }
-          const existing = prevById.get(f.id);
+          // Si la cacheada esta vieja, tampoco sirve lo que ya se estaba
+          // mostrando en pantalla (es la misma miniatura vieja): hay que
+          // encolarlo para regenerar, no reusar `existing`.
+          const existing = cachedEstaVieja ? undefined : prevById.get(f.id);
           if (existing && existing.status === "ready" && existing.thumbnail) {
             return { ...existing, name: cleanName(f.name), modifiedAt: f.modifiedAt, hasTime: f.hasTime };
           }
@@ -369,6 +381,12 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
   const handleOpen = (item: GalleryItem, originRect: DOMRect | null) => {
     if (item.status === "processing") return;
     logAbrir(item.id, item.name, currentFolder.id);
+    // Si el modifiedAt de Drive cambio desde la ultima vez que se abrio este
+    // archivo EN ESTE DISPOSITIVO, el rasterizado que pueda haber cacheado en
+    // IndexedDB corresponde al contenido viejo (el cache es por fileId, sin
+    // relacion con el contenido); se descarta para que el visor rasterize de
+    // nuevo en vez de mostrar el dibujo anterior.
+    void invalidarSiCambio(item.id, item.modifiedAt);
     // La ruta sin la raiz: es lo que va en la URL compartible.
     onOpen(item.id, item.name, originRect, folderStack.slice(1).map((c) => c.name));
   };

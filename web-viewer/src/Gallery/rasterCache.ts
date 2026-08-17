@@ -301,6 +301,44 @@ export async function invalidarArchivo(fileId: string): Promise<void> {
   for (const f of filas) await conStore("readwrite", (s) => s.delete(f.key));
 }
 
+const MTIMES_KEY = "concepts-raster-mtimes";
+
+function leerMtimesConocidos(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(MTIMES_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function guardarMtimesConocidos(m: Record<string, string>) {
+  try {
+    localStorage.setItem(MTIMES_KEY, JSON.stringify(m));
+  } catch {
+    /* localStorage lleno o bloqueado: no es fatal, solo se pierde la deteccion */
+  }
+}
+
+/**
+ * Si el `modifiedAt` de Drive de este archivo cambio respecto a la ultima
+ * vez que se abrio en este dispositivo, borra sus rasterizados cacheados:
+ * de lo contrario `leerRaster` seguiria sirviendo bitmaps del contenido
+ * VIEJO (esta cacheado por fileId+resourceId, sin relacion con el contenido
+ * real) aunque el archivo se haya re-subido con dibujos distintos.
+ *
+ * Guarda el ultimo `modifiedAt` visto en localStorage (no en el cache de
+ * IndexedDB, que se borra) para poder comparar la proxima vez.
+ */
+export async function invalidarSiCambio(fileId: string, modifiedAt: string | null): Promise<void> {
+  if (!modifiedAt) return;
+  const mtimes = leerMtimesConocidos();
+  if (mtimes[fileId] && mtimes[fileId] !== modifiedAt) {
+    await invalidarArchivo(fileId);
+  }
+  mtimes[fileId] = modifiedAt;
+  guardarMtimesConocidos(mtimes);
+}
+
 /** Cuantos archivos y bytes hay cacheados (para diagnostico y para la UI). */
 export async function estadoCache(): Promise<{ archivos: number; entradas: number; bytes: number }> {
   const filas = (await conStore<FilaCache[]>("readonly", (s) => s.getAll() as IDBRequest<FilaCache[]>)) as
