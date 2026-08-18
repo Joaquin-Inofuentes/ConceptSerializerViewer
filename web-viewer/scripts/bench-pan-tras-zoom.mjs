@@ -1,8 +1,11 @@
 // Reproduce el bug reportado: "zoom sobre un plano y luego paneo, se rompe
-// y recarga el dibujo que ya tenia cargado". Encuadra UN plano a resolucion
-// plena y despues lo panea repetidamente dentro/cerca de si mismo, midiendo
-// cuantas veces se re-rasteriza (window.__viewerStats().cache / tiempos.n)
-// en vez de mantenerse cacheado.
+// y recarga el dibujo que ya tenia cargado" (incluye el "mini flash" del
+// cartel "Afinando..."). Encuadra UN plano a resolucion plena y despues lo
+// panea repetidamente dentro/cerca de si mismo, midiendo:
+//   - cuantas veces se re-rasteriza (window.__viewerStats().tiempos.n)
+//   - si el cartel ".viewer-refinando" (el "mini flash" visual) llega a
+//     aparecer durante el asentado de cada gesto (polling cada 40ms)
+//   - el detalle de decisiones via window.__viewerDebugCache (logs "[cache]")
 //
 //   node scripts/bench-pan-tras-zoom.mjs [fileId]
 
@@ -32,7 +35,7 @@ const errores = [];
 page.on("pageerror", (e) => errores.push(e.message.slice(0, 200)));
 const logs = [];
 page.on("console", (msg) => {
-  if (msg.text().startsWith("necesita:")) logs.push(msg.text());
+  if (msg.text().startsWith("[cache]")) logs.push(msg.text());
 });
 
 await page.goto(BASE, { waitUntil: "domcontentloaded" });
@@ -51,9 +54,11 @@ await input.uploadFile(target.localPath);
 await page.waitForSelector(".canvas-wrapper canvas", { timeout: 180000 });
 await page.waitForFunction(() => !document.querySelector(".viewer-carga"), { timeout: 300000, polling: 500 });
 await new Promise((r) => setTimeout(r, 1000));
+await page.evaluate(() => { window.__viewerDebugCache = true; });
 
 const stats = () => page.evaluate(() => window.__viewerStats());
 const hot = () => page.evaluate(() => window.__viewerHotCache());
+const flashVisible = () => page.evaluate(() => !!document.querySelector(".viewer-refinando"));
 
 const cajas = await page.evaluate(() => window.__viewerCajas());
 const anchoCss = 1440, altoCss = 900;
@@ -65,25 +70,27 @@ async function fijar(zoom, panX, panY) {
 }
 
 const ZOOM_MULT = process.env.ZOOM_MULT ? Number(process.env.ZOOM_MULT) : 3;
+const GESTOS = process.env.GESTOS ? Number(process.env.GESTOS) : 8;
 const w = grande.x1 - grande.x0, h = grande.y1 - grande.y0;
 const zoom = Math.max(anchoCss / w, altoCss / h) * ZOOM_MULT;
 const cx = (grande.x0 + grande.x1) / 2, cy = (grande.y0 + grande.y1) / 2;
 let panX = anchoCss / 2 - cx * zoom;
 let panY = altoCss / 2 - cy * zoom;
 
-console.log("encuadrar el plano a resolucion plena (zoom x3 sobre su ajuste)...");
+console.log(`encuadrar el plano a resolucion plena (zoom x${ZOOM_MULT} sobre su ajuste)...`);
 await fijar(zoom, panX, panY);
 await new Promise((r) => setTimeout(r, 7000));
 let s0 = await stats();
 let h0 = await hot();
 console.log(`  n=${s0.tiempos.n} fallos=${s0.cache.fallos} hotFifo=${h0.hotFifo.map((x) => x.slice(0, 8))}`);
 await page.screenshot({ path: path.join(CACHE_DIR, "pan-tras-zoom-1-antes.png") });
+logs.length = 0; // solo interesan los logs generados DESDE aca (durante el paneo)
 
-await page.evaluate(() => { window.__debugNecesita = true; });
 console.log("\npanear repetidas veces (gestos cortos, como un dedo arrastrando)...");
 let nAnterior = s0.tiempos.n;
 let reraster = 0;
-for (let i = 0; i < 8; i++) {
+let flashes = 0;
+for (let i = 0; i < GESTOS; i++) {
   // arrastre corto tipico: unos 150-300px, en varios pasos rapidos
   for (let step = 0; step < 5; step++) {
     panX -= 40;
@@ -91,12 +98,19 @@ for (let i = 0; i < 8; i++) {
     await fijar(zoom, panX, panY);
     await new Promise((r) => setTimeout(r, 60));
   }
-  await new Promise((r) => setTimeout(r, 1200)); // asienta el debounce (220ms) + posible raster
+  // Poll fino durante el asentado (debounce 220ms + posible raster) para
+  // pescar el cartel "Afinando..." aunque sea breve.
+  let vistoFlash = false;
+  for (let t = 0; t < 1200; t += 40) {
+    if (await flashVisible()) vistoFlash = true;
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  if (vistoFlash) flashes++;
   const s = await stats();
   const cambio = s.tiempos.n !== nAnterior;
   if (cambio) reraster++;
   console.log(
-    `  gesto ${i + 1}: n=${s.tiempos.n} fallos=${s.cache.fallos} recortados=${s.recortados} ${cambio ? "-> RE-RASTERIZO" : "(cacheado, ok)"}`
+    `  gesto ${i + 1}: n=${s.tiempos.n} fallos=${s.cache.fallos} recortados=${s.recortados} ${cambio ? "-> RE-RASTERIZO" : "(cacheado, ok)"} ${vistoFlash ? "  [FLASH 'Afinando...' VISTO]" : ""}`
   );
   nAnterior = s.tiempos.n;
   if (i === 0) await page.screenshot({ path: path.join(CACHE_DIR, "pan-tras-zoom-2-tras-1-gesto.png") });
@@ -104,13 +118,15 @@ for (let i = 0; i < 8; i++) {
 
 const hFinal = await hot();
 console.log(`\nhotFifo final=${hFinal.hotFifo.map((x) => x.slice(0, 8))} enMemoria=${hFinal.enMemoria.length}`);
-console.log(`Re-rasterizados durante el paneo (tras el primero, que sube el plano a pagina completa): ${reraster}`);
+console.log(`Re-rasterizados durante el paneo: ${reraster}/${GESTOS}`);
+console.log(`Cartel "Afinando..." visto durante el paneo: ${flashes}/${GESTOS}`);
 const idCorto = grande.resourceId.slice(0, 8);
 const propios = logs.filter((l) => l.includes(idCorto));
-console.log(`\nDecisiones "necesita" logueadas para el plano objetivo (${idCorto}): ${propios.length}`);
-propios.slice(0, 10).forEach((l) => console.log("  " + l));
-console.log(`Total decisiones "necesita" logueadas (todos los recursos): ${logs.length}`);
+console.log(`\nLogs [cache] para el plano objetivo (${idCorto}): ${propios.length}`);
+propios.slice(0, 20).forEach((l) => console.log("  " + l));
+console.log(`\nTotal logs [cache] (todos los recursos, incluye el anillo): ${logs.length}`);
 console.log(`errores: ${errores.length ? [...new Set(errores)].slice(0, 5).join(" | ") : "ninguno"}`);
 
 await page.screenshot({ path: path.join(CACHE_DIR, "pan-tras-zoom-3-tras-8-gestos.png") });
 await browser.close();
+process.exit(reraster === 0 && flashes === 0 ? 0 : 1);

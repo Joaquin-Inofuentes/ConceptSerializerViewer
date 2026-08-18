@@ -1364,14 +1364,42 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         );
       };
 
+      // Log de auditoria, apagado por defecto: activar con
+      // `window.__viewerDebugCache = true` en la consola. Sirve para ver EN
+      // VIVO por que un recurso se vuelve a pedir (o no) en cada sync.
+      const debugCache = (window as any).__viewerDebugCache === true;
+      const logCache = debugCache ? (...args: unknown[]) => console.log("[cache]", ...args) : () => {};
+
       const necesita = (id: string) => {
         const cargada = imagesRef.current[id];
         if (!cargada) return true;
+        // Lista simple de "ya cargados": si el recurso esta en el FIFO de
+        // resolucion plena (hotFifoRef, tope 2), se lo da por definitivamente
+        // cargado y NI SIQUIERA se evaluan recorte o escala. Es literalmente
+        // la lista que se pidio: preguntar "esta cargado?" ANTES de decidir
+        // recargar. Sin esto, aunque `cubre()` y la escala esten bien
+        // calculados, un plano "hot" seguia re-evaluandose (y a veces
+        // re-pidiendose) en cada sync tras un pan/zoom chico — el "mini
+        // flash" del cartel "Afinando...". Con esto, un recurso hot queda
+        // congelado tal cual esta hasta que salga de la lista (lo desaloja
+        // un tercero, ver marcarHot): panear/zoomear un poco adentro de el
+        // no dispara NINGUN intento, ni de red ni de rasterizado.
+        if (hotFifoRef.current.includes(id)) {
+          logCache("ya-cargado (hot), se omite", id.slice(0, 8));
+          return false;
+        }
         // La cobertura se chequea contra lo EXACTO (sin margen): comparar
         // contra `regiones` (que ya trae margen) haria que el margen no
         // sirva de nada (ver comentario en regionesVisibles).
-        if (!cubre(cargada.region ?? null, regionesExactas[id])) return true;
-        return necesaria > (escalaPorRecursoRef.current[id] ?? 0) * TOLERANCIA_ESCALA;
+        if (!cubre(cargada.region ?? null, regionesExactas[id])) {
+          logCache("recarga: recorte no cubre", id.slice(0, 8));
+          return true;
+        }
+        const faltaEscala = necesaria > (escalaPorRecursoRef.current[id] ?? 0) * TOLERANCIA_ESCALA;
+        if (faltaEscala) {
+          logCache("recarga: escala insuficiente", id.slice(0, 8), "pedida=" + necesaria.toFixed(2), "actual=" + (escalaPorRecursoRef.current[id] ?? 0).toFixed(2));
+        }
+        return faltaEscala;
       };
 
       // Los que ni siquiera tienen bitmap van primero: un recuadro vacio
@@ -1391,6 +1419,13 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       // se sabe que pedazo va a mirar el usuario y el recorte solo tiene
       // sentido para lo que ya esta en cuadro.
       const pendientes = [...sinBitmap, ...aRefinar];
+      if (debugCache) {
+        logCache(
+          `sync: visibles=${visibles.length} hotFifo=[${hotFifoRef.current.map((x) => x.slice(0, 8))}]`,
+          `sinBitmap=[${sinBitmap.map((x) => x.slice(0, 8))}]`,
+          `aRefinar=[${aRefinar.map((x) => x.slice(0, 8))}]`
+        );
+      }
 
       // Marcar como recien usados y desalojar SIEMPRE, incluso sin nada nuevo
       // que traer: si no, quedarse paneando dentro de una zona ya cacheada
