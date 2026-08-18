@@ -276,6 +276,26 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
    */
   const hotFifoRef = useRef<string[]>([]);
   const MAX_HOT_FIFO = 2;
+  /**
+   * Recursos que ya llegaron al tope DURO de pixeles con el que se pidieron
+   * (`maxPixelsPedido` en `cargarRecursos` — mas alto para lo que esta
+   * "hot" que para el anillo de fondo, ver ese comentario). Pedir mas
+   * resolucion para uno de estos con ESE MISMO tope nunca va a lograr nada:
+   * `necesita()` deja de insistir apenas lo detecta.
+   *
+   * Hace falta para no repetir, con otro disparador, el mismo bug que la
+   * lista "ya cargado" de hotFifoRef vino a arreglar: a zoom muy alto,
+   * `necesaria` (lo que se necesitaria para verse nitido) queda MUY por
+   * encima de lo que el presupuesto permite, y sin este freno cada gesto de
+   * pan o zoom volvia a pedir el recurso entero (el mismo "Afinando..." que
+   * nunca mejoraba nada) — comprobado en pruebas: la escala lograda se
+   * quedaba fija en ~4.3 contra una escala pedida de ~15, y aun asi se
+   * reintentaba en CADA sync. En cambio, si el que se quedo corto fue el
+   * presupuesto GLOBAL (compartido con otros recursos en pantalla en ese
+   * momento, no el techo de este recurso), no se marca aca: en el proximo
+   * intento, con otros recursos ya desalojados, puede conseguir mas.
+   */
+  const topeAlcanzadoRef = useRef<Record<string, boolean>>({});
   const layerConfigsRef = useRef<Record<string, LayerConfig>>(layerConfigs);
   const isolatedLayerRef = useRef<string | null>(isolatedLayer);
   const imageOpacityRef = useRef<number>(imageOpacity ?? 1);
@@ -1218,6 +1238,20 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
   ) => {
     if (!doc) return;
     if (Object.keys(dibujado).length === 0) return;
+    // `maxPixelsPerResource` esta pensado para cuando hay MUCHOS recursos a
+    // la vez (la vista general de un dibujo con 96 planos): ahi hace falta
+    // repartir poco por cada uno. Pero para lo que el usuario esta MIRANDO
+    // de verdad (`hot`, el mismo grupo que cuenta para el tope FIFO de 2 en
+    // hotFifoRef) ese techo se queda corto enseguida en pantallas de alta
+    // densidad — medido: un plano grande a solo 1.3x de zoom ya lo saturaba,
+    // dejandolo pixelado para siempre por mas zoom que se pidiera despues.
+    // Como el propio FIFO ya garantiza que como mucho hay 2 recursos en
+    // este grupo a la vez, se les puede dar mucho mas presupuesto (hasta
+    // 4x, topeado a la mitad del total del documento) sin arriesgar la RAM:
+    // el anillo de fondo (hot=false) sigue con el techo chico de siempre.
+    const maxPixelsPedido = hot
+      ? Math.min(budgets.maxPixelsPerResource * 4, Math.floor(budgets.maxImagePixels / 2))
+      : budgets.maxPixelsPerResource;
     const targets: Record<string, { width: number; height: number; region?: Region }> = {};
     Object.entries(dibujado).forEach(([id, size]) => {
       const region = regiones?.[id];
@@ -1243,7 +1277,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     const nuevas = await loadResourceImages(doc, {
       targets,
       quality: RESOURCE_QUALITY,
-      maxPixels: budgets.maxPixelsPerResource,
+      maxPixels: maxPixelsPedido,
       maxTotalPixels: budgets.maxImagePixels,
       pixelesYaUsados: yaUsados,
       minSide: 256,
@@ -1281,9 +1315,15 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         // presupuesto al alejarse.
         const anchoDoc = dibujado[id]?.width ?? 0;
         const anchoReal = (recurso.img as any).width ?? 0;
+        const altoReal = (recurso.img as any).height ?? 0;
         const fraccion = recurso.region?.w ?? 1;
         escalaPorRecursoRef.current[id] =
           anchoDoc > 0 && anchoReal > 0 ? anchoReal / (anchoDoc * fraccion) : escala * RESOURCE_QUALITY;
+        // Si lo que se logro ya esta pegado al tope DURO por recurso, pedir
+        // mas nunca va a mejorarlo (ver comentario en topeAlcanzadoRef): se
+        // marca aca, con el mismo dato (`anchoReal`/`altoReal`) que ya se usa
+        // para la escala lograda, nada nuevo que calcular.
+        topeAlcanzadoRef.current[id] = anchoReal * altoReal >= maxPixelsPedido * 0.95;
         usoRef.current[id] = ++relojUsoRef.current;
         // Solo cuenta para el tope FIFO si de verdad llego a resolucion
         // "full HD": en una vista general de un dibujo con muchos planos,
@@ -1291,7 +1331,6 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         // pantalla, y contarlos ahi desactivaria el tope de entrada (el
         // primer sync ya deja 19 recursos "hot"). El umbral distingue esa
         // vista general de haberse acercado a un plano en particular.
-        const altoReal = (recurso.img as any).height ?? 0;
         if (hot && Math.max(anchoReal, altoReal) >= UMBRAL_HOT_LADO_PX) marcarHot(id, visiblesActuales);
         listos++;
         statsRef.current.recursosCargados = Object.keys(imagesRef.current).length;
@@ -1370,6 +1409,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       usoRef.current = {};
       fallosRef.current = {};
       hotFifoRef.current = [];
+      topeAlcanzadoRef.current = {};
       // Los workers guardan los ultimos PDFs parseados para abaratar el
       // refinado por zoom. Al cerrar el dibujo ya no sirven, y si no se
       // sueltan se suman a la RAM del siguiente.
@@ -1442,27 +1482,34 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       const necesita = (id: string) => {
         const cargada = imagesRef.current[id];
         if (!cargada) return true;
-        // Lista simple de "ya cargados": si el recurso esta en el FIFO de
-        // resolucion plena (hotFifoRef, tope 2), se lo da por definitivamente
-        // cargado y NI SIQUIERA se evaluan recorte o escala. Es literalmente
-        // la lista que se pidio: preguntar "esta cargado?" ANTES de decidir
-        // recargar. Sin esto, aunque `cubre()` y la escala esten bien
-        // calculados, un plano "hot" seguia re-evaluandose (y a veces
-        // re-pidiendose) en cada sync tras un pan/zoom chico — el "mini
-        // flash" del cartel "Afinando...". Con esto, un recurso hot queda
-        // congelado tal cual esta hasta que salga de la lista (lo desaloja
-        // un tercero, ver marcarHot): panear/zoomear un poco adentro de el
-        // no dispara NINGUN intento, ni de red ni de rasterizado.
-        if (hotFifoRef.current.includes(id)) {
-          logCache("ya-cargado (hot), se omite", id.slice(0, 8));
-          return false;
-        }
-        // La cobertura se chequea contra lo EXACTO (sin margen): comparar
-        // contra `regiones` (que ya trae margen) haria que el margen no
-        // sirva de nada (ver comentario en regionesVisibles).
-        if (!cubre(cargada.region ?? null, regionesExactas[id])) {
+        // "Ya cargado, no re-evaluar el RECORTE": un recurso "hot" (FIFO de
+        // resolucion plena, tope 2) no vuelve a chequear cobertura de
+        // recorte. Sin esto, paneos chicos dentro de un plano ya visto en
+        // full HD seguian re-pidiendolo por el mismo motivo padded-vs-exact
+        // (ver `cubre`/`regionesExactas` mas arriba) en casos limite — el
+        // "mini flash" del cartel "Afinando...".
+        //
+        // Ojo: esto NO congela la escala. La primera version de este fix
+        // tambien saltaba el chequeo de escala para todo "hot", y eso
+        // dejaba un plano pixelado para siempre en cuanto el usuario
+        // seguia haciendo zoom despues de que se volviera "hot" — un
+        // recurso "hot" tiene que poder seguir afinandose si el usuario
+        // pide mas zoom, solo no debe re-rasterizar por un simple paneo.
+        const esHot = hotFifoRef.current.includes(id);
+        if (!esHot && !cubre(cargada.region ?? null, regionesExactas[id])) {
           logCache("recarga: recorte no cubre", id.slice(0, 8));
           return true;
+        }
+        // "Ya cargado, no insistir con la ESCALA": si este recurso ya pego
+        // contra el techo DURO de pixeles por recurso (topeAlcanzadoRef),
+        // pedir mas nunca va a mejorarlo — sin este freno, a zoom muy alto
+        // (mas alla de lo que el presupuesto del dispositivo permite) CADA
+        // gesto de pan o zoom volvia a intentar el rasterizado completo sin
+        // lograr nada mejor, el mismo "mini flash" pero disparado por la
+        // escala en vez de por el recorte.
+        if (topeAlcanzadoRef.current[id]) {
+          logCache("tope de pixeles alcanzado, no se pide mas", id.slice(0, 8));
+          return false;
         }
         const faltaEscala = necesaria > (escalaPorRecursoRef.current[id] ?? 0) * TOLERANCIA_ESCALA;
         if (faltaEscala) {

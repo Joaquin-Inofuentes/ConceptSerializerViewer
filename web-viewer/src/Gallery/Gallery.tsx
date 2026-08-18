@@ -338,6 +338,10 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
       const archivos = folderTreeCacheRef.current.get(destino.id)?.files || [];
       const archivo = archivos.find((f) => aSlug(f.name) === resto[0]);
       if (archivo) {
+        // Mismo evento que un click en la tarjeta (`handleOpen`): sin esto,
+        // abrir por un link compartido/directo — que es exactamente para lo
+        // que existe esta ruta — quedaba invisible en las metricas de uso.
+        logAbrir(archivo.id, archivo.name, destino.id);
         onOpen(archivo.id, archivo.name, null, pila.slice(1).map((c) => c.name));
       }
     })();
