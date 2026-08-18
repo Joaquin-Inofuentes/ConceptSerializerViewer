@@ -7,9 +7,14 @@ interface InteractivePreviewProps {
   src: string;
   fileName?: string;
   onClose: () => void;
+  /** true mientras se pide la version completa sin recortar (ver
+   * `abrirFoto` en App.tsx): `src` todavia es la miniatura chica de la
+   * galeria. Se muestra un cartel chico en vez de dejar que el usuario crea
+   * que la carga se colgo. */
+  loadingFull?: boolean;
 }
 
-export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fileName, onClose }) => {
+export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fileName, onClose, loadingFull }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -372,17 +377,36 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
         </div>
       </div>
 
-      <button 
+      <button
         onClick={onClose}
         style={{
-          position: 'absolute', top: '20px', right: '20px', 
-          zIndex: 10001, background: 'rgba(255,255,255,0.2)', 
-          border: 'none', color: 'white', padding: '8px 16px', 
+          position: 'absolute', top: '20px', right: '20px',
+          zIndex: 10001, background: 'rgba(255,255,255,0.2)',
+          border: 'none', color: 'white', padding: '8px 16px',
           borderRadius: '4px', cursor: 'pointer'
         }}
       >
         Cerrar (ESC)
       </button>
+
+      {loadingFull && (
+        <div
+          style={{
+            position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)',
+            zIndex: 10001, display: 'flex', alignItems: 'center', gap: '0.5rem',
+            background: 'rgba(0,0,0,0.55)', color: 'white', padding: '0.4rem 0.9rem',
+            borderRadius: '999px', fontSize: '0.8rem', pointerEvents: 'none',
+          }}
+        >
+          <span
+            style={{
+              width: '8px', height: '8px', borderRadius: '50%', background: '#fff',
+              animation: 'pulseDot 1s ease-in-out infinite',
+            }}
+          />
+          Cargando full HD…
+        </div>
+      )}
     </div>
   );
 };

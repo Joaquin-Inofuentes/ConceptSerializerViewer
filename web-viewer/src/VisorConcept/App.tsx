@@ -95,12 +95,67 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
   
   // Image Thumbnails & Preview State
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
+  // La miniatura de la galeria (`imageUrls[id]`) es una previsualizacion
+  // chica (384px de lado, ver `pedirPreviews` en Viewer.tsx) sacada del
+  // bitmap que en ESE momento tenga cacheado el lienzo principal — que
+  // puede ser un RECORTE si el usuario hizo zoom sobre ese recurso. Abrir
+  // la foto a pantalla completa mostrando eso directamente es el bug de
+  // "sale recortada y nunca llega a full HD": no hay ningun pedido de mas
+  // resolucion, la miniatura chica es lo unico que se muestra siempre.
+  // Ahora se abre con esa miniatura al instante (no dejar la pantalla en
+  // blanco) y en paralelo se pide la version completa sin recortar
+  // (`obtenerImagenCompleta`, ver Viewer.tsx) para reemplazarla apenas
+  // llega.
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [previewLoadingFull, setPreviewLoadingFull] = useState(false);
+  // Se incrementa en cada apertura/cierre: si el pedido de full-res de una
+  // foto vieja resuelve DESPUES de que el usuario ya cerro o abrio otra,
+  // este token evita que ese resultado tardio pise la foto actual (o
+  // reabra el visor de fotos ya cerrado).
+  const previewTokenRef = useRef(0);
+
+  const cerrarFoto = useCallback(() => {
+    previewTokenRef.current++;
+    setPreviewImage(null);
+    setPreviewLoadingFull(false);
+  }, []);
+
+  const abrirFoto = useCallback((resourceId: string, thumbUrl: string) => {
+    previewTokenRef.current++;
+    const token = previewTokenRef.current;
+    setPreviewImage(thumbUrl);
+    setPreviewLoadingFull(true);
+    void viewerRef.current
+      ?.obtenerImagenCompleta(resourceId)
+      .then((full) => {
+        if (previewTokenRef.current !== token) return;
+        if (full) setPreviewImage(full);
+        setPreviewLoadingFull(false);
+      })
+      .catch(() => {
+        if (previewTokenRef.current !== token) return;
+        setPreviewLoadingFull(false);
+      });
+  }, []);
 
   const layerMenuRef = useRef<HTMLDivElement>(null);
   const imageMenuRef = useRef<HTMLDivElement>(null);
   const exportMenuRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<ViewerHandle>(null);
+
+  // Expuesto para benchmarks/diagnostico, mismo patron que
+  // `__conceptsPedirPreviews` en Viewer.tsx: permite probar el flujo
+  // miniatura -> full HD de la galeria de fotos sin instrumentar la UI.
+  useEffect(() => {
+    (window as any).__conceptsAbrirFoto = abrirFoto;
+    (window as any).__conceptsPreviewState = () => ({ previewImage, previewLoadingFull });
+    (window as any).__conceptsResourceIds = () => doc?.resourceIds ?? [];
+    return () => {
+      delete (window as any).__conceptsAbrirFoto;
+      delete (window as any).__conceptsPreviewState;
+      delete (window as any).__conceptsResourceIds;
+    };
+  }, [abrirFoto, previewImage, previewLoadingFull, doc]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -108,12 +163,12 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
         setShowLayerMenu(false);
         setShowImageMenu(false);
         setShowExportMenu(false);
-        setPreviewImage(null);
+        cerrarFoto();
       }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [cerrarFoto]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent | TouchEvent) => {
@@ -512,7 +567,7 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
                     <div
                       key={id}
                       className={`gallery-item ${url ? '' : 'gallery-item-lejos'}`}
-                      onClick={() => url && setPreviewImage(url)}
+                      onClick={() => url && abrirFoto(id, url)}
                       title={url ? 'Ver la foto' : 'Acercate en el dibujo para traerla'}
                     >
                         {url ? (
@@ -583,7 +638,12 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
         </div>
 
         {previewImage && (
-          <InteractivePreview src={previewImage} fileName={fileName} onClose={() => setPreviewImage(null)} />
+          <InteractivePreview
+            src={previewImage}
+            fileName={fileName}
+            loadingFull={previewLoadingFull}
+            onClose={cerrarFoto}
+          />
         )}
       </main>
     </div>

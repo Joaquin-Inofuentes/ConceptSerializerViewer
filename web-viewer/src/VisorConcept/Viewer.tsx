@@ -73,6 +73,19 @@ export interface ViewerHandle {
   zoomAll: () => void;
   /** Metricas en vivo, para benchmarks y diagnostico. */
   getStats: () => ViewerStats;
+  /**
+   * Pide una version COMPLETA (sin recortar) y en alta resolucion de un
+   * recurso puntual, para la vista de foto a pantalla completa.
+   *
+   * Independiente del cache de canvas (`imagesRef`): ese cache puede tener
+   * guardado solo un RECORTE del recurso (si el usuario hizo zoom sobre el
+   * en el lienzo principal, ver `Region` en regionesVisibles), y mostrar ese
+   * recorte en la vista de foto es el bug de "sale recortada". Rasteriza de
+   * nuevo, aparte, a una resolucion pensada para pantalla completa (no la
+   * de export a 600 DPI, que para una foto en pantalla es derrochar RAM).
+   * Devuelve un data URL listo para <img>, o null si no se pudo.
+   */
+  obtenerImagenCompleta: (resourceId: string) => Promise<string | null>;
 }
 
 export interface ViewerStats {
@@ -711,7 +724,63 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       } finally {
         proveedor.liberar();
       }
-    }
+    },
+    obtenerImagenCompleta: async (resourceId: string) => {
+      const doc = docRef.current;
+      const docCache = docCacheRef.current;
+      if (!doc || !docCache) return null;
+      // El tamaño INTRINSECO del recurso (antes de la matriz de colocacion):
+      // es el mismo `ancho`/`alto` que espera `dibujarRecurso`, y es
+      // independiente de en que parte del dibujo este puesto o a que escala.
+      const item = docCache.items.find((i) => i.kind === "image" && i.resourceId === resourceId);
+      if (!item || item.kind !== "image") return null;
+      const anchoBase = item.width || 500;
+      const altoBase = item.height || 500;
+      // "Full HD": el lado mayor apunta a un poco mas de 1920 para que, tras
+      // el clamp por presupuesto/resolucion nativa dentro de
+      // loadResourceImages, no quede corto. Una foto real (bitmap) no gana
+      // nada mas alla de su resolucion nativa — eso lo resuelve `clampTarget`
+      // solo; un PDF (plano vectorial) sí aprovecha el pedido entero.
+      const LADO_OBJETIVO = 2200;
+      const escala = Math.min(LADO_OBJETIVO / Math.max(anchoBase, altoBase), 12);
+      const w = Math.max(1, Math.round(anchoBase * escala));
+      const h = Math.max(1, Math.round(altoBase * escala));
+
+      const cargados = await loadResourceImages(doc, {
+        targets: { [resourceId]: { width: w, height: h } }, // sin `region`: pagina completa, nunca recortada
+        quality: 1,
+        maxPixels: budgets.maxPixelsPerResource,
+        maxTotalPixels: budgets.maxPixelsPerResource,
+        minSide: 512,
+        timeoutMs: 30000,
+        only: [resourceId],
+        // Sin fileId: es una resolucion DISTINTA a la de pantalla (a
+        // proposito, igual que el export unas lineas mas arriba) — guardarla
+        // en el mismo cache persistente desalojaria las versiones de
+        // pantalla, que son las que ese cache existe para servir.
+      });
+      const recurso = cargados[resourceId];
+      if (!recurso) return null;
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return null;
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        // Mismo helper que usan el lienzo principal y el export: deshace el
+        // espejo/EXIF de las fotos y respeta el recorte si `loadResourceImages`
+        // igual tuvo que darnos uno mas chico que el nativo.
+        dibujarRecurso(ctx, recurso, w, h, item.isPhoto);
+        const url = canvas.toDataURL("image/jpeg", 0.92);
+        canvas.width = 0;
+        canvas.height = 0;
+        return url;
+      } finally {
+        liberarImagen(recurso.img);
+      }
+    },
     // `budgets` sale de un useMemo con dependencias vacias, asi que es estable
     // toda la vida del componente: el handle se sigue creando una sola vez.
   }), [budgets]);
