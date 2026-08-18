@@ -866,9 +866,27 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
    * matriz), asi funciona igual con los planos rotados -90 grados, que son
    * casi todos en esta carpeta.
    */
-  const regionesVisibles = useCallback((): Record<string, Region> => {
-    const out: Record<string, Region> = {};
-    if (!docCache) return out;
+  /**
+   * Devuelve DOS mapas: `pedida` (lo que se va a pedir/cachear si hace falta
+   * rasterizar, con margen) y `exacta` (lo que de verdad hace falta ver
+   * ahora, SIN margen).
+   *
+   * Antes solo existia `pedida`, y `cubre()` comparaba el recorte cacheado
+   * contra ella. Eso hacia inutil el margen: `pedida` YA tiene el margen
+   * sumado, asi que un recorte cacheado (tambien con margen, centrado en la
+   * vista VIEJA) casi nunca alcanza a cubrir el margen de la vista NUEVA en
+   * cuanto el usuario panea un poco — dos ventanas del mismo ancho, una
+   * corrida respecto de la otra, no se contienen aunque el corrimiento sea
+   * chico. Resultado: CUALQUIER paneo, por corto que fuera, invalidaba el
+   * recorte y disparaba un re-rasterizado completo del plano — el bug
+   * reportado de "zoom y despues paneo, se rompe y recarga". La cobertura
+   * tiene que chequearse contra lo que de verdad hace falta mostrar (`exacta`,
+   * sin margen): ahi el margen sí funciona como colchon.
+   */
+  const regionesVisibles = useCallback((): { pedida: Record<string, Region>; exacta: Record<string, Region> } => {
+    const pedida: Record<string, Region> = {};
+    const exacta: Record<string, Region> = {};
+    if (!docCache) return { pedida, exacta };
     // Un mismo recurso puede estar COLOCADO varias veces en el dibujo (en el
     // mas pesado hay planos puestos 3 veces, a distinto tamaño y en distinto
     // lugar), y de cada recurso hay UN solo bitmap. Asi que el recorte tiene
@@ -882,6 +900,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     // ellas aparecia una tira blanca o directamente nada. Era el bug de "con
     // zoom o paneo se pierden las imagenes".
     const union = new Map<string, { x0: number; y0: number; x1: number; y1: number } | null>();
+    const unionExacta = new Map<string, { x0: number; y0: number; x1: number; y1: number } | null>();
     const pan = panRef.current;
     const zoom = zoomRef.current;
     const size = sizeRef.current;
@@ -910,6 +929,27 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         if (rx > rMaxX) rMaxX = rx;
         if (ry < rMinY) rMinY = ry;
         if (ry > rMaxY) rMaxY = ry;
+      }
+      // La vista exacta, sin margen, en fracciones 0..1 del recurso.
+      let ex0 = Math.max(0, Math.min(1, rMinX / item.width));
+      let ey0 = Math.max(0, Math.min(1, rMinY / item.height));
+      let ex1 = Math.max(0, Math.min(1, rMaxX / item.width));
+      let ey1 = Math.max(0, Math.min(1, rMaxY / item.height));
+      if (ex1 - ex0 > 0.001 && ey1 - ey0 > 0.001) {
+        const previaE = unionExacta.get(item.resourceId);
+        if (previaE !== null) {
+          unionExacta.set(
+            item.resourceId,
+            previaE
+              ? {
+                  x0: Math.min(previaE.x0, ex0),
+                  y0: Math.min(previaE.y0, ey0),
+                  x1: Math.max(previaE.x1, ex1),
+                  y1: Math.max(previaE.y1, ey1),
+                }
+              : { x0: ex0, y0: ey0, x1: ex1, y1: ey1 }
+          );
+        }
       }
       // Un poco de margen para poder desplazarse sin re-rasterizar en cada
       // pixel de arrastre.
@@ -955,9 +995,17 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       // Tras unir, el recorte puede haber crecido hasta cubrir casi todo; ahi
       // ya no aporta y conviene la pagina entera (que ademas se cachea).
       if (w > 0.9 && h > 0.9) continue;
-      out[id] = { x: caja.x0, y: caja.y0, w, h };
+      pedida[id] = { x: caja.x0, y: caja.y0, w, h };
     }
-    return out;
+    for (const [id, caja] of unionExacta) {
+      if (!caja) continue;
+      const w = caja.x1 - caja.x0;
+      const h = caja.y1 - caja.y0;
+      if (!(w > 0.001) || !(h > 0.001)) continue;
+      if (w > 0.9 && h > 0.9) continue;
+      exacta[id] = { x: caja.x0, y: caja.y0, w, h };
+    }
+    return { pedida, exacta };
   }, [docCache]);
 
   // --- Recursos embebidos (fotos / PDFs) ---------------------------------
@@ -1299,7 +1347,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       // corto de distancia para que no aparezcan recuadros vacios al mover.
       const cercanos = recursosVisibles(MARGEN_ANILLO);
       if (cercanos.length === 0) return;
-      const regiones = regionesVisibles();
+      const { pedida: regiones, exacta: regionesExactas } = regionesVisibles();
 
       // Un recorte cargado cubre lo pedido? Importa sobre todo al ALEJARSE:
       // un bitmap recortado dibuja solo su pedazo, asi que sin este chequeo
@@ -1319,7 +1367,10 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       const necesita = (id: string) => {
         const cargada = imagesRef.current[id];
         if (!cargada) return true;
-        if (!cubre(cargada.region ?? null, regiones[id])) return true;
+        // La cobertura se chequea contra lo EXACTO (sin margen): comparar
+        // contra `regiones` (que ya trae margen) haria que el margen no
+        // sirva de nada (ver comentario en regionesVisibles).
+        if (!cubre(cargada.region ?? null, regionesExactas[id])) return true;
         return necesaria > (escalaPorRecursoRef.current[id] ?? 0) * TOLERANCIA_ESCALA;
       };
 
