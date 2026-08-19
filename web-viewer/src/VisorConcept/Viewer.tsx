@@ -2217,6 +2217,16 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           x1: it.maxX,
           y1: it.maxY,
           isPhoto: it.isPhoto,
+          // Las cuatro esquinas REALES, ya transformadas. La caja de arriba es
+          // el rectangulo que las contiene, y no alcanza para saber si un punto
+          // cae sobre el plano: casi todos entran rotados, asi que medir "hay
+          // papel" dentro de la caja mide tambien el aire de alrededor.
+          quad: [[0, 0], [it.width, 0], [it.width, it.height], [0, it.height]].map(
+            ([x, y]) => [
+              it.transform[0] * x + it.transform[4] * y + it.transform[12],
+              it.transform[1] * x + it.transform[5] * y + it.transform[13],
+            ] as [number, number]
+          ),
         }));
 
     // Leer y fijar el encuadre, para poder volver EXACTAMENTE a la misma vista

@@ -70,11 +70,20 @@ for (const f of objetivos) {
    * Estado del lienzo tras esperar a que se asiente el refinado.
    *
    * `pctPapel` es la medida que de verdad detecta una imagen perdida: mira
-   * SOLO los pixeles que caen dentro del rectangulo donde va el plano y cuenta
-   * cuantos son papel (claros) en vez del fondo del lienzo. Contar "pixeles
-   * distintos del fondo" en TODA la pantalla no sirve aca, porque un plano
-   * arquitectonico es casi todo blanco y mirado de cerca casi no tiene tinta:
-   * daba 3% y parecia un fallo cuando estaba perfecto.
+   * SOLO los pixeles que caen donde va el plano y cuenta cuantos son papel
+   * (claros) en vez del fondo del lienzo. Contar "pixeles distintos del fondo"
+   * en TODA la pantalla no sirve aca, porque un plano arquitectonico es casi
+   * todo blanco y mirado de cerca casi no tiene tinta: daba 3% y parecia un
+   * fallo cuando estaba perfecto.
+   *
+   * Se muestrea dentro del CUADRILATERO real del plano intersecado con la
+   * pantalla, no dentro de su caja contenedora. Con la caja, en las paradas de
+   * esquina se terminaba midiendo una franja de 13 px —el 0,8% de la pantalla,
+   * contra el 55% en la parada del centro— y ese numero es ruido: daba 0% o
+   * 100% segun un par de pixeles, asi que la mitad de las esquinas "fallaba"
+   * en cualquier version del visor, incluidas las que dibujan el plano nitido
+   * y legible. Ademas casi todos los planos entran rotados, asi que la caja
+   * contiene bastante aire que no es parte del plano.
    */
   const medir = async (esperaMs, caja) => {
     await new Promise((r) => setTimeout(r, esperaMs));
@@ -91,27 +100,40 @@ for (const f of objetivos) {
       }
 
       let pctPapel = null;
-      if (caja) {
+      let pctPantallaMedida = null;
+      if (caja && caja.quad) {
         const v = window.__viewerVista();
         const dpr = c.width / c.clientWidth;
-        // Centro del plano en pixeles del canvas, con margen para no caer
-        // fuera del cuadrilatero cuando la rotacion no es exactamente 90.
-        const aPantalla = (x, y) => [(x * v.zoom + v.panX) * dpr, (y * v.zoom + v.panY) * dpr];
-        const mx = (caja.x1 - caja.x0) * 0.2;
-        const my = (caja.y1 - caja.y0) * 0.2;
-        const [sx0, sy0] = aPantalla(caja.x0 + mx, caja.y0 + my);
-        const [sx1, sy1] = aPantalla(caja.x1 - mx, caja.y1 - my);
-        const x0 = Math.max(0, Math.round(Math.min(sx0, sx1)));
-        const x1 = Math.min(c.width - 1, Math.round(Math.max(sx0, sx1)));
-        const y0 = Math.max(0, Math.round(Math.min(sy0, sy1)));
-        const y1 = Math.min(c.height - 1, Math.round(Math.max(sy0, sy1)));
+        const aPantalla = ([x, y]) => [(x * v.zoom + v.panX) * dpr, (y * v.zoom + v.panY) * dpr];
+        const poly = caja.quad.map(aPantalla);
+        // Se encoge el cuadrilatero hacia su centro para no muestrear el borde
+        // mismo, donde el antialias mezcla papel y fondo.
+        const cxp = poly.reduce((a, p) => a + p[0], 0) / 4;
+        const cyp = poly.reduce((a, p) => a + p[1], 0) / 4;
+        const dentroPoly = poly.map(([x, y]) => [cxp + (x - cxp) * 0.96, cyp + (y - cyp) * 0.96]);
+        const enPoly = (px, py) => {
+          let s = 0;
+          for (let i = 0; i < 4; i++) {
+            const [ax, ay] = dentroPoly[i];
+            const [bx, by] = dentroPoly[(i + 1) % 4];
+            const cr = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+            if (cr > 0) s++;
+            else if (cr < 0) s--;
+          }
+          return Math.abs(s) === 4;
+        };
+        const x0 = Math.max(0, Math.floor(Math.min(...dentroPoly.map((p) => p[0]))));
+        const x1 = Math.min(c.width - 1, Math.ceil(Math.max(...dentroPoly.map((p) => p[0]))));
+        const y0 = Math.max(0, Math.floor(Math.min(...dentroPoly.map((p) => p[1]))));
+        const y1 = Math.min(c.height - 1, Math.ceil(Math.max(...dentroPoly.map((p) => p[1]))));
         if (x1 > x0 && y1 > y0) {
           let papel = 0;
           let m = 0;
-          const pasoX = Math.max(1, Math.floor((x1 - x0) / 60));
-          const pasoY = Math.max(1, Math.floor((y1 - y0) / 60));
+          const pasoX = Math.max(1, Math.floor((x1 - x0) / 120));
+          const pasoY = Math.max(1, Math.floor((y1 - y0) / 120));
           for (let y = y0; y <= y1; y += pasoY) {
             for (let x = x0; x <= x1; x += pasoX) {
+              if (!enPoly(x, y)) continue;
               const i = (y * c.width + x) * 4;
               m++;
               // Papel = claro. El fondo del lienzo es oscuro (tema oscuro) o
@@ -119,13 +141,17 @@ for (const f of objetivos) {
               if (d[i] > 150 && d[i + 1] > 150 && d[i + 2] > 150) papel++;
             }
           }
-          pctPapel = m ? +((papel / m) * 100).toFixed(1) : null;
+          // Cuantos pixeles REALES de pantalla se miraron. Si es una miseria,
+          // el porcentaje no dice nada y no hay que tratarlo como veredicto.
+          pctPantallaMedida = +(((x1 - x0) * (y1 - y0) * 100) / (c.width * c.height)).toFixed(2);
+          pctPapel = m >= 40 ? +((papel / m) * 100).toFixed(1) : null;
         }
       }
 
       return {
         pctContenido: +((contenido / n) * 100).toFixed(2),
         pctPapel,
+        pctPantallaMedida,
         ...(window.__viewerCobertura?.() ?? {}),
       };
     }, caja || null);
@@ -192,7 +218,7 @@ for (const f of objetivos) {
       fallos++;
       fallosTotales++;
       console.log(
-        `  FALLA parada ${i} (${p.tipo} de ${p.id.slice(0, 8)}): bitmap ${asentado.visiblesConBitmap}/${asentado.visibles}, papel ${asentado.pctPapel}% (al instante ${alInstante.pctPapel}%) faltan=${(asentado.faltantes || []).join(",")}`
+        `  FALLA parada ${i} (${p.tipo} de ${p.id.slice(0, 8)}): bitmap ${asentado.visiblesConBitmap}/${asentado.visibles}, papel ${asentado.pctPapel}% (al instante ${alInstante.pctPapel}%, se midio el ${asentado.pctPantallaMedida}% de la pantalla) faltan=${(asentado.faltantes || []).join(",")}`
       );
       if (fallos <= 4) await page.screenshot({ path: path.join(OUT, `${f.id}-falla-${i}.png`) });
     }
