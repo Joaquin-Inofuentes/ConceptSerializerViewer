@@ -96,8 +96,16 @@ export interface RecursoRasterizado {
   img: CanvasImageSource;
   /** null = la imagen cubre el recurso completo. */
   region: Region | null;
-  /** El navegador roto la foto por su EXIF y hay que deshacerlo al dibujar. */
-  compensarExif?: boolean;
+  /**
+   * Orientacion EXIF del recurso (1..8), o 0/undefined si no tiene. El
+   * navegador ya la aplico al decodificar y `dibujarRecurso` la deshace, porque
+   * la caja donde el documento coloca la imagen esta en su tamaño CRUDO.
+   *
+   * Es el valor exacto y no un booleano: antes se guardaba "hay que compensar"
+   * y se rotaba -90 para todos los casos, lo que dejaba las fotos EXIF 8 al
+   * reves y no tocaba las EXIF 3.
+   */
+  exif?: number;
 }
 
 export interface LoadResourcesOptions {
@@ -537,7 +545,7 @@ async function rasterizarEnMain(
  * respecto de la caja donde el documento lo coloca. `imageOrientation: "none"`
  * no ayuda: se probo y devuelve el mismo bitmap girado.
  */
-async function orientacionExif(blob: Blob): Promise<number> {
+export async function orientacionExifDe(blob: Blob): Promise<number> {
   const b = new Uint8Array(await blob.slice(0, 128 * 1024).arrayBuffer());
   if (b[0] !== 0xff || b[1] !== 0xd8) return 0;
   let i = 2;
@@ -759,7 +767,11 @@ export async function loadResourceImages(
 
           const header = await blob.slice(0, 5).text();
           const vectorial = header === "%PDF-";
-          const region = target?.region;
+          // La region llega en fracciones de la CAJA del elemento (imagen
+          // cruda). El rasterizador recorta el bitmap que decodifica el
+          // navegador, que para una foto con EXIF 5-8 tiene los ejes
+          // intercambiados: sin convertirla se recortaba la parte equivocada.
+          const regionCaja = target?.region;
 
           // El tamano nativo solo se necesita si NO hay un destino util:
           // con destino, un PDF se rasteriza a lo que se le pida y un bitmap
@@ -775,14 +787,15 @@ export async function loadResourceImages(
           // zoom. Antes esto estaba guardado por `!region`, asi que una foto
           // con EXIF 5-8 se veia bien de lejos y girada en cuanto el zoom
           // activaba el camino de recorte.
-          let compensarExif = false;
-          if (!vectorial && pedidoW > 0 && pedidoH > 0) {
-            const o = await orientacionExif(blob);
-            if (o >= 5 && o <= 8) {
-              compensarExif = true;
-              const t = pedidoW; pedidoW = pedidoH; pedidoH = t;
-            }
+          let exif = 0;
+          if (!vectorial) exif = await orientacionExifDe(blob);
+          // Solo 5..8 intercambian ancho y alto: para esas, el bitmap que
+          // decodifica el navegador esta "de canto" respecto de la caja y hay
+          // que pedirlo con los lados dados vuelta.
+          if (exif >= 5 && exif <= 8 && pedidoW > 0 && pedidoH > 0) {
+            const t = pedidoW; pedidoW = pedidoH; pedidoH = t;
           }
+          const region = regionCaja ? regionEnBitmap(regionCaja, exif) : undefined;
 
           let natW = Infinity;
           let natH = Infinity;
@@ -837,7 +850,9 @@ export async function loadResourceImages(
             return;
           }
 
-          const entrada: RecursoRasterizado = { img, region: region ?? null, compensarExif };
+          // Se guarda la region en espacio de CAJA (la que compara el visor
+          // para decidir si lo cargado alcanza), no la convertida al bitmap.
+          const entrada: RecursoRasterizado = { img, region: regionCaja ?? null, exif };
           loaded[resourceId] = entrada;
           // Los pixeles REALES del bitmap, no los pedidos: el rasterizador
           // capa los bitmaps a su tamano nativo, asi que una foto chica pedida
@@ -945,68 +960,100 @@ export function dibujarRecurso(
   ctx: CanvasRenderingContext2D,
   recurso: RecursoRasterizado,
   ancho: number,
-  alto: number,
-  esFoto?: boolean
+  alto: number
 ) {
   const { img, region } = recurso;
 
-  // El bitmap se dibuja SIN voltear: la caja ya llega orientada como el bitmap
-  // (ver `espejarX` y `aCanvasTransform` en el parser, que juntas dejan el
-  // recurso listo para pintarse de frente). Se probo agregar aca un volteo
-  // vertical y el resultado fue el plano espejado ("XOBNU" en vez de "UNBOX").
-  ctx.save();
-
-  // Las fotos (tipo 7, JPG) son la unica excepcion: la COLOCACION esta bien
-  // con el espejo de `espejarX`, pero el CONTENIDO del bitmap decodificado
-  // sale invertido en X (confirmado comparando contra el thumb.jpg embebido
-  // en archivos con fotos "NPt : +0,10" etc: el texto de la foto se leia al
-  // reves aunque la posicion coincidia). Se voltea aca, scopeado SOLO al
-  // draw de la foto, en vez de tocar la matriz de colocacion (eso desalinea
-  // la foto de la etiqueta que la nombra, ver nota en el parser).
-  //
-  // El volteo tiene que aplicarse DESPUES de deshacer el EXIF (mas abajo), no
-  // antes: flip-y-despues-rotar no es lo mismo que rotar-y-despues-flip (no
-  // conmutan), asi que voltear en el frame ORIGINAL y despues rotar -90
-  // terminaba espejando en un eje distinto al querido. Resultado real: fotos
-  // con EXIF portrait (la mayoria, sacadas con el telefono en vertical)
-  // seguian mostrando texto/carteles al reves pese al fix. Por eso el volteo
-  // se hace en cada rama, en el frame que ya tiene la orientacion final.
-  if (esFoto && ancho && !recurso.compensarExif) {
-    ctx.translate(ancho, 0);
-    ctx.scale(-1, 1);
-  }
-
-  if (recurso.compensarExif && ancho && alto) {
-    // El navegador ya aplico la orientacion EXIF al decodificar, pero Concepts
-    // guardo el tamaño CRUDO: hay que deshacer ese giro. Se aplica tambien
-    // cuando el bitmap es un recorte por zoom (antes estaba limitado al caso
-    // sin recorte, asi que una foto con EXIF 5-8 se veia bien de lejos y
-    // girada al acercarse).
-    ctx.translate(0, alto);
-    ctx.rotate(-Math.PI / 2);
-    // Frame post-rotacion: el ancho "visible" aca es `alto` (se intercambian
-    // con la rotacion de 90). El volteo de foto va aca, no antes de rotar.
-    if (esFoto) {
-      ctx.translate(alto, 0);
-      ctx.scale(-1, 1);
-    }
-    if (region) {
-      ctx.drawImage(img, region.y * alto, region.x * ancho, region.h * alto, region.w * ancho);
-    } else {
-      ctx.drawImage(img, 0, 0, alto, ancho);
-    }
+  if (!ancho || !alto) {
+    ctx.save();
+    ctx.drawImage(img, 0, 0);
     ctx.restore();
     return;
   }
 
-  if (region && ancho && alto) {
-    ctx.drawImage(img, region.x * ancho, region.y * alto, region.w * ancho, region.h * alto);
-  } else if (ancho && alto) {
-    ctx.drawImage(img, 0, 0, ancho, alto);
+  ctx.save();
+
+  // El documento tiene Y hacia ARRIBA y un mapa de pixeles no: sus filas van de
+  // arriba hacia abajo. La caja del elemento llega ya en coordenadas de canvas
+  // (la matriz de colocacion incluye la inversion de Y del documento), asi que
+  // para dibujar el bitmap DERECHO hay que deshacer esa inversion dentro de la
+  // caja. Este volteo es lo que antes se conseguia de rebote espejando en X la
+  // matriz de colocacion: para un recurso rotado 90 grados las dos cosas dan
+  // identico, y todos los planos entran rotados 90, por eso el atajo paso
+  // desapercibido — pero espejaba la POSICION de todo lo descentrado. Ver la
+  // nota larga en `parser.ts`.
+  ctx.translate(0, alto);
+  ctx.scale(1, -1);
+
+  // A partir de aca estamos en el frame del recurso CRUDO: (0,0)-(ancho,alto)
+  // es la imagen tal cual la guardo Concepts, sin la rotacion EXIF aplicada.
+  const orientacion = recurso.exif ?? 1;
+  const gira = orientacion >= 5 && orientacion <= 8;
+  // El navegador aplica la orientacion EXIF al decodificar, pero Concepts
+  // guardo el tamaño CRUDO. Hay que deshacerla, y hay que deshacerla EXACTA:
+  // antes se rotaba -90 para cualquier valor entre 5 y 8, asi que las fotos
+  // con EXIF 8 quedaban 180 grados al reves, y las EXIF 3 (que no intercambian
+  // lados y por eso ni siquiera entraban en la rama) quedaban cabeza abajo.
+  aplicarInversaExif(ctx, orientacion, ancho, alto);
+  // Tras deshacer un giro de 90 grados el bitmap se dibuja en una caja con los
+  // lados intercambiados.
+  const bmAncho = gira ? alto : ancho;
+  const bmAlto = gira ? ancho : alto;
+
+  if (region) {
+    // La region viene en fracciones de la CAJA (asi la calcula el visor), pero
+    // el bitmap recortado es el de la imagen ya orientada por el navegador: hay
+    // que pasarla al mismo espacio o el recorte se coloca en el lado que no es.
+    const r = regionEnBitmap(region, orientacion);
+    ctx.drawImage(img, r.x * bmAncho, r.y * bmAlto, r.w * bmAncho, r.h * bmAlto);
   } else {
-    ctx.drawImage(img, 0, 0);
+    ctx.drawImage(img, 0, 0, bmAncho, bmAlto);
   }
   ctx.restore();
+}
+
+/**
+ * Deshace en el contexto la orientacion EXIF que el navegador ya aplico, para
+ * las 8 orientaciones. Despues de llamarla, dibujar el bitmap en
+ * `(0,0,bmAncho,bmAlto)` deja la imagen CRUDA ocupando la caja `ancho x alto`.
+ *
+ * Las orientaciones 2,3,4,5 y 7 son involuciones (espejos y media vuelta), asi
+ * que su inversa es ella misma; 6 y 8 son inversas una de la otra.
+ */
+function aplicarInversaExif(
+  ctx: CanvasRenderingContext2D,
+  orientacion: number,
+  ancho: number,
+  alto: number
+) {
+  switch (orientacion) {
+    case 2: ctx.transform(-1, 0, 0, 1, ancho, 0); break;
+    case 3: ctx.transform(-1, 0, 0, -1, ancho, alto); break;
+    case 4: ctx.transform(1, 0, 0, -1, 0, alto); break;
+    case 5: ctx.transform(0, 1, 1, 0, 0, 0); break;
+    case 6: ctx.transform(0, -1, 1, 0, 0, alto); break;
+    case 7: ctx.transform(0, -1, -1, 0, ancho, alto); break;
+    case 8: ctx.transform(0, 1, -1, 0, ancho, 0); break;
+    default: break; // 1 y "sin EXIF": nada que deshacer
+  }
+}
+
+/**
+ * Pasa una region expresada en fracciones de la caja del elemento (imagen
+ * cruda) a fracciones del bitmap que devuelve el navegador (imagen con su EXIF
+ * ya aplicado). Es la misma tabla de orientaciones, aplicada al rectangulo.
+ */
+export function regionEnBitmap(r: Region, orientacion: number): Region {
+  switch (orientacion) {
+    case 2: return { x: 1 - r.x - r.w, y: r.y, w: r.w, h: r.h };
+    case 3: return { x: 1 - r.x - r.w, y: 1 - r.y - r.h, w: r.w, h: r.h };
+    case 4: return { x: r.x, y: 1 - r.y - r.h, w: r.w, h: r.h };
+    case 5: return { x: r.y, y: r.x, w: r.h, h: r.w };
+    case 6: return { x: 1 - r.y - r.h, y: r.x, w: r.h, h: r.w };
+    case 7: return { x: 1 - r.y - r.h, y: 1 - r.x - r.w, w: r.h, h: r.w };
+    case 8: return { x: r.y, y: 1 - r.x - r.w, w: r.h, h: r.w };
+    default: return r;
+  }
 }
 
 /** Libera una fuente suelta. Los canvas se sueltan poniendolos en 0x0: en
@@ -1205,7 +1252,7 @@ export function drawItems(
       ctx.save();
       const m = item.transform;
       if (m && m.length === 16) ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
-      dibujarRecurso(ctx, recurso, item.width, item.height, item.isPhoto);
+      dibujarRecurso(ctx, recurso, item.width, item.height);
       ctx.restore();
     } else if (item.type === "text") {
       dibujarTexto(ctx, item);

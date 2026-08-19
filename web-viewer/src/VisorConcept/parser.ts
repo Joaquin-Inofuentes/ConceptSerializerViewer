@@ -34,10 +34,11 @@ export interface ImageElement {
   transform: number[];
   /**
    * true para fotos (item tipo 7, JPG), false/undefined para paginas de PDF
-   * (item tipo 8). El BITMAP de las fotos sale espejado en X del recurso
-   * decodificado (la colocacion en si esta bien, ver nota en `emitirImagen`),
-   * asi que el dibujante necesita saber cual es cual para voltear solo el
-   * contenido de las fotos al dibujarlas, sin tocar la matriz de colocacion.
+   * (item tipo 8).
+   *
+   * El dibujado NO lo mira: la orientacion de una foto sale de su EXIF, que se
+   * lee del propio recurso. Queda porque distinguir "foto" de "plano" es util
+   * para la galeria y los bancos de pruebas.
    */
   isPhoto?: boolean;
 }
@@ -237,28 +238,34 @@ function aCanvasTransform(m: number[]): number[] {
   return s;
 }
 
-/**
- * Espeja en X una matriz de colocacion.
+/*
+ * NO existe (ya no) un `espejarX` para las matrices de colocacion.
  *
- * Las matrices de los recursos vienen con el eje X invertido respecto del
- * espacio en el que estan guardados los puntos de los trazos. Se midio: con la
- * misma conversion a canvas para los dos, o el plano queda espejado (se lee
- * "XOBNU" en vez de "UNBOX") o quedan espejadas las anotaciones — nunca los dos
- * derechos. Aplicando este espejo a la matriz, ambos comparten UNA sola
- * conversion a canvas (`aCanvasTransform`) y los dos salen derechos.
+ * Durante mucho tiempo las imagenes y los textos se convertian a canvas con un
+ * espejo en X ADEMAS de la inversion de Y. Espejar en X y despues invertir Y es
+ * negar las 6 componentes de la afin, o sea una ROTACION DE 180 grados: la
+ * misma convencion equivocada que ya se habia corregido para los trazos. El
+ * resultado era que todo elemento DESCENTRADO se dibujaba del lado opuesto del
+ * dibujo, mientras los trazos (que si usaban la convencion correcta) se
+ * quedaban donde iban.
  *
- * Comprobado contra el thumb.jpg que genera la propia app en
- * `Fede y Franco/Concepts/HO/Drawing`: rotulo "Holmberg 1764" y anotaciones
- * "+0,10"/"+0,40" legibles, y las anotaciones caen sobre las cocheras.
+ * Por que tardo tanto en verse: el error es un espejo respecto del origen, asi
+ * que un elemento centrado casi no se mueve. En `MARIANO ACHA 2363/5to Piso`
+ * las tres tiras de plano estan a x = -12, -8 y -3 unidades (se corrian un 1%,
+ * invisible) pero las cuatro laminas de caldera estan a x = +-254 y +-405: esas
+ * salian INTERCAMBIADAS izquierda-derecha. Comprobado contra la app en tablet y
+ * contra el thumb.jpg del propio archivo: la app pone la caldera 4A arriba a la
+ * izquierda y 4C arriba a la derecha; con el espejo salian al reves.
+ *
+ * Y por que el espejo "parecia" funcionar: lo que de verdad arreglaba era la
+ * ORIENTACION DEL CONTENIDO, que se corrige en `dibujarRecurso` volteando el
+ * bitmap en vertical dentro de su caja (el documento es Y-arriba, un mapa de
+ * pixeles no). Para un recurso rotado 90 grados las dos cosas dan exactamente
+ * lo mismo — `flipY . R(90) . flipY == rot180 . R(90)` — y TODOS los PDF de
+ * plano entran rotados 90, asi que el rotulo se leia bien igual. La diferencia
+ * aparece justo en los recursos sin rotar o rotados 180, que son casi siempre
+ * las fotos: esas salian cabeza abajo.
  */
-function espejarX(m: number[]): number[] {
-  // Componer con diag(-1,1) por izquierda niega la FILA de las X: a, c y e.
-  const s = m.slice();
-  s[0] = -s[0];   // a
-  s[4] = -s[4];   // c
-  s[12] = -s[12]; // e
-  return s;
-}
 
 /**
  * Aplica la afin guardada en una matriz 4x4 a un punto 2D.
@@ -710,7 +717,7 @@ function procesarCapa(nodo: any, idx: number, globalBbox: BBox): Layer {
  * la matriz tiene que venir por la misma conversion que el resto.
  */
 function aplicarTransformDeCapa(layer: Layer, mDoc: number[], globalBbox: BBox) {
-  const m = aCanvasTransform(espejarX(mDoc));
+  const m = aCanvasTransform(mDoc);
   const escala = escalaDe(m);
   for (const s of layer.strokes) {
     s.bbox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
@@ -824,7 +831,7 @@ function emitirTexto(item: any, layer: Layer): boolean {
     id: elementoId,
     text: texto,
     color,
-    transform: aCanvasTransform(espejarX(mat)),
+    transform: aCanvasTransform(mat),
   });
   return true;
 }
@@ -900,16 +907,8 @@ function emitirImagen(item: any, layer: Layer, esFoto: boolean): boolean {
         resourceId,
         width,
         height,
-        // En las fotos (tipo 7) el CONTENIDO del bitmap sale espejado, no su
-        // ubicacion: sacarle el espejo a la matriz de colocacion desalinea la
-        // foto de la etiqueta que la nombra, asi que la colocacion CON espejo
-        // es la correcta. `isPhoto` le avisa al dibujante (Viewer.tsx) que
-        // voltee solo el bitmap, con una transformacion de canvas separada
-        // scopeada al draw de la imagen, sin tocar esta matriz. Los PDF (tipo
-        // 8) no tienen el problema, probablemente porque pdf.js los rasteriza
-        // pidiendo `rotation: 0`.
         isPhoto: esFoto,
-        transform: aCanvasTransform(espejarX(transform))
+        transform: aCanvasTransform(transform)
       });
       return true;
     }

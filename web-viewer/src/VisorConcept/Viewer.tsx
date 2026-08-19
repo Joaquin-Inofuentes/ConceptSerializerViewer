@@ -691,7 +691,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
             if (m && m.length === 16) {
               ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
             }
-            dibujarRecurso(ctx, recurso, item.width, item.height, item.isPhoto);
+            dibujarRecurso(ctx, recurso, item.width, item.height);
             ctx.restore();
           } else if (item.kind === "text") {
             dibujarTexto(ctx, {
@@ -792,7 +792,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         // Mismo helper que usan el lienzo principal y el export: deshace el
         // espejo/EXIF de las fotos y respeta el recorte si `loadResourceImages`
         // igual tuvo que darnos uno mas chico que el nativo.
-        dibujarRecurso(ctx, recurso, w, h, item.isPhoto);
+        dibujarRecurso(ctx, recurso, w, h);
         const url = canvas.toDataURL("image/jpeg", 0.92);
         canvas.width = 0;
         canvas.height = 0;
@@ -1846,7 +1846,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
                 ctx.transform(m[0], m[1], m[4], m[5], m[12], m[13]);
               }
               if (usable) {
-                dibujarRecurso(ctx, recurso!, item.width, item.height, item.isPhoto);
+                dibujarRecurso(ctx, recurso!, item.width, item.height);
               } else {
                 // Marcador de posicion: un recuadro solido en el lugar exacto
                 // que ocupa el recurso. Sin esto, una imagen que todavia no
