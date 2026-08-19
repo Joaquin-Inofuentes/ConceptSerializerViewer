@@ -228,6 +228,7 @@ let archivosAfectados = 0;
 const porExif = {};
 const desplazamientos = [];
 const residuos = [];
+const errorPos = [];
 const rotadasAMano = [];
 
 let ilegibles = 0;
@@ -281,6 +282,10 @@ for (const f of objetivos) {
     // (1) invariante de colocacion
     const dx = Math.abs(obt.centro[0] - esp.e);
     const dy = Math.abs(obt.centro[1] - -esp.f);
+    // Se guarda el error aunque pase: sirve para distinguir "exacto salvo
+    // redondeo de float32" de "casi bien, con un sesgo chico" — que es como se
+    // veria un centro de rotacion o un anclaje corrido.
+    errorPos.push(Math.max(dx, dy));
     if (dx > TOL || dy > TOL) {
       const espejado = Math.abs(obt.centro[0] + esp.e) <= TOL;
       problemas.push(
@@ -356,6 +361,13 @@ console.log(`imagenes verificadas            : ${imagenesRevisadas}`);
 console.log(`fotos verificadas               : ${fotosRevisadas}`);
 console.log(`fotos por EXIF                  : ${JSON.stringify(porExif)}`);
 console.log(`archivos que el bug movia >2%   : ${archivosAfectados}`);
+if (errorPos.length) {
+  const ord = [...errorPos].sort((a, b) => a - b);
+  console.log(
+    `error de centro (unidades doc)  : max ${ord[ord.length - 1].toExponential(1)}, ` +
+      `mediana ${ord[Math.floor(ord.length / 2)].toExponential(1)}  (float32 ~1e-4 sobre estas magnitudes)`
+  );
+}
 const peores = desplazamientos.sort((a, b) => b.mov - a.mov).slice(0, 8);
 console.log("peores corrimientos del modelo viejo:");
 for (const p of peores) console.log(`   ${(p.mov * 100).toFixed(1).padStart(6)}%  ${p.nombre}`);
@@ -370,6 +382,22 @@ if (residuos.length) {
     `\nfotos que quedan derechas       : ${derechas}/${residuos.length} ` +
       `(${((derechas / residuos.length) * 100).toFixed(1)}%), inclinacion mediana ${mediana.toFixed(1)}°`
   );
+
+  // Reparto de las inclinaciones chicas. Importa mirarlo y no quedarse con la
+  // mediana: un error sistematico de un par de grados (por ejemplo, un centro
+  // de rotacion corrido) daria una mediana baja pero un reparto apretado
+  // lejos de cero, mientras que el pulso de la mano da una cola suave.
+  const cortes = [0.5, 1, 2, 5, 10, 15];
+  let previo = 0;
+  const tramos = [];
+  for (const c of cortes) {
+    tramos.push(`${previo}-${c}°: ${residuos.filter((r) => r > previo && r <= c).length}`);
+    previo = c;
+  }
+  console.log(`   reparto  <=0.5°: ${residuos.filter((r) => r <= 0.5).length}  ${tramos.slice(1).join("  ")}  >15°: ${residuos.filter((r) => r > 15).length}`);
+  const p90 = ordenados[Math.floor(ordenados.length * 0.9)];
+  const p99 = ordenados[Math.floor(ordenados.length * 0.99)];
+  console.log(`   percentiles p90 ${p90.toFixed(2)}°  p99 ${p99.toFixed(2)}°`);
   const enBloque = residuos.filter((r) => r > 60).length;
   if (enBloque > residuos.length * 0.05) {
     console.log(`   ATENCION: ${enBloque} fotos a mas de 60° — huele a EXIF deshecho al reves, no a rotaciones a mano.`);
