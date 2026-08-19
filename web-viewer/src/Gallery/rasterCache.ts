@@ -172,8 +172,65 @@ export async function leerRaster(
   }
 }
 
-/** Guarda un rasterizado. Silencioso ante errores: el cache es un lujo, no
- * puede romper la apertura de un dibujo. */
+/** Escribe una fila ya armada (blob ya codificado) y programa la poda. Es el
+ * unico punto que de verdad toca IndexedDB desde estas dos funciones. */
+async function escribirFila(fila: FilaCache): Promise<void> {
+  await conStore("readwrite", (s) => s.put(fila));
+  programarPoda();
+}
+
+/**
+ * Guarda un rasterizado YA codificado como JPEG.
+ *
+ * Es el camino barato: el llamador (el worker de rasterizado, ver la nota
+ * larga en `raster.worker.ts` sobre `PedidoRaster.cachear`) ya hizo el
+ * drawImage y la codificacion, los dos fuera de este hilo. Aca no queda otra
+ * cosa que escribir bytes a IndexedDB.
+ */
+export async function guardarRasterBlob(
+  fileId: string,
+  resourceId: string,
+  pedidoW: number,
+  pedidoH: number,
+  blob: Blob,
+  width: number,
+  height: number
+): Promise<void> {
+  if (!(width > 0) || !(height > 0)) return;
+  try {
+    await escribirFila({
+      key: claveRaster(fileId, resourceId, pedidoW, pedidoH),
+      fileId,
+      resourceId,
+      pedidoW: Math.round(pedidoW),
+      pedidoH: Math.round(pedidoH),
+      blob,
+      width,
+      height,
+      bytes: blob.size,
+      usadoEn: Date.now(),
+    });
+  } catch {
+    /* sin cache */
+  }
+}
+
+/**
+ * Guarda un rasterizado codificandolo ACA MISMO: drawImage a un canvas nuevo
+ * mas `convertToBlob`/`toBlob`.
+ *
+ * Es el camino caro, y por eso solo deberia usarse cuando no hay opcion
+ * mejor: el rasterizado en el hilo principal (sin OffscreenCanvas o con el
+ * pool de workers caido — ver `enMain` en `renderCore.ts`). Cuando el worker
+ * rasterizo, usar `guardarRasterBlob` en su lugar: el worker ya tiene el
+ * bitmap pintado y codificarlo ahi no compite con los gestos del usuario por
+ * el hilo principal (medido con CPU profiling: este drawImage+encode era el
+ * offender individual mas grande del hilo principal durante apertura+zoom,
+ * 2,8 s de self-time en el dibujo mas pesado del corpus).
+ *
+ * Silencioso ante errores: el cache es un lujo, no puede romper la apertura
+ * de un dibujo.
+ */
 export async function guardarRaster(
   fileId: string,
   resourceId: string,
@@ -206,21 +263,18 @@ export async function guardarRaster(
     }
     if (!blob) return;
 
-    await conStore("readwrite", (s) =>
-      s.put({
-        key: claveRaster(fileId, resourceId, pedidoW, pedidoH),
-        fileId,
-        resourceId,
-        pedidoW: Math.round(pedidoW),
-        pedidoH: Math.round(pedidoH),
-        blob,
-        width,
-        height,
-        bytes: blob!.size,
-        usadoEn: Date.now(),
-      } as FilaCache)
-    );
-    programarPoda();
+    await escribirFila({
+      key: claveRaster(fileId, resourceId, pedidoW, pedidoH),
+      fileId,
+      resourceId,
+      pedidoW: Math.round(pedidoW),
+      pedidoH: Math.round(pedidoH),
+      blob,
+      width,
+      height,
+      bytes: blob.size,
+      usadoEn: Date.now(),
+    });
   } catch {
     /* sin cache */
   }

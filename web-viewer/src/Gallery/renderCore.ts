@@ -1,6 +1,6 @@
 import type { Document } from "../VisorConcept/parser";
 import { getBudgets, soportaOffscreen } from "../device";
-import { leerRaster, guardarRaster } from "./rasterCache";
+import { leerRaster, guardarRaster, guardarRasterBlob } from "./rasterCache";
 
 // Las coordenadas del documento se asumen en px CSS (96 DPI, el estandar
 // web). Para que los PDF/JPG exportados salgan nitidos, todo export
@@ -211,7 +211,7 @@ async function runPool<T>(items: T[], limit: number, worker: (item: T, indice: n
 interface SlotWorker {
   worker: Worker;
   ocupado: boolean;
-  pendientes: Map<number, { resolve: (b: ImageBitmap) => void; reject: (e: Error) => void }>;
+  pendientes: Map<number, { resolve: (r: { bitmap: ImageBitmap; cacheBlob?: Blob }) => void; reject: (e: Error) => void }>;
   /** Recursos que este worker tiene parseados (su cache de PDFs abiertos).
    * Sirve para mandarle el refinado de un plano al worker que ya lo tiene, en
    * vez de a uno que tendria que parsearlo de nuevo. */
@@ -229,13 +229,13 @@ function crearSlot(): SlotWorker | null {
     const worker = new Worker(new URL("./raster.worker.ts", import.meta.url), { type: "module" });
     const slot: SlotWorker = { worker, ocupado: false, pendientes: new Map(), recientes: [] };
     worker.onmessage = (e: MessageEvent) => {
-      const { id, bitmap, error } = e.data || {};
+      const { id, bitmap, cacheBlob, error } = e.data || {};
       const p = slot.pendientes.get(id);
       if (!p) return;
       slot.pendientes.delete(id);
       liberarSlot(slot);
       if (error) p.reject(new Error(error));
-      else p.resolve(bitmap as ImageBitmap);
+      else p.resolve({ bitmap: bitmap as ImageBitmap, cacheBlob: cacheBlob as Blob | undefined });
     };
     worker.onerror = () => {
       // Si el worker se cae (ej. OOM), se marca el pool como roto y todo lo
@@ -322,20 +322,29 @@ export function soltarPdfsAbiertos() {
   });
 }
 
+/** Lo que devuelve el worker: el bitmap para mostrar y, si se pidio
+ * `cachear`, el JPEG ya codificado para el cache persistente (ver la nota
+ * larga en `PedidoRaster.cachear` de raster.worker.ts). */
+interface ResultadoWorker {
+  bitmap: ImageBitmap;
+  cacheBlob?: Blob;
+}
+
 function rasterizarEnWorker(
   slot: SlotWorker,
   resourceId: string,
   blob: Blob,
   width: number,
   height: number,
-  region?: Region
-): Promise<ImageBitmap> {
+  region?: Region,
+  cachear?: boolean
+): Promise<ResultadoWorker> {
   const id = siguienteId++;
   // Se anota ANTES de mandar: el worker cachea por resourceId, asi que a
   // partir de aca este slot es el que conviene para los refinados de este
   // recurso. Se conserva la misma cantidad que cachea el worker.
   slot.recientes = [resourceId, ...slot.recientes.filter((r) => r !== resourceId)].slice(0, 2);
-  return new Promise<ImageBitmap>((resolve, reject) => {
+  return new Promise<ResultadoWorker>((resolve, reject) => {
     slot.pendientes.set(id, { resolve, reject });
     slot.worker.postMessage({
       id,
@@ -344,6 +353,7 @@ function rasterizarEnWorker(
       width,
       height,
       region,
+      cachear,
       smoothing: getBudgets().smoothing,
     });
   });
@@ -815,6 +825,11 @@ export async function loadResourceImages(
 
           // Rasterizar, preferentemente fuera del hilo principal.
           let img: CanvasImageSource | null = null;
+          // Si el worker rasteriza, tambien le pedimos el JPEG del cache YA
+          // codificado (ver la nota larga en raster.worker.ts): asi el hilo
+          // principal solo escribe bytes a IndexedDB, sin volver a dibujar
+          // nada. Solo tiene sentido cuando de verdad se va a cachear.
+          let cacheBlobDelWorker: Blob | undefined;
           const tRaster = performance.now();
           const slot = options.sinWorker ? null : await esperarSlot(resourceId);
           if (options.signal?.aborted) {
@@ -830,7 +845,11 @@ export async function loadResourceImages(
           };
           if (slot) {
             try {
-              img = await rasterizarEnWorker(slot, resourceId, blob, width, height, region);
+              const resultado = await rasterizarEnWorker(
+                slot, resourceId, blob, width, height, region, cachear && !region
+              );
+              img = resultado.bitmap;
+              cacheBlobDelWorker = resultado.cacheBlob;
             } catch (e) {
               // No se silencia: caer al hilo principal cuesta cientos de ms de
               // bloqueo por recurso, asi que si esta pasando hay que enterarse.
@@ -867,7 +886,19 @@ export async function loadResourceImages(
           // Guardar para la proxima apertura (no bloquea). Los recortes NO se
           // cachean: son especificos del encuadre que tenias en ese momento y
           // ensuciarian el cache con entradas que no sirven para reabrir.
-          if (cachear && !region) void guardarRaster(options.fileId!, resourceId, pedidoW, pedidoH, img);
+          if (cachear && !region) {
+            if (cacheBlobDelWorker) {
+              // El worker ya entrego el JPEG codificado: escribir a
+              // IndexedDB es lo unico que queda, y eso es liviano.
+              void guardarRasterBlob(options.fileId!, resourceId, pedidoW, pedidoH, cacheBlobDelWorker, wReal, hReal);
+            } else {
+              // Fallback (rasterizado en el hilo principal): no hay worker
+              // que haya podido pre-codificar nada, asi que se hace aca como
+              // siempre. Es el camino raro (sin OffscreenCanvas o workers
+              // caidos), no el que paga la mayoria de los recursos.
+              void guardarRaster(options.fileId!, resourceId, pedidoW, pedidoH, img);
+            }
+          }
         })(),
         timeoutMs
       );

@@ -201,9 +201,58 @@ interface PedidoRaster {
    * entero, pero solo ~2 Mpx para el pedazo que entra en pantalla.
    */
   region?: { x: number; y: number; w: number; h: number };
+  /**
+   * Si viene, el worker ADEMAS produce un JPEG del resultado para el cache
+   * persistente (ver `rasterCache.ts`), y lo devuelve junto al bitmap.
+   *
+   * Antes ese JPEG lo fabricaba el HILO PRINCIPAL (`guardarRaster` en
+   * `rasterCache.ts`): tomaba el bitmap ya listo, lo volvia a dibujar en un
+   * OffscreenCanvas NUEVO y recien ahi lo codificaba. Ese redibujado es
+   * trabajo de compositing real —no gratis para un plano grande— y pasaba
+   * SIEMPRE en el hilo principal aunque el rasterizado en si hubiera
+   * corrido entero en el worker, justo mientras el usuario esta interactuando.
+   * Medido con CPU profiling (`bench-cpu-profile.mjs`) sobre el dibujo mas
+   * pesado del corpus: 2,8 s de self-time en esa funcion durante apertura +
+   * zoom, el offender individual mas grande despues de idle/GC interno de V8.
+   *
+   * Aca no hace falta redibujar nada: el PDF ya esta pintado en `canvas`
+   * (se codifica ANTES de `transferToImageBitmap`, que lo vacia) y la foto ya
+   * esta decodificada en `bitmap` (un solo drawImage mas, pero en este hilo,
+   * no en el principal). El costo de CODIFICAR el JPEG no se elimina —sigue
+   * siendo el mismo trabajo de compresion— pero deja de competir con los
+   * gestos del usuario por el hilo que los atiende.
+   */
+  cachear?: boolean;
 }
 
-async function rasterizar(p: PedidoRaster): Promise<ImageBitmap> {
+/** Lo que devuelve `rasterizar`: el bitmap para mostrar, y si se pidio,
+ * el JPEG ya codificado para el cache persistente. */
+interface ResultadoRaster {
+  bitmap: ImageBitmap;
+  cacheBlob?: Blob;
+}
+
+/** JPEG 0.88, el mismo factor que usaba `guardarRaster` en el hilo
+ * principal: un plano rasterizado pesa ~150 KB contra ~5 MB en PNG, sin
+ * diferencia visible a esta escala. */
+async function codificarCache(fuente: CanvasImageSource, w: number, h: number): Promise<Blob | undefined> {
+  try {
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return undefined;
+    ctx.drawImage(fuente, 0, 0);
+    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.88 });
+    canvas.width = 0;
+    canvas.height = 0;
+    return blob;
+  } catch {
+    // El cache es un lujo: si la codificacion falla (memoria, formato), el
+    // bitmap para mostrar ya esta listo y se entrega igual.
+    return undefined;
+  }
+}
+
+async function rasterizar(p: PedidoRaster): Promise<ResultadoRaster> {
   const header = await p.blob.slice(0, 5).text();
   const reg = p.region;
 
@@ -241,9 +290,13 @@ async function rasterizar(p: PedidoRaster): Promise<ImageBitmap> {
       await cerrarPdf(p.resourceId);
       throw err;
     }
+    // El JPEG del cache se codifica ANTES de transferir: `convertToBlob` toma
+    // una instantanea sin vaciar el canvas, pero `transferToImageBitmap` si
+    // lo hace (deja el canvas en 0x0), asi que el orden importa.
+    const cacheBlob = p.cachear ? await canvas.convertToBlob({ type: "image/jpeg", quality: 0.88 }) : undefined;
     // Sin page.cleanup(): tira justo lo que hace valiosa a la pagina cacheada
     // (las fuentes y los operadores ya decodificados). Se limpia al desalojarla.
-    return canvas.transferToImageBitmap();
+    return { bitmap: canvas.transferToImageBitmap(), cacheBlob };
   }
 
   // --- Imagen raster ------------------------------------------------------
@@ -261,6 +314,10 @@ async function rasterizar(p: PedidoRaster): Promise<ImageBitmap> {
   const calidad = p.smoothing === "high" ? "high" : "medium";
   const nativo = await medirImagen(p.blob);
 
+  // Un recorte (`reg`) es siempre transitorio (el zoom del momento) y nunca
+  // se cachea (ver la condicion `cachear && !region` del lado principal), asi
+  // que aca no hace falta mirar `p.cachear` en ninguna de las dos ramas de
+  // abajo.
   if (reg) {
     if (!nativo) {
       // Sin poder leer el encabezado no se puede recortar en coordenadas de
@@ -276,27 +333,44 @@ async function rasterizar(p: PedidoRaster): Promise<ImageBitmap> {
         resizeQuality: calidad,
       });
       base.close();
-      return recorte;
+      return { bitmap: recorte };
     }
     const cx = Math.max(0, Math.round(reg.x * nativo.w));
     const cy = Math.max(0, Math.round(reg.y * nativo.h));
     const cw = Math.max(1, Math.min(nativo.w - cx, Math.round(reg.w * nativo.w)));
     const ch = Math.max(1, Math.min(nativo.h - cy, Math.round(reg.h * nativo.h)));
     // El recorte se hace SOBRE EL BLOB: no se decodifica la foto entera.
-    return createImageBitmap(p.blob, cx, cy, cw, ch, {
+    const bitmap = await createImageBitmap(p.blob, cx, cy, cw, ch, {
       resizeWidth: Math.min(p.width, cw),
       resizeHeight: Math.min(p.height, ch),
       resizeQuality: calidad,
     });
+    return { bitmap };
   }
 
-  if (!nativo) return createImageBitmap(p.blob);
-  // Nunca agrandar: pedir mas pixeles que los que tiene la foto no agrega
-  // detalle y si gasta memoria.
-  const w = Math.min(p.width, nativo.w);
-  const h = Math.min(p.height, nativo.h);
-  if (w >= nativo.w && h >= nativo.h) return createImageBitmap(p.blob);
-  return createImageBitmap(p.blob, { resizeWidth: w, resizeHeight: h, resizeQuality: calidad });
+  let bitmap: ImageBitmap;
+  if (!nativo) {
+    bitmap = await createImageBitmap(p.blob);
+  } else {
+    // Nunca agrandar: pedir mas pixeles que los que tiene la foto no agrega
+    // detalle y si gasta memoria.
+    const w = Math.min(p.width, nativo.w);
+    const h = Math.min(p.height, nativo.h);
+    bitmap =
+      w >= nativo.w && h >= nativo.h
+        ? await createImageBitmap(p.blob)
+        : await createImageBitmap(p.blob, { resizeWidth: w, resizeHeight: h, resizeQuality: calidad });
+  }
+  // A diferencia del PDF (que ya tenia un canvas pintado, listo para
+  // codificar sin redibujar), una foto sale de `createImageBitmap` sin
+  // canvas de por medio: codificar su cache SI implica un drawImage extra
+  // aca. Sigue valiendo la pena moverlo: el bitmap resultante ya esta
+  // ACHICADO al tamaño de pantalla (ver comentario mas arriba sobre decodificar
+  // directo al tamaño final), asi que este drawImage es sobre una imagen
+  // chica, no sobre los 8 Mpx originales — y de cualquier forma pasa en este
+  // hilo, no en el que atiende los gestos del usuario.
+  const cacheBlob = p.cachear ? await codificarCache(bitmap, bitmap.width, bitmap.height) : undefined;
+  return { bitmap, cacheBlob };
 }
 
 /**
@@ -352,9 +426,11 @@ self.onmessage = async (e: MessageEvent<PedidoRaster>) => {
     return;
   }
   try {
-    const bitmap = await rasterizar(p);
+    const { bitmap, cacheBlob } = await rasterizar(p);
+    // Solo el bitmap se transfiere (coste cero): el Blob del cache viaja por
+    // structured clone, que para un Blob no copia los bytes, solo el handle.
     (self as unknown as Worker).postMessage(
-      { id: p.id, resourceId: p.resourceId, bitmap, width: bitmap.width, height: bitmap.height },
+      { id: p.id, resourceId: p.resourceId, bitmap, cacheBlob, width: bitmap.width, height: bitmap.height },
       [bitmap as unknown as Transferable]
     );
   } catch (err) {
