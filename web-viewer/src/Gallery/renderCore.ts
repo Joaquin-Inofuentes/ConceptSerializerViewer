@@ -853,6 +853,7 @@ export async function loadResourceImages(
           // Se guarda la region en espacio de CAJA (la que compara el visor
           // para decidir si lo cargado alcanza), no la convertida al bitmap.
           const entrada: RecursoRasterizado = { img, region: regionCaja ?? null, exif };
+          auditarOrientacion(resourceId, exif, entrada);
           loaded[resourceId] = entrada;
           // Los pixeles REALES del bitmap, no los pedidos: el rasterizador
           // capa los bitmaps a su tamano nativo, asi que una foto chica pedida
@@ -1010,6 +1011,39 @@ export function dibujarRecurso(
     ctx.drawImage(img, 0, 0, bmAncho, bmAlto);
   }
   ctx.restore();
+}
+
+/**
+ * Deja constancia de con que orientacion se resolvio cada recurso.
+ *
+ * Existe porque una foto mal orientada NO se rompe: se dibuja igual, solo que
+ * girada, y eso pasa desapercibido salvo que alguien mire ese recurso puntual.
+ * Con `?debug=colocacion` queda el detalle de todos; sin el, solo se avisa de
+ * lo que amerita mirarse.
+ */
+const debugColocacion = () =>
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("debug") === "colocacion";
+
+const exifAvisados = new Set<string>();
+
+function auditarOrientacion(resourceId: string, exif: number, recurso: RecursoRasterizado) {
+  if (debugColocacion()) {
+    console.info(
+      `[colocacion] ${resourceId} exif=${exif || "sin"}` +
+        `${recurso.region ? ` recorte=${JSON.stringify(recurso.region)}` : ""}`
+    );
+  }
+  // Las orientaciones espejadas (2,4,5,7) se dibujan bien, pero no aparecen en
+  // ninguna de las 770 fotos del corpus: si una llega, conviene mirarla en vez
+  // de confiar en un camino que nunca vio un archivo real.
+  if ([2, 4, 5, 7].includes(exif) && !exifAvisados.has(resourceId)) {
+    exifAvisados.add(resourceId);
+    console.warn(
+      `[colocacion] ${resourceId}: orientacion EXIF ${exif} (espejada). Se dibuja deshaciendola, ` +
+        `pero es un caso sin precedente en el corpus — vale la pena confirmarlo a ojo.`
+    );
+  }
 }
 
 /**
