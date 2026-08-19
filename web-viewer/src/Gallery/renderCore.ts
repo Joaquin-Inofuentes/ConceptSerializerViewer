@@ -1073,11 +1073,30 @@ function aplicarInversaExif(
 }
 
 /**
- * Pasa una region expresada en fracciones de la caja del elemento (imagen
- * cruda) a fracciones del bitmap que devuelve el navegador (imagen con su EXIF
- * ya aplicado). Es la misma tabla de orientaciones, aplicada al rectangulo.
+ * Pasa una region expresada en fracciones de la CAJA del elemento a fracciones
+ * del bitmap que devuelve el navegador (la imagen con su EXIF ya aplicado).
+ *
+ * Son dos pasos, y los dos hacen falta:
+ *
+ *  1. Invertir Y. El visor calcula la region llevando las esquinas de la vista
+ *     al espacio de la caja con la inversa de la matriz de colocacion, o sea en
+ *     coordenadas del DOCUMENTO, que va con Y hacia arriba. El bitmap se dibuja
+ *     en el marco ya volteado de `dibujarRecurso`, donde las filas van de
+ *     arriba hacia abajo. Sin este paso el recorte nitido se pide y se coloca
+ *     en la mitad opuesta de la pagina: como los planos entran rotados 90
+ *     grados, el error del eje Y de la caja sale por pantalla como un
+ *     desplazamiento HORIZONTAL, y al acercarse a una esquina el plano
+ *     desaparecia — se veia bien al instante, con la pagina entera, y quedaba
+ *     en blanco en cuanto llegaba el recorte.
+ *
+ *  2. La tabla de orientaciones EXIF, aplicada al rectangulo.
+ *
+ * Se usa en los DOS lados (al recortar el bitmap y al dibujarlo), asi que
+ * cualquier cambio aca tiene que seguir aplicandose en ambos o el recorte deja
+ * de coincidir consigo mismo.
  */
-export function regionEnBitmap(r: Region, orientacion: number): Region {
+export function regionEnBitmap(rCaja: Region, orientacion: number): Region {
+  const r: Region = { x: rCaja.x, y: 1 - rCaja.y - rCaja.h, w: rCaja.w, h: rCaja.h };
   switch (orientacion) {
     case 2: return { x: 1 - r.x - r.w, y: r.y, w: r.w, h: r.h };
     case 3: return { x: 1 - r.x - r.w, y: 1 - r.y - r.h, w: r.w, h: r.h };
