@@ -1473,6 +1473,30 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         );
       };
 
+      /**
+       * Fraccion (0..1) del area PEDIDA que cae dentro de lo CARGADO. Se usa
+       * solo para recursos "hot" (ver mas abajo): a diferencia de `cubre`, que
+       * exige cobertura total, esto tolera que falte un pedazo chico.
+       */
+      const solapamiento = (cargada: Region | null, pedida: Region | undefined) => {
+        if (!cargada) return 1; // el bitmap completo cubre cualquier pedido
+        if (!pedida) return 0; // se pide todo y solo hay un pedazo
+        const x0 = Math.max(cargada.x, pedida.x);
+        const y0 = Math.max(cargada.y, pedida.y);
+        const x1 = Math.min(cargada.x + cargada.w, pedida.x + pedida.w);
+        const y1 = Math.min(cargada.y + cargada.h, pedida.y + pedida.h);
+        const interseccion = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+        const areaPedida = pedida.w * pedida.h;
+        return areaPedida > 1e-6 ? interseccion / areaPedida : 1;
+      };
+      // Con menos overlap que esto, se fuerza el refetch aunque el recurso
+      // sea "hot". El margen de `regionesVisibles` (15% por lado) hace que un
+      // arrastre chico deje el solapamiento bien por encima de esto (>60-70%
+      // tipico); solo un SALTO a otra parte del mismo plano —fijar la vista
+      // directo a la esquina opuesta, doble-tap a otro punto— lo tira cerca
+      // de 0.
+      const UMBRAL_SOLAPAMIENTO_HOT = 0.35;
+
       // Log de auditoria, apagado por defecto: activar con
       // `window.__viewerDebugCache = true` en la consola. Sirve para ver EN
       // VIVO por que un recurso se vuelve a pedir (o no) en cada sync.
@@ -1496,9 +1520,27 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         // recurso "hot" tiene que poder seguir afinandose si el usuario
         // pide mas zoom, solo no debe re-rasterizar por un simple paneo.
         const esHot = hotFifoRef.current.includes(id);
-        if (!esHot && !cubre(cargada.region ?? null, regionesExactas[id])) {
-          logCache("recarga: recorte no cubre", id.slice(0, 8));
-          return true;
+        if (!esHot) {
+          if (!cubre(cargada.region ?? null, regionesExactas[id])) {
+            logCache("recarga: recorte no cubre", id.slice(0, 8));
+            return true;
+          }
+        } else {
+          // Para "hot" no se exige cobertura EXACTA (eso volvia a traer el
+          // mini-flash que motivo el bypass), pero tampoco se lo ignora del
+          // todo: si lo cargado casi no toca lo que ahora hace falta —se
+          // salto a otra parte del mismo plano, no un arrastre chico— hay
+          // que volver a pedir, o el usuario mira un area que el recorte
+          // viejo ni siquiera cubre en parte y el lienzo queda en blanco ahi.
+          // Bug real: `bench-salto-hot.mjs` reproduce fijar la vista de una
+          // esquina de un plano "hot" a la esquina opuesta sin pasar por los
+          // sync intermedios (como hace `__viewerFijarVista`, o un
+          // doble-tap-zoom a otro punto) y verifica que esto se detecte.
+          const solap = solapamiento(cargada.region ?? null, regionesExactas[id]);
+          if (solap < UMBRAL_SOLAPAMIENTO_HOT) {
+            logCache("recarga: hot pero el recorte no llega ni cerca", id.slice(0, 8), "solap=" + solap.toFixed(2));
+            return true;
+          }
         }
         // "Ya cargado, no insistir con la ESCALA": si este recurso ya pego
         // contra el techo DURO de pixeles por recurso (topeAlcanzadoRef),
