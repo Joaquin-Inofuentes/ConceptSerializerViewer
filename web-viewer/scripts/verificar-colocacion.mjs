@@ -37,7 +37,9 @@
 // Sale con codigo != 0 si algun invariante falla, asi se puede usar en CI.
 
 import { readFile, readdir } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import path from "node:path";
+import { promisify } from "node:util";
 import { decode, ExtensionCodec } from "@msgpack/msgpack";
 import JSZip from "jszip";
 import puppeteer from "puppeteer";
@@ -148,12 +150,58 @@ function normalizar(g) {
   return x;
 }
 
+const ejecutar = promisify(execFile);
+const PYTHON = process.env.PYTHON || "python";
+
+/**
+ * Abre un .concepts y devuelve `tree.pack` mas la forma de consultar el EXIF de
+ * cada entrada.
+ *
+ * JSZip alcanza para la mayoria, pero no para todos los archivos REALES: se cae
+ * con el dibujo de 262 MB (directorio central con los offsets corridos) y con
+ * los dos que quedaron truncados por una sincronizacion de Concepts
+ * interrumpida. El visor si los abre — `zip.ts` compensa el offset y, si hace
+ * falta, reconstruye el indice escaneando encabezados locales — asi que si el
+ * arnes se rindiera ahi tendria un punto ciego justo en los archivos mas
+ * dificiles. `scripts/leer_concepts.py` hace lo mismo que el visor.
+ */
+async function abrirConcepts(ruta) {
+  try {
+    const zip = await JSZip.loadAsync(await readFile(ruta));
+    const nombres = Object.keys(zip.files);
+    const nTree = nombres.find((n) => /(^|\/)tree\.pack$/.test(n));
+    if (!nTree) return null;
+    // Se fuerza la lectura aca: con los offsets corridos, JSZip no falla al
+    // abrir sino al leer, y hay que enterarse ahora para poder caer a python.
+    const tree = await zip.file(nTree).async("uint8array");
+    return {
+      via: "jszip",
+      tree,
+      nombres,
+      // Perezoso a proposito: descomprimir las 76 fotos de un dibujo de 262 MB
+      // para leerles 128 KB de cabecera seria tirar el tiempo.
+      exifDe: async (nombre) => orientacionExif(await zip.file(nombre).async("uint8array")),
+    };
+  } catch {
+    const { stdout } = await ejecutar(PYTHON, [path.resolve("scripts/leer_concepts.py"), ruta], {
+      maxBuffer: 512 * 1024 * 1024,
+    });
+    const datos = JSON.parse(stdout);
+    if (!datos.tree) return null;
+    return {
+      via: "python",
+      tree: Buffer.from(datos.tree, "base64"),
+      nombres: datos.entradas,
+      exifDe: async (nombre) => datos.exif[nombre] ?? 0,
+    };
+  }
+}
+
 async function leerArchivo(ruta) {
-  const zip = await JSZip.loadAsync(await readFile(ruta));
-  const nombres = Object.keys(zip.files);
-  const nTree = nombres.find((n) => /(^|\/)tree\.pack$/.test(n));
-  if (!nTree) return null;
-  const tree = decode(await zip.file(nTree).async("uint8array"), { extensionCodec: codec });
+  const archivo = await abrirConcepts(ruta);
+  if (!archivo) return null;
+  const { nombres } = archivo;
+  const tree = decode(archivo.tree, { extensionCodec: codec });
 
   const imgs = [];
   const trazoBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
@@ -202,9 +250,9 @@ async function leerArchivo(ruta) {
     const plano = im.rid.split("#")[0].replace(/-/g, "");
     const entrada = nombres.find((n) => n.replace(/-/g, "").includes(plano));
     if (!entrada) continue;
-    im.exif = orientacionExif(await zip.file(entrada).async("uint8array"));
+    im.exif = await archivo.exifDe(entrada);
   }
-  return { imgs, trazoBox };
+  return { imgs, trazoBox, via: archivo.via };
 }
 
 // ---------------------------------------------------------------------------
