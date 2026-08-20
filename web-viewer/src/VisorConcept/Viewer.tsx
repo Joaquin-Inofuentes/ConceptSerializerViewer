@@ -386,6 +386,9 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
   const gestoRef = useRef(false);
   /** Pide un dibujo REAL aunque haya un gesto en curso (ver `marcarGesto`). */
   const forzarDibujoRef = useRef(false);
+  /** Margen en px con el que se dibujo el ultimo frame (ver MARGEN_LIENZO).
+   * Lo necesita el transform del gesto para escalar desde el punto correcto. */
+  const margenLienzoRef = useRef({ x: 0, y: 0 });
   /** Da acceso a `limpiarTransformGesto` desde efectos que corren antes de
    * que se defina (el del cambio de tema). */
   const limpiarTransformGestoRef = useRef<() => void>(() => {});
@@ -1763,7 +1766,16 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     const k = zoomRef.current / s.zoom;
     const dx = panRef.current.x - s.panX * k;
     const dy = panRef.current.y - s.panY * k;
-    canvas.style.transformOrigin = "0 0";
+    // El origen del escalado tiene que ser el (0,0) LOGICO —la esquina de la
+    // ventana—, que dentro del canvas cae en el margen, no en su esquina.
+    //
+    // Con `0 0` se escalaba desde la esquina del canvas, que esta un margen
+    // afuera, y el frame quedaba corrido en `margen * (1 - k)`. Al panear
+    // (k = 1) eso es cero y no se notaba; en cuanto habia zoom, el dibujo
+    // saltaba a cada paso de rueda y se acomodaba recien al redibujar. Ese
+    // era el "el paneo anda bien pero el zoom anda muy mal".
+    const m = margenLienzoRef.current;
+    canvas.style.transformOrigin = `${m.x}px ${m.y}px`;
     canvas.style.transform = `translate(${dx}px, ${dy}px) scale(${k})`;
   }, []);
 
@@ -1864,6 +1876,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           const margenY = Math.round(size.height * MARGEN_LIENZO);
           const lienzoW = size.width + margenX * 2;
           const lienzoH = size.height + margenY * 2;
+          margenLienzoRef.current = { x: margenX, y: margenY };
 
           // Reasignar canvas.width/height reserva un buffer nuevo y es caro;
           // solo se hace cuando el tamaño cambio de verdad.
@@ -2456,6 +2469,11 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           ])
         ),
         hot: [...hotFifoRef.current].map((x) => x.slice(0, 8)),
+        // Encuadre desde el que arranco el gesto en curso y margen del ultimo
+        // frame: con eso, un test puede calcular DONDE cae en pantalla un
+        // punto del documento mientras el gesto lo mueve por CSS, y compararlo
+        // con donde deberia caer.
+        gesto: { enCurso: gestoRef.current, snapshot: { ...snapshotViewRef.current }, margen: { ...margenLienzoRef.current } },
         escala: Object.fromEntries(Object.entries(escalaPorRecursoRef.current).map(([id, v]) => [id.slice(0, 8), v])),
         tope: Object.fromEntries(Object.entries(topeAlcanzadoRef.current).map(([id, v]) => [id.slice(0, 8), v])),
       };
