@@ -25,6 +25,7 @@ const ORIGEN = (process.env.ORIGEN || "http://127.0.0.1:8788").replace(/\/+$/, "
 const args = process.argv.slice(2);
 const throttleIdx = args.indexOf("--throttle");
 const THROTTLE = throttleIdx >= 0 ? Number(args[throttleIdx + 1]) : 4;
+const RED_LENTA = args.includes("--red-lenta");
 const jsonIdx = args.indexOf("--json");
 const JSON_OUT = jsonIdx >= 0 ? args[jsonIdx + 1] : null;
 const soloIds = args.filter((a) => !a.startsWith("--") && a !== String(THROTTLE) && a !== JSON_OUT);
@@ -73,6 +74,18 @@ for (const f of objetivos) {
   // de obra, no en desktops.
   const cdp = await page.createCDPSession();
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: THROTTLE });
+  // Red tambien frenada, no solo CPU: una tablet de obra rara vez tiene wifi
+  // buena. Sin esto, el servidor local de corpus (disco, sin latencia real)
+  // no reproduce el escenario que de verdad importa: bytes que tardan en
+  // llegar MIENTRAS la CPU esta ademas ocupada rasterizando.
+  if (RED_LENTA) {
+    await cdp.send("Network.emulateNetworkConditions", {
+      offline: false,
+      downloadThroughput: (1.5 * 1024 * 1024) / 8, // ~1.5 Mbps, "Slow 4G"
+      uploadThroughput: (750 * 1024) / 8,
+      latency: 80,
+    });
+  }
 
   await page.goto(`${BASE}/?tier=alta&file=${f.id}&origen=${encodeURIComponent(ORIGEN)}`, {
     waitUntil: "domcontentloaded",
