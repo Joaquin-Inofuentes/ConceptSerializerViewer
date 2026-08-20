@@ -865,7 +865,11 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       // (plano vectorial) sí aprovecha el pedido entero.
       const LADO_MINIMO_OBJETIVO = 2200;
       const LADO_MAXIMO_OBJETIVO = 8000;
-      const objetivoPx = Math.min(budgets.maxPixelsPerResource, 12_000_000);
+      // Mismo criterio que el lienzo (ver `maxPixelsPedido`): esta vista
+      // muestra UN recurso solo y a pantalla completa, asi que puede gastar
+      // mas que el techo pensado para repartir entre varios. Se corta en 16
+      // Mpx porque el resultado viaja como data URL dentro de un <img>.
+      const objetivoPx = Math.min(budgets.maxPixelsPerResource * 2, 16_000_000);
       const areaBase = Math.max(1, anchoBase * altoBase);
       let escala = Math.sqrt(objetivoPx / areaBase);
       const ladoBase = Math.max(anchoBase, altoBase);
@@ -1293,10 +1297,18 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     // en este grupo a la vez, el techo se reparte contra ese numero: cada uno
     // puede pedir el doble del techo normal, sin que la suma de los pinchados
     // se pase del presupuesto de RAM del documento.
+    //
+    // El reparto se hace contra los recursos que el dibujo TIENE de verdad,
+    // no contra el tope del FIFO. Repartir siempre entre MAX_HOT_FIFO + 1
+    // dejaba a un dibujo de UN SOLO plano con un cuarto del presupuesto y
+    // el resto sin usar: se quedaba, literalmente, en la mitad de la
+    // resolucion que el dispositivo aguanta. Con un plano solo en gama alta
+    // eso son 32 Mpx en vez de 16.
+    const competidores = Math.min(MAX_HOT_FIFO, Math.max(1, doc.resourceIds.length));
     const maxPixelsPedido = hot
       ? Math.min(
-          budgets.maxPixelsPerResource * 2,
-          Math.floor(budgets.maxImagePixels / (MAX_HOT_FIFO + 1))
+          budgets.maxPixelsPerResource * 4,
+          Math.floor(budgets.maxImagePixels / (competidores + 1))
         )
       : budgets.maxPixelsPerResource;
     // SIEMPRE la pagina entera, nunca un recorte de lo que se ve.

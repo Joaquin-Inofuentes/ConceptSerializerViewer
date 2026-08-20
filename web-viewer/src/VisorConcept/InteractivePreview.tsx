@@ -32,8 +32,89 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
   // rotacion viene del propio archivo .concepts) y no hay forma de arreglarlo
   // desde ahi. Se resetea al abrir una foto distinta.
   const [rotacion, setRotacion] = useState(0);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  /**
+   * Relacion de lados a partir de la cual una imagen se considera una TIRA:
+   * un plano largo y angosto, no una foto. Los de esta carpeta son 1:4,7.
+   */
+  const RELACION_TIRA = 4;
+
+  /**
+   * Gira sola las tiras que entran cruzadas respecto de la pantalla.
+   *
+   * Un plano de 1:4,7 abierto en vertical sobre una pantalla apaisada usa una
+   * franja finita en el medio y deja el resto vacio: hay que rotarlo a mano
+   * para poder leerlo, todas las veces. Con la relacion 1:4 como corte, girarlo
+   * es lo que el usuario iba a hacer igual.
+   *
+   * Solo cuando esta CRUZADO (tira vertical en pantalla apaisada, o al reves):
+   * si la tira ya coincide con la orientacion de la pantalla, rotarla seria
+   * justamente lo contrario de lo que conviene. Se puede deshacer con el boton
+   * de rotar o con la tecla R, y se recalcula al abrir otra foto.
+   */
+  const rotacionInicial = (img: HTMLImageElement | null) => {
+    const w = img?.naturalWidth ?? 0;
+    const h = img?.naturalHeight ?? 0;
+    if (!w || !h) return 0;
+    const esTira = Math.max(w, h) / Math.min(w, h) >= RELACION_TIRA;
+    if (!esTira) return 0;
+    const imagenVertical = h > w;
+    const pantallaApaisada = window.innerWidth >= window.innerHeight;
+    return imagenVertical === pantallaApaisada ? 90 : 0;
+  };
+
+  // La decision NO puede colgar solo de `onLoad`: si la imagen ya esta en el
+  // cache del navegador (abrir la misma foto dos veces, o el data URL que ya
+  // se mostro como miniatura) la carga termina antes de que React enganche el
+  // handler y el evento no llega nunca — se probo en movil y la tira se abria
+  // sin girar. Se mira tambien al montar y en cada cambio de `src`.
+  /**
+   * Encuadra la foto para la rotacion dada: la agranda hasta llenar la
+   * pantalla y la centra.
+   *
+   * Hace falta porque el `<img>` se dimensiona por CSS (`max-width`/
+   * `max-height`) SIN saber de la rotacion: girado un cuarto de vuelta, el
+   * elemento conserva su caja original y una tira apaisada de 720x153
+   * terminaba ocupando 153 de ancho y 720 de alto — mas chica todavia que
+   * antes de girar. Justo lo contrario de para lo que se gira.
+   */
+  const encuadrar = (rot: number) => {
+    const img = imgRef.current;
+    const cont = containerRef.current;
+    if (!img || !cont || !img.clientWidth || !img.clientHeight) return;
+    const girada = ((rot % 180) + 180) % 180 !== 0;
+    const cajaW = girada ? img.clientHeight : img.clientWidth;
+    const cajaH = girada ? img.clientWidth : img.clientHeight;
+    // Un respiro contra los bordes, del mismo orden que el padding de la vista.
+    const dispW = cont.clientWidth - 32;
+    const dispH = cont.clientHeight - 32;
+    if (cajaW <= 0 || cajaH <= 0 || dispW <= 0 || dispH <= 0) return;
+    setZoom(Math.min(dispW / cajaW, dispH / cajaH));
+    setPan({ x: 0, y: 0 });
+  };
+
+  const rotar = () => {
+    setRotacion((r) => {
+      const siguiente = (r + 90) % 360;
+      encuadrar(siguiente);
+      return siguiente;
+    });
+  };
+
+  const evaluarRotacion = () => {
+    const rot = rotacionInicial(imgRef.current);
+    setRotacion(rot);
+    encuadrar(rot);
+  };
+
   useEffect(() => {
-    setRotacion(0);
+    const img = imgRef.current;
+    if (img?.complete && img.naturalWidth) evaluarRotacion();
+    else setRotacion(0);
+    // `rotacionInicial` solo lee el DOM y el tamaño de la ventana; recrearla
+    // en cada render no cambia lo que decide.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src]);
 
   const exportDrawing = async (format: 'png' | 'jpg' | 'pdf', zoomAll: boolean = true) => {
@@ -119,6 +200,17 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         onClose();
+      }
+      // R para rotar, el mismo cuarto de vuelta que el boton. Se ignora si el
+      // foco esta en un campo de texto (hoy no hay ninguno en esta vista, pero
+      // escribir una "r" y que la foto gire seria de lo mas desconcertante).
+      if (e.key === 'r' || e.key === 'R') {
+        const el = document.activeElement as HTMLElement | null;
+        const escribiendo =
+          !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+        if (escribiendo || e.ctrlKey || e.metaKey || e.altKey) return;
+        e.preventDefault();
+        rotar();
       }
     };
     document.addEventListener('keydown', handleKeyDown);
@@ -318,6 +410,8 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
         <img 
            src={src} 
            alt="Preview" 
+           ref={imgRef}
+           onLoad={evaluarRotacion}
            style={{ pointerEvents: 'none', userSelect: 'none', display: 'block' }}
            draggable={false}
         />
@@ -347,8 +441,8 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
       <div className="floating-tools" style={{ zIndex: 10002 }}>
         <button
           className="btn-tool"
-          onClick={(e) => { e.stopPropagation(); setRotacion((r) => (r + 90) % 360); }}
-          title="Rotar 90° a la derecha"
+          onClick={(e) => { e.stopPropagation(); rotar(); }}
+          title="Rotar 90° a la derecha (R)"
         >
           <RotateCw size={20} />
         </button>

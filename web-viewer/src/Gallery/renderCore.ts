@@ -469,6 +469,17 @@ function clampTarget(
     w *= k;
     h *= k;
   }
+  // Techo por LADO. El techo de area no alcanza para un recurso muy alargado:
+  // los planos de esta carpeta son tiras de 1:4,7, asi que a presupuestos
+  // altos el lado largo se dispara mucho antes que el area. Pasarse del
+  // limite del navegador no tira error — el canvas queda en blanco y el plano
+  // simplemente no aparece.
+  const ladoMayor = Math.max(w, h);
+  if (ladoMayor > MAX_CANVAS_SIDE) {
+    const k = MAX_CANVAS_SIDE / ladoMayor;
+    w *= k;
+    h *= k;
+  }
   return { width: Math.max(1, Math.round(w)), height: Math.max(1, Math.round(h)) };
 }
 
