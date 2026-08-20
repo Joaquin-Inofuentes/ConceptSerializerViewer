@@ -18,7 +18,7 @@ import {
   dibujarTexto,
   ALTO_LINEA_TEXTO,
 } from "../Gallery/renderCore";
-import type { RecursoRasterizado, Region } from "../Gallery/renderCore";
+import type { RecursoRasterizado } from "../Gallery/renderCore";
 import { getBudgets } from "../device";
 import { coloresLienzo, temaGuardado } from "../theme";
 import type { Tema } from "../theme";
@@ -77,12 +77,12 @@ export interface ViewerHandle {
    * Pide una version COMPLETA (sin recortar) y en alta resolucion de un
    * recurso puntual, para la vista de foto a pantalla completa.
    *
-   * Independiente del cache de canvas (`imagesRef`): ese cache puede tener
-   * guardado solo un RECORTE del recurso (si el usuario hizo zoom sobre el
-   * en el lienzo principal, ver `Region` en regionesVisibles), y mostrar ese
-   * recorte en la vista de foto es el bug de "sale recortada". Rasteriza de
-   * nuevo, aparte, a una resolucion pensada para pantalla completa (no la
-   * de export a 600 DPI, que para una foto en pantalla es derrochar RAM).
+   * Independiente del cache de canvas (`imagesRef`): ese cache guarda el
+   * recurso a la resolucion que pide el LIENZO, que a zoom bajo es mucho
+   * menos de lo que se quiere ver a pantalla completa. Rasteriza de nuevo,
+   * aparte, a una resolucion pensada para pantalla completa (no la de export
+   * a 600 DPI, que para una foto en pantalla es derrochar RAM), y con la
+   * misma orientacion con la que el plano esta colocado en el dibujo.
    * Devuelve un data URL listo para <img>, o null si no se pudo.
    */
   obtenerImagenCompleta: (resourceId: string) => Promise<string | null>;
@@ -294,7 +294,12 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
    * se enfocaron, no los mas usados).
    */
   const hotFifoRef = useRef<string[]>([]);
-  const MAX_HOT_FIFO = 2;
+  // Tres, no dos: es lo que el usuario pidio explicitamente ("las 2 o 3
+  // imagenes que tenga en RAM visibles full HD"), y con el rasterizado por
+  // pagina ENTERA (ver `cargarRecursos`) tres planos pinchados siguen
+  // entrando en el presupuesto de RAM del dispositivo — el tope por recurso
+  // se reparte contra este mismo numero.
+  const MAX_HOT_FIFO = 3;
   /**
    * Recursos que ya llegaron al tope DURO de pixeles con el que se pidieron
    * (`maxPixelsPedido` en `cargarRecursos` — mas alto para lo que esta
@@ -834,13 +839,57 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       const recurso = cargados[resourceId];
       if (!recurso) return null;
       try {
+        // La foto se abre CON LA MISMA ORIENTACION que tiene en el dibujo.
+        //
+        // El bitmap del recurso esta en su espacio propio (para estos planos,
+        // una tira vertical), pero el documento lo COLOCA girado: en el
+        // lienzo se lee apaisado. Al abrirlo a pantalla completa se dibujaba
+        // en su espacio propio, asi que aparecia de costado respecto de como
+        // el usuario lo acababa de ver, y habia que enderezarlo a mano con el
+        // boton de rotar cada vez.
+        //
+        // No se deduce un angulo con atan2: la matriz de colocacion incluye
+        // la inversion de Y del documento, asi que su "angulo" no es el que
+        // se ve (el primer intento salio 180 grados al reves, con la caratula
+        // del plano espejada). Se reusa la matriz TAL CUAL, normalizada: se
+        // le saca la escala (el tamaño ya lo fija `w`/`h`) y la traslacion (la
+        // posicion dentro del dibujo no importa aca), y queda solo la parte
+        // que orienta. Aplicarla antes de `dibujarRecurso` reproduce
+        // exactamente lo que hace el lienzo principal, espejos incluidos.
+        //
+        // Cada componente se redondea a -1/0/1: las colocaciones reales son
+        // cuartos de vuelta, y un angulo libre giraria la foto dejando
+        // triangulos vacios en las esquinas.
+        const mCol = item.transform;
+        const sx = mCol && mCol.length === 16 ? Math.hypot(mCol[0], mCol[1]) : 0;
+        const sy = mCol && mCol.length === 16 ? Math.hypot(mCol[4], mCol[5]) : 0;
+        const base =
+          mCol && sx > 0 && sy > 0
+            ? {
+                a: Math.round(mCol[0] / sx),
+                b: Math.round(mCol[1] / sx),
+                c: Math.round(mCol[4] / sy),
+                d: Math.round(mCol[5] / sy),
+              }
+            : { a: 1, b: 0, c: 0, d: 1 };
+        // Caja que ocupa la imagen ya orientada, y cuanto hay que correrla
+        // para que arranque en (0,0).
+        const esquinas = [[0, 0], [w, 0], [w, h], [0, h]].map(([x, y]) => [
+          base.a * x + base.c * y,
+          base.b * x + base.d * y,
+        ]);
+        const minX = Math.min(...esquinas.map((e) => e[0]));
+        const minY = Math.min(...esquinas.map((e) => e[1]));
+        const maxX = Math.max(...esquinas.map((e) => e[0]));
+        const maxY = Math.max(...esquinas.map((e) => e[1]));
         const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
+        canvas.width = Math.max(1, Math.round(maxX - minX));
+        canvas.height = Math.max(1, Math.round(maxY - minY));
         const ctx = canvas.getContext("2d");
         if (!ctx) return null;
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = "high";
+        ctx.setTransform(base.a, base.b, base.c, base.d, -minX, -minY);
         // Mismo helper que usan el lienzo principal y el export: deshace el
         // espejo/EXIF de las fotos y respeta el recorte si `loadResourceImages`
         // igual tuvo que darnos uno mas chico que el nativo.
@@ -1002,166 +1051,6 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     return [...areas.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
   }, [docCache]);
 
-  /**
-   * Que PEDAZO de cada recurso se ve en pantalla, en fracciones 0..1 de su
-   * propio ancho/alto.
-   *
-   * Es lo que permite ver nitido un plano grande al acercarse. Un plano de
-   * 1544x5717 a 10x de zoom necesitaria ~40 Mpx para verse entero y nitido —
-   * imposible en un telefono, y por eso antes se veia borroso al hacer zoom.
-   * Rasterizando solo la porcion visible alcanza con 1-2 Mpx para el mismo
-   * nivel de detalle.
-   *
-   * El calculo se hace en el espacio PROPIO del recurso (se invierte su
-   * matriz), asi funciona igual con los planos rotados -90 grados, que son
-   * casi todos en esta carpeta.
-   */
-  /**
-   * Devuelve DOS mapas: `pedida` (lo que se va a pedir/cachear si hace falta
-   * rasterizar, con margen) y `exacta` (lo que de verdad hace falta ver
-   * ahora, SIN margen).
-   *
-   * Antes solo existia `pedida`, y `cubre()` comparaba el recorte cacheado
-   * contra ella. Eso hacia inutil el margen: `pedida` YA tiene el margen
-   * sumado, asi que un recorte cacheado (tambien con margen, centrado en la
-   * vista VIEJA) casi nunca alcanza a cubrir el margen de la vista NUEVA en
-   * cuanto el usuario panea un poco — dos ventanas del mismo ancho, una
-   * corrida respecto de la otra, no se contienen aunque el corrimiento sea
-   * chico. Resultado: CUALQUIER paneo, por corto que fuera, invalidaba el
-   * recorte y disparaba un re-rasterizado completo del plano — el bug
-   * reportado de "zoom y despues paneo, se rompe y recarga". La cobertura
-   * tiene que chequearse contra lo que de verdad hace falta mostrar (`exacta`,
-   * sin margen): ahi el margen sí funciona como colchon.
-   */
-  const regionesVisibles = useCallback((): { pedida: Record<string, Region>; exacta: Record<string, Region> } => {
-    const pedida: Record<string, Region> = {};
-    const exacta: Record<string, Region> = {};
-    if (!docCache) return { pedida, exacta };
-    // Un mismo recurso puede estar COLOCADO varias veces en el dibujo (en el
-    // mas pesado hay planos puestos 3 veces, a distinto tamaño y en distinto
-    // lugar), y de cada recurso hay UN solo bitmap. Asi que el recorte tiene
-    // que servir para TODAS sus colocaciones a la vez: se acumula la union de
-    // lo que se ve de cada una, y si alguna necesita la pagina entera, no se
-    // recorta nada.
-    //
-    // Antes se guardaba una region por recurso y ganaba la ultima colocacion
-    // recorrida. El bitmap quedaba recortado segun UNA colocacion y se dibujaba
-    // en las otras dos, donde ese recorte no corresponde: al encuadrar una de
-    // ellas aparecia una tira blanca o directamente nada. Era el bug de "con
-    // zoom o paneo se pierden las imagenes".
-    const union = new Map<string, { x0: number; y0: number; x1: number; y1: number } | null>();
-    const unionExacta = new Map<string, { x0: number; y0: number; x1: number; y1: number } | null>();
-    const pan = panRef.current;
-    const zoom = zoomRef.current;
-    const size = sizeRef.current;
-    const vMinX = -pan.x / zoom;
-    const vMinY = -pan.y / zoom;
-    const vMaxX = (size.width - pan.x) / zoom;
-    const vMaxY = (size.height - pan.y) / zoom;
-
-    for (const item of docCache.items) {
-      // Ver el comentario equivalente en `recursosVisibles`: las imagenes
-      // vienen todas primero en `docCache.items`, asi que se puede cortar en
-      // vez de seguir descartando trazos hasta el final del documento.
-      if (item.kind !== "image") break;
-      if (!visibleItem(item)) continue;
-      if (!(item.width > 0) || !(item.height > 0)) continue;
-      const m = item.transform;
-      if (!m || m.length !== 16) continue;
-      const a = m[0], b = m[1], c = m[4], d = m[5], e = m[12], f = m[13];
-      const det = a * d - b * c;
-      if (!det) continue;
-      // Inversa de la afin, para llevar las esquinas de la vista al espacio
-      // del recurso.
-      const ia = d / det, ib = -b / det, ic = -c / det, id = a / det;
-      const ie = -(e * ia + f * ic), iff = -(e * ib + f * id);
-      let rMinX = Infinity, rMinY = Infinity, rMaxX = -Infinity, rMaxY = -Infinity;
-      for (const [x, y] of [[vMinX, vMinY], [vMaxX, vMinY], [vMinX, vMaxY], [vMaxX, vMaxY]]) {
-        const rx = x * ia + y * ic + ie;
-        const ry = x * ib + y * id + iff;
-        if (rx < rMinX) rMinX = rx;
-        if (rx > rMaxX) rMaxX = rx;
-        if (ry < rMinY) rMinY = ry;
-        if (ry > rMaxY) rMaxY = ry;
-      }
-      // La vista exacta, sin margen, en fracciones 0..1 del recurso.
-      let ex0 = Math.max(0, Math.min(1, rMinX / item.width));
-      let ey0 = Math.max(0, Math.min(1, rMinY / item.height));
-      let ex1 = Math.max(0, Math.min(1, rMaxX / item.width));
-      let ey1 = Math.max(0, Math.min(1, rMaxY / item.height));
-      if (ex1 - ex0 > 0.001 && ey1 - ey0 > 0.001) {
-        const previaE = unionExacta.get(item.resourceId);
-        if (previaE !== null) {
-          unionExacta.set(
-            item.resourceId,
-            previaE
-              ? {
-                  x0: Math.min(previaE.x0, ex0),
-                  y0: Math.min(previaE.y0, ey0),
-                  x1: Math.max(previaE.x1, ex1),
-                  y1: Math.max(previaE.y1, ey1),
-                }
-              : { x0: ex0, y0: ey0, x1: ex1, y1: ey1 }
-          );
-        }
-      }
-      // Un poco de margen para poder desplazarse sin re-rasterizar en cada
-      // pixel de arrastre.
-      const margen = 0.15;
-      let x0 = rMinX / item.width - margen;
-      let y0 = rMinY / item.height - margen;
-      let x1 = rMaxX / item.width + margen;
-      let y1 = rMaxY / item.height + margen;
-      x0 = Math.max(0, Math.min(1, x0));
-      y0 = Math.max(0, Math.min(1, y0));
-      x1 = Math.max(0, Math.min(1, x1));
-      y1 = Math.max(0, Math.min(1, y1));
-      const w = x1 - x0;
-      const h = y1 - y0;
-      if (!(w > 0.001) || !(h > 0.001)) continue;
-      // Si se ve casi entero no vale la pena recortar: complica sin ganar
-      // resolucion, y ademas el resultado se puede cachear. `null` marca
-      // "esta colocacion necesita la pagina completa" y pisa cualquier union.
-      if (w > 0.9 && h > 0.9) {
-        union.set(item.resourceId, null);
-        continue;
-      }
-      if (union.has(item.resourceId) && union.get(item.resourceId) === null) continue;
-      const previa = union.get(item.resourceId);
-      union.set(
-        item.resourceId,
-        previa
-          ? {
-              x0: Math.min(previa.x0, x0),
-              y0: Math.min(previa.y0, y0),
-              x1: Math.max(previa.x1, x1),
-              y1: Math.max(previa.y1, y1),
-            }
-          : { x0, y0, x1, y1 }
-      );
-    }
-
-    for (const [id, caja] of union) {
-      if (!caja) continue;
-      const w = caja.x1 - caja.x0;
-      const h = caja.y1 - caja.y0;
-      if (!(w > 0.001) || !(h > 0.001)) continue;
-      // Tras unir, el recorte puede haber crecido hasta cubrir casi todo; ahi
-      // ya no aporta y conviene la pagina entera (que ademas se cachea).
-      if (w > 0.9 && h > 0.9) continue;
-      pedida[id] = { x: caja.x0, y: caja.y0, w, h };
-    }
-    for (const [id, caja] of unionExacta) {
-      if (!caja) continue;
-      const w = caja.x1 - caja.x0;
-      const h = caja.y1 - caja.y0;
-      if (!(w > 0.001) || !(h > 0.001)) continue;
-      if (w > 0.9 && h > 0.9) continue;
-      exacta[id] = { x: caja.x0, y: caja.y0, w, h };
-    }
-    return { pedida, exacta };
-  }, [docCache]);
-
   // --- Recursos embebidos (fotos / PDFs) ---------------------------------
   // Esta era la causa real del freeze al abrir un dibujo pesado: cada PDF
   // embebido se rasterizaba a la escala del EXPORT (600 DPI) aunque en
@@ -1307,7 +1196,6 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     escala: number,
     signal?: AbortSignal,
     only?: string[],
-    regiones?: Record<string, Region>,
     // El anillo (preview a media escala) NO cuenta para el tope FIFO de
     // resolucion plena: es a proposito mas chico y transitorio, y contarlo
     // desalojaria un "hot" de verdad por un adelanto que ni se esta mirando.
@@ -1319,25 +1207,35 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     // `maxPixelsPerResource` esta pensado para cuando hay MUCHOS recursos a
     // la vez (la vista general de un dibujo con 96 planos): ahi hace falta
     // repartir poco por cada uno. Pero para lo que el usuario esta MIRANDO
-    // de verdad (`hot`, el mismo grupo que cuenta para el tope FIFO de 2 en
+    // de verdad (`hot`, el mismo grupo que cuenta para el tope FIFO de
     // hotFifoRef) ese techo se queda corto enseguida en pantallas de alta
     // densidad — medido: un plano grande a solo 1.3x de zoom ya lo saturaba,
     // dejandolo pixelado para siempre por mas zoom que se pidiera despues.
-    // Como el propio FIFO ya garantiza que como mucho hay 2 recursos en
-    // este grupo a la vez, se les puede dar mucho mas presupuesto (hasta
-    // 4x, topeado a la mitad del total del documento) sin arriesgar la RAM:
-    // el anillo de fondo (hot=false) sigue con el techo chico de siempre.
+    // Como el propio FIFO garantiza que como mucho hay MAX_HOT_FIFO recursos
+    // en este grupo a la vez, el techo se reparte contra ese numero: cada uno
+    // puede pedir el doble del techo normal, sin que la suma de los pinchados
+    // se pase del presupuesto de RAM del documento.
     const maxPixelsPedido = hot
-      ? Math.min(budgets.maxPixelsPerResource * 4, Math.floor(budgets.maxImagePixels / 2))
+      ? Math.min(
+          budgets.maxPixelsPerResource * 2,
+          Math.floor(budgets.maxImagePixels / (MAX_HOT_FIFO + 1))
+        )
       : budgets.maxPixelsPerResource;
-    const targets: Record<string, { width: number; height: number; region?: Region }> = {};
+    // SIEMPRE la pagina entera, nunca un recorte de lo que se ve.
+    //
+    // Antes se pedia solo el pedazo visible de cada plano, lo que daba mas
+    // nitidez a zoom alto pero ataba el bitmap al ENCUADRE: cualquier gesto
+    // que sacara la vista de ese pedazo obligaba a rasterizar de nuevo, y si
+    // el aviso de "che, cambio el encuadre" no llegaba (recurso pinchado
+    // como "hot", salto grande, sync abortado a mitad) el plano quedaba
+    // dibujado a medias — el bug de "se rompio, salio cortado". Con la
+    // pagina entera el bitmap no depende del encuadre: una vez cargado, ni
+    // el paneo ni el zoom hacia afuera pueden invalidarlo, y lo unico que lo
+    // vuelve a pedir es acercarse MAS de lo que su resolucion aguanta (y ni
+    // eso, una vez que toco el techo de pixeles).
+    const targets: Record<string, { width: number; height: number }> = {};
     Object.entries(dibujado).forEach(([id, size]) => {
-      const region = regiones?.[id];
-      // Con recorte, el destino en pixeles es el del PEDAZO, no el del
-      // recurso entero: por eso se multiplica por el ancho/alto de la region.
-      targets[id] = region
-        ? { width: size.width * escala * region.w, height: size.height * escala * region.h, region }
-        : { width: size.width * escala, height: size.height * escala };
+      targets[id] = { width: size.width * escala, height: size.height * escala };
     });
 
     const total = (only ?? doc.resourceIds).length;
@@ -1543,103 +1441,40 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       // corto de distancia para que no aparezcan recuadros vacios al mover.
       const cercanos = recursosVisibles(MARGEN_ANILLO);
       if (cercanos.length === 0) return;
-      const { pedida: regiones, exacta: regionesExactas } = regionesVisibles();
-
-      // Un recorte cargado cubre lo pedido? Importa sobre todo al ALEJARSE:
-      // un bitmap recortado dibuja solo su pedazo, asi que sin este chequeo
-      // el resto del plano quedaria en blanco al volver a la vista completa.
-      const cubre = (cargada: Region | null, pedida: Region | undefined) => {
-        if (!cargada) return true; // el completo cubre cualquier recorte
-        if (!pedida) return false; // ahora se ve todo y solo tenemos un pedazo
-        const t = 0.02;
-        return (
-          cargada.x <= pedida.x + t &&
-          cargada.y <= pedida.y + t &&
-          cargada.x + cargada.w >= pedida.x + pedida.w - t &&
-          cargada.y + cargada.h >= pedida.y + pedida.h - t
-        );
-      };
-
-      /**
-       * Fraccion (0..1) del area PEDIDA que cae dentro de lo CARGADO. Se usa
-       * solo para recursos "hot" (ver mas abajo): a diferencia de `cubre`, que
-       * exige cobertura total, esto tolera que falte un pedazo chico.
-       */
-      const solapamiento = (cargada: Region | null, pedida: Region | undefined) => {
-        if (!cargada) return 1; // el bitmap completo cubre cualquier pedido
-        if (!pedida) return 0; // se pide todo y solo hay un pedazo
-        const x0 = Math.max(cargada.x, pedida.x);
-        const y0 = Math.max(cargada.y, pedida.y);
-        const x1 = Math.min(cargada.x + cargada.w, pedida.x + pedida.w);
-        const y1 = Math.min(cargada.y + cargada.h, pedida.y + pedida.h);
-        const interseccion = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
-        const areaPedida = pedida.w * pedida.h;
-        return areaPedida > 1e-6 ? interseccion / areaPedida : 1;
-      };
-      // Con menos overlap que esto, se fuerza el refetch aunque el recurso
-      // sea "hot". El margen de `regionesVisibles` (15% por lado) hace que un
-      // arrastre chico deje el solapamiento bien por encima de esto (>60-70%
-      // tipico); solo un SALTO a otra parte del mismo plano —fijar la vista
-      // directo a la esquina opuesta, doble-tap a otro punto— lo tira cerca
-      // de 0.
-      const UMBRAL_SOLAPAMIENTO_HOT = 0.35;
-
       // Log de auditoria, apagado por defecto: activar con
       // `window.__viewerDebugCache = true` en la consola. Sirve para ver EN
       // VIVO por que un recurso se vuelve a pedir (o no) en cada sync.
-      const debugCache = (window as any).__viewerDebugCache === true;
+      // Se activa con `window.__viewerDebugCache = true` en la consola o,
+      // para que sobreviva a un F5 mientras se reproduce algo a mano, con
+      // `?debug=cache` en la URL.
+      const debugCache =
+        (window as any).__viewerDebugCache === true ||
+        new URLSearchParams(window.location.search).get("debug") === "cache";
       const logCache = debugCache ? (...args: unknown[]) => console.log("[cache]", ...args) : () => {};
 
       const necesita = (id: string) => {
         const cargada = imagesRef.current[id];
         if (!cargada) return true;
-        // "Ya cargado, no re-evaluar el RECORTE": un recurso "hot" (FIFO de
-        // resolucion plena, tope 2) no vuelve a chequear cobertura de
-        // recorte. Sin esto, paneos chicos dentro de un plano ya visto en
-        // full HD seguian re-pidiendolo por el mismo motivo padded-vs-exact
-        // (ver `cubre`/`regionesExactas` mas arriba) en casos limite — el
-        // "mini flash" del cartel "Afinando...".
-        //
-        // Ojo: esto NO congela la escala. La primera version de este fix
-        // tambien saltaba el chequeo de escala para todo "hot", y eso
-        // dejaba un plano pixelado para siempre en cuanto el usuario
-        // seguia haciendo zoom despues de que se volviera "hot" — un
-        // recurso "hot" tiene que poder seguir afinandose si el usuario
-        // pide mas zoom, solo no debe re-rasterizar por un simple paneo.
-        const esHot = hotFifoRef.current.includes(id);
-        if (!esHot) {
-          if (!cubre(cargada.region ?? null, regionesExactas[id])) {
-            logCache("recarga: recorte no cubre", id.slice(0, 8));
-            return true;
-          }
-        } else {
-          // Para "hot" no se exige cobertura EXACTA (eso volvia a traer el
-          // mini-flash que motivo el bypass), pero tampoco se lo ignora del
-          // todo: si lo cargado casi no toca lo que ahora hace falta —se
-          // salto a otra parte del mismo plano, no un arrastre chico— hay
-          // que volver a pedir, o el usuario mira un area que el recorte
-          // viejo ni siquiera cubre en parte y el lienzo queda en blanco ahi.
-          // Bug real: `bench-salto-hot.mjs` reproduce fijar la vista de una
-          // esquina de un plano "hot" a la esquina opuesta sin pasar por los
-          // sync intermedios (como hace `__viewerFijarVista`, o un
-          // doble-tap-zoom a otro punto) y verifica que esto se detecte.
-          const solap = solapamiento(cargada.region ?? null, regionesExactas[id]);
-          if (solap < UMBRAL_SOLAPAMIENTO_HOT) {
-            logCache("recarga: hot pero el recorte no llega ni cerca", id.slice(0, 8), "solap=" + solap.toFixed(2));
-            return true;
-          }
+        // Un bitmap RECORTADO solo puede venir de una version anterior de la
+        // app (hoy nunca se piden recortes, ver `cargarRecursos`): se cambia
+        // por la pagina entera en cuanto se lo ve.
+        if (cargada.region) {
+          logCache("recarga: bitmap recortado viejo", id.slice(0, 8));
+          return true;
         }
         // "Ya cargado, no insistir con la ESCALA": si este recurso ya pego
         // contra el techo DURO de pixeles por recurso (topeAlcanzadoRef),
         // pedir mas nunca va a mejorarlo — sin este freno, a zoom muy alto
         // (mas alla de lo que el presupuesto del dispositivo permite) CADA
         // gesto de pan o zoom volvia a intentar el rasterizado completo sin
-        // lograr nada mejor, el mismo "mini flash" pero disparado por la
-        // escala en vez de por el recorte.
+        // lograr nada mejor, el "mini flash" del cartel "Afinando...".
         if (topeAlcanzadoRef.current[id]) {
           logCache("tope de pixeles alcanzado, no se pide mas", id.slice(0, 8));
           return false;
         }
+        // Lo unico que queda como motivo para volver a rasterizar: el usuario
+        // se acerco MAS de lo que aguanta la resolucion que tenemos. El paneo
+        // ya no puede disparar nada, porque el bitmap es la pagina entera.
         const faltaEscala = necesaria > (escalaPorRecursoRef.current[id] ?? 0) * TOLERANCIA_ESCALA;
         if (faltaEscala) {
           logCache("recarga: escala insuficiente", id.slice(0, 8), "pedida=" + necesaria.toFixed(2), "actual=" + (escalaPorRecursoRef.current[id] ?? 0).toFixed(2));
@@ -1666,9 +1501,14 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       const pendientes = [...sinBitmap, ...aRefinar];
       if (debugCache) {
         logCache(
-          `sync: visibles=${visibles.length} hotFifo=[${hotFifoRef.current.map((x) => x.slice(0, 8))}]`,
+          `sync: zoom=${zoomRef.current.toFixed(2)} pan=(${panRef.current.x.toFixed(0)},${panRef.current.y.toFixed(0)})`,
+          `necesaria=${necesaria.toFixed(2)}`,
+          `visibles=${visibles.length} hotFifo=[${hotFifoRef.current.map((x) => x.slice(0, 8))}]`,
           `sinBitmap=[${sinBitmap.map((x) => x.slice(0, 8))}]`,
-          `aRefinar=[${aRefinar.map((x) => x.slice(0, 8))}]`
+          `aRefinar=[${aRefinar.map((x) => x.slice(0, 8))}]`,
+          `cargados=${Object.entries(imagesRef.current)
+            .map(([id, r]) => `${id.slice(0, 8)}:${(r.img as any).width}x${(r.img as any).height}${r.region ? "(RECORTE)" : ""}@${(escalaPorRecursoRef.current[id] ?? 0).toFixed(2)}${topeAlcanzadoRef.current[id] ? "[tope]" : ""}`)
+            .join(" ")}`
         );
       }
 
@@ -1710,10 +1550,10 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         // varios segundos mirando algo borroso mientras la CPU trabaja para
         // pixeles que no se ven.
         if (soloVisibles.length > 0) {
-          await cargarRecursos(necesaria, signal, soloVisibles, regiones, true, visibles);
+          await cargarRecursos(necesaria, signal, soloVisibles, true, visibles);
         }
         if (aRefinar.length > 0 && !signal?.aborted) {
-          await cargarRecursos(necesaria, signal, aRefinar, regiones, true, visibles);
+          await cargarRecursos(necesaria, signal, aRefinar, true, visibles);
         }
         if (soloAnillo.length > 0 && !signal?.aborted) {
           // El anillo va a MEDIA escala: es un cuarto de los pixeles. Todavia
@@ -1730,7 +1570,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         if (!signal?.aborted) onRefinandoRef.current?.(false, 0, 0);
       }
     },
-    [doc, budgets, cargarRecursos, recursosVisibles, regionesVisibles, desalojarLejanos]
+    [doc, budgets, cargarRecursos, recursosVisibles, desalojarLejanos]
   );
 
   /** Version con debounce, que es la que llaman los gestos: no tiene sentido
@@ -2438,7 +2278,6 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         }));
 
     (window as any).__viewerDiag = () => {
-      const { pedida, exacta } = regionesVisibles();
       return {
         cargadas: Object.fromEntries(
           Object.entries(imagesRef.current).map(([id, r]) => [
@@ -2446,8 +2285,6 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
             { region: r.region, w: (r.img as any).width, h: (r.img as any).height, exif: r.exif },
           ])
         ),
-        pedida: Object.fromEntries(Object.entries(pedida).map(([id, r]) => [id.slice(0, 8), r])),
-        exacta: Object.fromEntries(Object.entries(exacta).map(([id, r]) => [id.slice(0, 8), r])),
         hot: [...hotFifoRef.current].map((x) => x.slice(0, 8)),
         escala: Object.fromEntries(Object.entries(escalaPorRecursoRef.current).map(([id, v]) => [id.slice(0, 8), v])),
         tope: Object.fromEntries(Object.entries(topeAlcanzadoRef.current).map(([id, v]) => [id.slice(0, 8), v])),

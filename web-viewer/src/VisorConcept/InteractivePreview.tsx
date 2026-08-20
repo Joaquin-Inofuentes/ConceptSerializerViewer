@@ -190,11 +190,14 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
     if (e.button === 0) setIsDragging(false);
   };
 
-  // React adjunta onWheel como pasivo: el e.preventDefault() de aca abajo no
-  // alcanza a frenar el scroll, asi que ademas se registra un listener nativo
-  // no pasivo mas abajo (mismo patron que Viewer.tsx) solo para bloquearlo.
+  // OJO: aca NO se llama a e.preventDefault(). React adjunta `onWheel` como
+  // listener PASIVO, asi que preventDefault no solo no hace nada: el
+  // navegador lo reporta como error en consola en CADA paso de rueda
+  // ("Unable to preventDefault inside passive event listener invocation"),
+  // lo que llenaba la consola de ruido y tapaba errores de verdad. El scroll
+  // de fondo ya lo frena el listener nativo no pasivo de mas arriba, que
+  // existe justamente para eso.
   const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
     const zoomFactor = 1.1;
     const direction = e.deltaY > 0 ? -1 : 1;
     const factor = Math.pow(zoomFactor, direction);
