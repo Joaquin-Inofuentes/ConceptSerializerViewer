@@ -663,9 +663,12 @@ export class ZipArchive {
     if (entry.compressionMethod !== 8) {
       throw new Error(`Compresion no soportada (${entry.compressionMethod}) en ${name}`);
     }
-    const stream = new Blob([raw as BlobPart])
-      .stream()
-      .pipeThrough(new DecompressionStream("deflate-raw"));
+    // `new Response(raw).body` da el ReadableStream directo, sin pasar por
+    // un Blob intermedio que nadie necesita (antes: `new Blob([raw]).stream()`
+    // — construir el Blob solo para tirar el stream y descartarlo). tree.pack
+    // pasa por este camino en cada apertura, y con CPU frenada (bench-cpu-
+    // gesto-real.mjs) la construccion de Blobs aparecia con tiempo real.
+    const stream = new Response(raw as BodyInit).body!.pipeThrough(new DecompressionStream("deflate-raw"));
     const buf = await new Response(stream).arrayBuffer();
     return new Uint8Array(buf);
   }
