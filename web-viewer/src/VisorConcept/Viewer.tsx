@@ -948,7 +948,16 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
 
     const areas = new Map<string, number>();
     for (const item of docCache.items) {
-      if (item.kind !== "image" || !visibleItem(item)) continue;
+      // `docCache.items` viene ordenado con TODAS las imagenes primero (ver
+      // `compararOrdenDibujo`): en cuanto aparece algo que no es imagen, el
+      // resto del array tampoco lo va a ser, asi que se corta el recorrido en
+      // vez de seguir descartando trazos uno por uno. En un dibujo con miles
+      // de trazos y unas pocas decenas de imagenes esto es la diferencia
+      // entre recorrer decenas de items o recorrer TODO el documento — y esta
+      // funcion se llama en cada sincronizacion de recursos, con CPU frenada
+      // aparecia como self-time real durante los gestos.
+      if (item.kind !== "image") break;
+      if (!visibleItem(item)) continue;
       const ix = Math.max(0, Math.min(item.maxX, viewMaxX) - Math.max(item.minX, viewMinX));
       const iy = Math.max(0, Math.min(item.maxY, viewMaxY) - Math.max(item.minY, viewMinY));
       const area = ix * iy;
@@ -1025,7 +1034,11 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     const vMaxY = (size.height - pan.y) / zoom;
 
     for (const item of docCache.items) {
-      if (item.kind !== "image" || !visibleItem(item)) continue;
+      // Ver el comentario equivalente en `recursosVisibles`: las imagenes
+      // vienen todas primero en `docCache.items`, asi que se puede cortar en
+      // vez de seguir descartando trazos hasta el final del documento.
+      if (item.kind !== "image") break;
+      if (!visibleItem(item)) continue;
       if (!(item.width > 0) || !(item.height > 0)) continue;
       const m = item.transform;
       if (!m || m.length !== 16) continue;
@@ -2314,7 +2327,9 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       const chinches = new Set<string>();
       let colocadas = 0;
       for (const item of docCache.items) {
-        if (item.kind !== "image") continue;
+        // Las imagenes vienen todas primero en `docCache.items` (ver el
+        // comentario en `recursosVisibles`).
+        if (item.kind !== "image") break;
         colocadas++;
         if (!visibleItem(item)) continue;
         if (item.maxX < vMinX || item.minX > vMaxX || item.maxY < vMinY || item.minY > vMaxY) continue;
