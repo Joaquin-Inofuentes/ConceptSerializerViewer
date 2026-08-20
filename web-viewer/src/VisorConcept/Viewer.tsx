@@ -1158,12 +1158,25 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
   const pixelesDe = (r: RecursoRasterizado | undefined) =>
     r ? ((r.img as any).width || 0) * ((r.img as any).height || 0) : 0;
 
+  /**
+   * Total de pixeles de TODO lo que hay en `imagesRef.current`, llevado de
+   * forma INCREMENTAL en cada alta/baja (ver los `+=`/`-=` junto a cada
+   * `imagesRef.current[id] = ...` y cada `delete imagesRef.current[id]`).
+   *
+   * Antes esto se recalculaba escaneando el mapa entero cada vez que hacia
+   * falta: en `desalojarLejanos` (que corre en CADA sync, tenga o no algo que
+   * desalojar), en `recalcularPixeles` (llamada despues de cada desalojo), y
+   * en `cargarRecursos` para saber cuanto presupuesto quedaba libre (hasta 3
+   * veces por sync: visibles, a refinar, anillo). Con un dibujo de 96
+   * recursos cargados eso eran hasta 5 recorridos completos por ciclo de
+   * sincronizacion, todos calculando la MISMA suma. Medido con CPU profiling
+   * bajo CPU frenada 10x: esos recorridos aparecian como self-time real
+   * dentro de Viewer.tsx durante gestos, no gratis.
+   */
+  const pixelesTotalesRef = useRef(0);
+
   const recalcularPixeles = useCallback(() => {
-    let px = 0;
-    Object.values(imagesRef.current).forEach((r) => {
-      px += pixelesDe(r);
-    });
-    statsRef.current.pixelesImagenes = px;
+    statsRef.current.pixelesImagenes = pixelesTotalesRef.current;
   }, []);
 
   /**
@@ -1185,10 +1198,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       // que llegara un tercero, y entonces la cola FIFO ya no reflejaba lo
       // que de verdad seguia en memoria.
       const salvo = new Set([...protegidos, ...hotFifoRef.current]);
-      let total = 0;
-      Object.values(imagesRef.current).forEach((r) => {
-        total += pixelesDe(r);
-      });
+      let total = pixelesTotalesRef.current;
       if (total <= budgets.maxImagePixels) return;
 
       const candidatos = Object.keys(imagesRef.current)
@@ -1200,7 +1210,9 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       for (const id of candidatos) {
         if (total <= budgets.maxImagePixels) break;
         const r = siguiente[id];
-        total -= pixelesDe(r);
+        const px = pixelesDe(r);
+        total -= px;
+        pixelesTotalesRef.current -= px;
         delete siguiente[id];
         delete escalaPorRecursoRef.current[id];
         liberarImagen(r.img);
@@ -1244,6 +1256,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       const siguiente = { ...imagesRef.current };
       delete siguiente[viejo];
       delete escalaPorRecursoRef.current[viejo];
+      pixelesTotalesRef.current -= pixelesDe(r);
       liberarImagen(r.img);
       imagesRef.current = siguiente;
       statsRef.current.recursosCargados = Object.keys(siguiente).length;
@@ -1294,11 +1307,18 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     // Pixeles que ya ocupan los recursos cargados: el presupuesto de RAM es
     // del DOCUMENTO entero, no de cada tanda, asi que la segunda tanda tiene
     // que arrancar donde quedo la primera.
-    let yaUsados = 0;
-    Object.entries(imagesRef.current).forEach(([id, r]) => {
-      if (only && only.includes(id)) return; // se va a reemplazar
-      yaUsados += ((r.img as any).width || 0) * ((r.img as any).height || 0);
-    });
+    //
+    // Arranca del total llevado incrementalmente (`pixelesTotalesRef`, ver su
+    // comentario) y le resta SOLO los `only` que van a reemplazarse — antes
+    // recorria TODO `imagesRef.current` para excluirlos, y esto se llama
+    // hasta 3 veces por sincronizacion (visibles, a refinar, anillo).
+    let yaUsados = pixelesTotalesRef.current;
+    if (only) {
+      for (const id of only) {
+        const r = imagesRef.current[id];
+        if (r) yaUsados -= pixelesDe(r);
+      }
+    }
 
     const nuevas = await loadResourceImages(doc, {
       targets,
@@ -1329,6 +1349,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         // y copiarlo por cada recurso es O(n^2) de allocaciones a lo largo de
         // la carga.
         imagesRef.current[id] = recurso;
+        pixelesTotalesRef.current += pixelesDe(recurso) - pixelesDe(previa);
         if (previa && previa.img !== recurso.img) liberarImagen(previa.img);
 
         // Se anota la escala que se CONSIGUIO, no la que se pidio.
@@ -1431,6 +1452,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       cargaInicialRef.current?.abort();
       releaseResourceImages(imagesRef.current);
       imagesRef.current = {};
+      pixelesTotalesRef.current = 0;
       escalaPorRecursoRef.current = {};
       usoRef.current = {};
       fallosRef.current = {};
