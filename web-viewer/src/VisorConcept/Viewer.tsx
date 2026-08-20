@@ -147,6 +147,20 @@ const ESCALA_ANILLO = 0.5;
 const TOLERANCIA_ESCALA = 1.1;
 
 /**
+ * Que parte del presupuesto de RAM se reparte entre los recursos "hot" (los
+ * que el usuario esta mirando), dejando el resto para el anillo de fondo.
+ *
+ * Antes el reparto era "entre competidores + 1", que es lo mismo que reservar
+ * una porcion del tamaño de un recurso entero. Con UN solo recurso eso deja la
+ * MITAD del presupuesto sin usar, y donde mas se nota es en gama baja, que es
+ * justo donde cada pixel importa: un telefono con 12 Mpx de techo se quedaba
+ * en 6. Con una reserva porcentual, ese mismo telefono llega a 9 Mpx (36 MB de
+ * los 48 que el presupuesto permite) y las gamas media y alta no cambian,
+ * porque ahi manda el otro techo (`maxPixelsPerResource * 4`).
+ */
+const FRACCION_PLENA = 0.75;
+
+/**
  * Cuanto mas grande que la ventana se dibuja el lienzo, por lado.
  *
  * El canvas se pinta un 25% mas ancho y un 25% mas alto POR CADA LADO (o sea
@@ -163,7 +177,11 @@ const TOLERANCIA_ESCALA = 1.1;
  * es a proposito MENOR que este margen, asi que el hueco nunca llega a
  * asomar.
  *
- * Cuesta 2,25x de area por frame (1,5 x 1,5). Es el precio de no ver negro.
+ * Cuesta 2,25x de area por frame (1,5 x 1,5), y ese precio se midio antes de
+ * darlo por bueno: con la CPU frenada 6x y el presupuesto de gama baja, el p95
+ * de frame da 8,0 ms con este margen contra 7,4 ms con uno de 0,15 — ruido. El
+ * canvas de un telefono es chico (0,85 Mpx aca), asi que el relleno no es el
+ * cuello y no hace falta un margen distinto por gama.
  */
 const MARGEN_LIENZO = 0.25;
 
@@ -171,18 +189,16 @@ const MARGEN_LIENZO = 0.25;
  * Cuanto se puede correr el lienzo por CSS antes de redibujarlo de verdad.
  *
  * Durante un gesto no se redibuja: se desplaza el ultimo frame con un
- * `transform`, que es gratis para el hilo principal. Pero el canvas mide lo
- * mismo que la ventana, asi que al correrlo queda una FRANJA DESTAPADA en el
- * borde contrario — sin dibujo y sin grilla, porque ahi ya no hay canvas.
- * En un arrastre normal eso dura un frame y no se ve; en un arrastre largo
- * (o si el navegador deja de componer, como el panel de pruebas cuando
- * pierde el foco) queda a la vista y parece que el dibujo "se rompio".
+ * `transform`, gratis para el hilo principal. El borde que eso destapa cae
+ * dentro del margen y no se ve, pero solo hasta que el corrimiento se come el
+ * margen entero: pasado ese punto hay que dibujar un frame de verdad y
+ * re-anclar el gesto ahi. Por eso se deriva del margen (al 80%) en vez de
+ * fijarlo a mano: asi los dos no pueden quedar desincronizados.
  *
- * Con esto, en cuanto el corrimiento pasa del 12% de la pantalla se dibuja un
- * frame de verdad y el gesto se re-ancla ahi. Son unos pocos redibujos por
- * arrastre, no uno por movimiento: el ahorro del transform CSS se mantiene.
+ * Son unos pocos redibujos por arrastre, no uno por movimiento: el ahorro del
+ * transform CSS se mantiene.
  */
-const UMBRAL_REANCLAJE = 0.2;
+const UMBRAL_REANCLAJE = MARGEN_LIENZO * 0.8;
 
 /** Lo mismo para el zoom: un frame viejo estirado mas que esto se ve borroso
  * y conviene volver a dibujarlo nitido. */
@@ -1308,7 +1324,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     const maxPixelsPedido = hot
       ? Math.min(
           budgets.maxPixelsPerResource * 4,
-          Math.floor(budgets.maxImagePixels / (competidores + 1))
+          Math.floor((budgets.maxImagePixels * FRACCION_PLENA) / competidores)
         )
       : budgets.maxPixelsPerResource;
     // SIEMPRE la pagina entera, nunca un recorte de lo que se ve.
