@@ -1,6 +1,6 @@
 import type { Document } from "../VisorConcept/parser";
 import { getBudgets, soportaOffscreen } from "../device";
-import { leerRaster, guardarRaster, guardarRasterBlob } from "./rasterCache";
+import { leerRasterVarios, guardarRaster, guardarRasterBlob } from "./rasterCache";
 
 // Las coordenadas del documento se asumen en px CSS (96 DPI, el estandar
 // web). Para que los PDF/JPG exportados salgan nitidos, todo export
@@ -665,28 +665,35 @@ export async function loadResourceImages(
   const faltantes: string[] = [];
   const tCache = performance.now();
   if (options.fileId && !options.sinCache) {
-    await runPool(pendientes, 4, async (resourceId) => {
-      if (options.signal?.aborted) return;
+    // Una sola consulta para TODO el lote, no una por recurso: antes cada uno
+    // abria su propia transaccion de IndexedDB via `runPool(pendientes, 4,
+    // ...)`, y aunque la lectura en si es trivial, abrir una transaccion no lo
+    // es — con CPU profiling bajo 10x throttle eso aparecia como self-time
+    // real durante los gestos. `leerRasterVarios` cubre el lote entero con
+    // una unica transaccion (ver su comentario).
+    const pedidosCache = pendientes.map((resourceId) => {
       const target = options.targets?.[resourceId];
-
-      // Con RECORTE lo guardado no sirve como resultado final —solo hay
-      // paginas completas y el recorte existe justamente porque hace falta
-      // mas resolucion— pero si sirve como PRIMER NIVEL: se publica la pagina
-      // completa cacheada al instante (~30 ms) para que se vea algo ya, y el
-      // recurso queda igual en `faltantes` para que el recorte nitido llegue
-      // despues. Antes se salteaba el cache por completo en este caso, asi que
-      // un plano que entraba en pantalla estando acercado pagaba un parseo
-      // entero de pdf.js (~4,7 s con CPU frenada) para mostrar algo que ya
-      // estaba en el disco.
-      const soloComoAdelanto = !!target?.region;
-
-      const cacheado = await leerRaster(
-        options.fileId!,
+      return {
         resourceId,
-        (target?.width ?? 0) * opts.quality,
-        (target?.height ?? 0) * opts.quality,
-        { cualquierTamaño: soloComoAdelanto }
-      );
+        pedidoW: (target?.width ?? 0) * opts.quality,
+        pedidoH: (target?.height ?? 0) * opts.quality,
+        // Con RECORTE lo guardado no sirve como resultado final —solo hay
+        // paginas completas y el recorte existe justamente porque hace falta
+        // mas resolucion— pero si sirve como PRIMER NIVEL: se publica la
+        // pagina completa cacheada al instante (~30 ms) para que se vea algo
+        // ya, y el recurso queda igual en `faltantes` para que el recorte
+        // nitido llegue despues. Antes se salteaba el cache por completo en
+        // este caso, asi que un plano que entraba en pantalla estando
+        // acercado pagaba un parseo entero de pdf.js (~4,7 s con CPU frenada)
+        // para mostrar algo que ya estaba en el disco.
+        cualquierTamaño: !!target?.region,
+      };
+    });
+    const cacheados = await leerRasterVarios(options.fileId, pedidosCache);
+    for (const resourceId of pendientes) {
+      if (options.signal?.aborted) break;
+      const soloComoAdelanto = !!options.targets?.[resourceId]?.region;
+      const cacheado = cacheados.get(resourceId) ?? null;
       if (cacheado && !soloComoAdelanto) {
         statsCache.aciertos++;
         // Lo guardado es SIEMPRE la pagina completa (los recortes no se
@@ -694,8 +701,8 @@ export async function loadResourceImages(
         const entrada: RecursoRasterizado = { img: cacheado as CanvasImageSource, region: null };
         loaded[resourceId] = entrada;
         pixelesUsados += cacheado.width * cacheado.height;
-        if (!options.signal?.aborted) options.onEach?.(resourceId, entrada);
-        return;
+        options.onEach?.(resourceId, entrada);
+        continue;
       }
       statsCache.fallos++;
       faltantes.push(resourceId);
@@ -705,11 +712,9 @@ export async function loadResourceImages(
         // libera. Sumarlo haria que el recorte —el que de verdad importa—
         // naciera con menos presupuesto del que le corresponde.
         statsCache.adelantos++;
-        if (!options.signal?.aborted) {
-          options.onEach?.(resourceId, { img: cacheado as CanvasImageSource, region: null });
-        }
+        options.onEach?.(resourceId, { img: cacheado as CanvasImageSource, region: null });
       }
-    });
+    }
   } else {
     faltantes.push(...pendientes);
   }

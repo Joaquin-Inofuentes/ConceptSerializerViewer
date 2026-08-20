@@ -117,17 +117,118 @@ export function claveRaster(fileId: string, resourceId: string, width: number, h
   return `v${VERSION_RASTER}|${fileId}|${resourceId}|${escalon(width)}x${escalon(height)}`;
 }
 
+export interface PedidoCache {
+  resourceId: string;
+  pedidoW: number;
+  pedidoH: number;
+  cualquierTamaño?: boolean;
+}
+
 /**
- * Busca un rasterizado guardado.
+ * Busca los rasterizados guardados de VARIOS recursos EN UNA SOLA transaccion
+ * de IndexedDB.
  *
- * Dos niveles, y el segundo es el que importa: primero la clave exacta, y si
- * no esta, CUALQUIER version guardada del mismo recurso que sea al menos tan
- * grande como la pedida. Sin ese segundo nivel el cache fallaba cada vez que
- * la clave se corria un escalon —lo que pasa por ejemplo si el encuadre
- * inicial cambia unos pixeles, o si el presupuesto de RAM recorto el pedido—
- * y el resultado era volver a rasterizar el PDF entero teniendolo guardado.
- * Medido: en un dibujo de 6 recursos acertaba 4 y fallaba 2 por esto.
+ * Antes cada recurso abria su propia transaccion (`db.transaction(...)`, con
+ * hasta dos rondas si la clave exacta no estaba) desde `runPool(pendientes, 4,
+ * ...)`, o sea hasta 4 transacciones simultaneas y N en total por
+ * sincronizacion. Abrir una transaccion tiene costo fijo en el navegador aunque
+ * la lectura en si sea trivial; con CPU profiling bajo 10x throttle eso
+ * aparecia como self-time real (`transaction`, `req.onsuccess`) durante los
+ * gestos, ~140ms sumados en una sola secuencia sobre el dibujo mas pesado.
+ * Con una transaccion cubriendo TODOS los `get`/`getAll` del lote, el
+ * navegador paga el costo de apertura una vez, no N veces.
+ *
+ * Dentro, dos niveles por recurso, igual que antes: primero la clave exacta,
+ * y si no esta, CUALQUIER version guardada que sea al menos tan grande como
+ * la pedida. Sin ese segundo nivel el cache fallaba cada vez que la clave se
+ * corria un escalon —lo que pasa por ejemplo si el encuadre inicial cambia
+ * unos pixeles, o si el presupuesto de RAM recorto el pedido— y el resultado
+ * era volver a rasterizar el PDF entero teniendolo guardado. Medido: en un
+ * dibujo de 6 recursos acertaba 4 y fallaba 2 por esto.
  */
+export async function leerRasterVarios(
+  fileId: string,
+  pedidos: PedidoCache[]
+): Promise<Map<string, ImageBitmap | null>> {
+  const resultado = new Map<string, ImageBitmap | null>();
+  if (pedidos.length === 0) return resultado;
+
+  const db = await abrirDb();
+  if (!db) {
+    pedidos.forEach((p) => resultado.set(p.resourceId, null));
+    return resultado;
+  }
+
+  let tx: IDBTransaction;
+  try {
+    tx = db.transaction(STORE, "readonly");
+  } catch {
+    pedidos.forEach((p) => resultado.set(p.resourceId, null));
+    return resultado;
+  }
+  const store = tx.objectStore(STORE);
+  const indice = store.index("porRecurso");
+
+  const filas = new Map<string, FilaCache | null>();
+  const promesas = pedidos.map(
+    (p) =>
+      new Promise<void>((resolve) => {
+        const reqExacta = store.get(claveRaster(fileId, p.resourceId, p.pedidoW, p.pedidoH)) as IDBRequest<FilaCache>;
+        reqExacta.onerror = () => { filas.set(p.resourceId, null); resolve(); };
+        reqExacta.onsuccess = () => {
+          if (reqExacta.result) { filas.set(p.resourceId, reqExacta.result); resolve(); return; }
+          const reqIdx = indice.getAll([fileId, p.resourceId]) as IDBRequest<FilaCache[]>;
+          reqIdx.onerror = () => { filas.set(p.resourceId, null); resolve(); };
+          reqIdx.onsuccess = () => {
+            const candidatas = reqIdx.result || [];
+            // Sirve la que se pidio con al menos el 80% del tamaño actual
+            // (por debajo de eso se veria borrosa al acercarse). De las que
+            // sirven, la mas chica, para no gastar RAM de mas.
+            const utiles = candidatas
+              .filter((c) => c.pedidoW >= p.pedidoW * 0.8 && c.pedidoH >= p.pedidoH * 0.8)
+              .sort((a, b) => a.pedidoW * a.pedidoH - b.pedidoW * b.pedidoH);
+            let fila = utiles[0] || null;
+            // Como ADELANTO (mostrar algo mientras se rasteriza lo bueno)
+            // sirve cualquier cosa que haya, aunque sea mas chica de lo
+            // pedido: se va a ver borrosa unos segundos, que es infinitamente
+            // mejor que el hueco gris. Se elige la mas grande disponible.
+            if (!fila && p.cualquierTamaño) {
+              fila = [...candidatas].sort((a, b) => b.pedidoW * b.pedidoH - a.pedidoW * a.pedidoH)[0] || null;
+            }
+            filas.set(p.resourceId, fila);
+            resolve();
+          };
+        };
+      })
+  );
+  await Promise.all(promesas);
+
+  // Decodificar los bitmaps FUERA de la transaccion: createImageBitmap es
+  // async y una transaccion de IDB se auto-cierra en cuanto no le quedan
+  // pedidos pendientes, asi que hacerlo adentro no alarga nada, solo
+  // complicaria el manejo de errores.
+  await Promise.all(
+    pedidos.map(async (p) => {
+      const fila = filas.get(p.resourceId);
+      if (!fila || !fila.blob) { resultado.set(p.resourceId, null); return; }
+      try {
+        const bitmap = await createImageBitmap(fila.blob);
+        resultado.set(p.resourceId, bitmap);
+        // Renovar "usado en", fire-and-forget: no bloquea la respuesta y no
+        // hace falta que comparta transaccion con la lectura.
+        void conStore("readwrite", (s) => s.put({ ...fila, usadoEn: Date.now() }));
+      } catch {
+        resultado.set(p.resourceId, null);
+      }
+    })
+  );
+
+  return resultado;
+}
+
+/** Busca el rasterizado guardado de UN recurso. Atajo sobre
+ * `leerRasterVarios` para el caso de a uno; si vas a pedir varios, usar
+ * esa directamente ahorra abrir una transaccion de IndexedDB por recurso. */
 export async function leerRaster(
   fileId: string,
   resourceId: string,
@@ -135,41 +236,8 @@ export async function leerRaster(
   pedidoH: number,
   opciones: { cualquierTamaño?: boolean } = {}
 ): Promise<ImageBitmap | null> {
-  const exacta = claveRaster(fileId, resourceId, pedidoW, pedidoH);
-  let fila = (await conStore<FilaCache>("readonly", (s) => s.get(exacta) as IDBRequest<FilaCache>)) as
-    | FilaCache
-    | null;
-
-  if (!fila) {
-    const candidatas = (await conStore<FilaCache[]>("readonly", (s) =>
-      s.index("porRecurso").getAll([fileId, resourceId]) as IDBRequest<FilaCache[]>
-    )) as FilaCache[] | null;
-    if (candidatas && candidatas.length) {
-      // Sirve la que se pidio con al menos el 80% del tamaño actual (por
-      // debajo de eso se veria borrosa al acercarse). De las que sirven, la
-      // mas chica, para no gastar RAM de mas.
-      const utiles = candidatas
-        .filter((c) => c.pedidoW >= pedidoW * 0.8 && c.pedidoH >= pedidoH * 0.8)
-        .sort((a, b) => a.pedidoW * a.pedidoH - b.pedidoW * b.pedidoH);
-      fila = utiles[0] || null;
-      // Como ADELANTO (mostrar algo mientras se rasteriza lo bueno) sirve
-      // cualquier cosa que haya, aunque sea mas chica de lo pedido: se va a
-      // ver borrosa unos segundos, que es infinitamente mejor que el hueco
-      // gris. Se elige la mas grande disponible.
-      if (!fila && opciones.cualquierTamaño) {
-        fila = [...candidatas].sort((a, b) => b.pedidoW * b.pedidoH - a.pedidoW * a.pedidoH)[0] || null;
-      }
-    }
-  }
-
-  if (!fila || !fila.blob) return null;
-  try {
-    const bitmap = await createImageBitmap(fila.blob);
-    void conStore("readwrite", (s) => s.put({ ...fila!, usadoEn: Date.now() }));
-    return bitmap;
-  } catch {
-    return null;
-  }
+  const mapa = await leerRasterVarios(fileId, [{ resourceId, pedidoW, pedidoH, cualquierTamaño: opciones.cualquierTamaño }]);
+  return mapa.get(resourceId) ?? null;
 }
 
 /** Escribe una fila ya armada (blob ya codificado) y programa la poda. Es el
