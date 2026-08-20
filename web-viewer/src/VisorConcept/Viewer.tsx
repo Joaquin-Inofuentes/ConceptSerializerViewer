@@ -782,21 +782,47 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       if (!item || item.kind !== "image") return null;
       const anchoBase = item.width || 500;
       const altoBase = item.height || 500;
-      // "Full HD": el lado mayor apunta a un poco mas de 1920 para que, tras
-      // el clamp por presupuesto/resolucion nativa dentro de
-      // loadResourceImages, no quede corto. Una foto real (bitmap) no gana
-      // nada mas alla de su resolucion nativa — eso lo resuelve `clampTarget`
-      // solo; un PDF (plano vectorial) sí aprovecha el pedido entero.
-      const LADO_OBJETIVO = 2200;
-      const escala = Math.min(LADO_OBJETIVO / Math.max(anchoBase, altoBase), 12);
+      // Cuanta resolucion pedir para la vista de foto a pantalla completa.
+      //
+      // Antes se pedia un lado mayor fijo de 2200 px. Para una foto cuadrada
+      // eso son ~4,8 Mpx, pero los planos de esta carpeta son tiras muy
+      // alargadas (relacion 1:4,7): fijar el lado LARGO en 2200 deja el corto
+      // en ~470 px, o sea ~1 Mpx — un octavo del presupuesto que el
+      // dispositivo permite (`maxPixelsPerResource`). Por eso la foto se veia
+      // borrosa apenas se le hacia un poco de zoom dentro del visor de fotos:
+      // no era el zoom, era que se pedia poca resolucion de entrada.
+      //
+      // Ahora el objetivo se fija por AREA (los pixeles que de verdad se
+      // pueden gastar) y no por el lado mayor, asi la forma del recurso no
+      // cambia cuanta resolucion recibe. Se mantiene un piso (que un recurso
+      // chico no quede por debajo de lo de antes) y un techo de lado para no
+      // pasarse del limite de dimension de canvas del navegador.
+      //
+      // Una foto real (bitmap) no gana nada mas alla de su resolucion nativa
+      // — eso lo resuelve `clampTarget` dentro de loadResourceImages; un PDF
+      // (plano vectorial) sí aprovecha el pedido entero.
+      const LADO_MINIMO_OBJETIVO = 2200;
+      const LADO_MAXIMO_OBJETIVO = 8000;
+      const objetivoPx = Math.min(budgets.maxPixelsPerResource, 12_000_000);
+      const areaBase = Math.max(1, anchoBase * altoBase);
+      let escala = Math.sqrt(objetivoPx / areaBase);
+      const ladoBase = Math.max(anchoBase, altoBase);
+      // Piso: nunca peor que el lado fijo de antes.
+      escala = Math.max(escala, LADO_MINIMO_OBJETIVO / ladoBase);
+      // Techo: por lado (limite de canvas) y por escala (un recurso diminuto
+      // no se agranda 100x para nada).
+      escala = Math.min(escala, LADO_MAXIMO_OBJETIVO / ladoBase, 12);
       const w = Math.max(1, Math.round(anchoBase * escala));
       const h = Math.max(1, Math.round(altoBase * escala));
 
       const cargados = await loadResourceImages(doc, {
         targets: { [resourceId]: { width: w, height: h } }, // sin `region`: pagina completa, nunca recortada
         quality: 1,
-        maxPixels: budgets.maxPixelsPerResource,
-        maxTotalPixels: budgets.maxPixelsPerResource,
+        // El mismo objetivo que se acaba de calcular: si se dejara el
+        // presupuesto crudo por recurso, el clamp interno podria recortar el
+        // pedido justo cuando el piso de lado lo empuja por encima.
+        maxPixels: Math.max(objetivoPx, w * h),
+        maxTotalPixels: Math.max(objetivoPx, w * h),
         minSide: 512,
         timeoutMs: 30000,
         only: [resourceId],
@@ -2411,6 +2437,23 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           ),
         }));
 
+    (window as any).__viewerDiag = () => {
+      const { pedida, exacta } = regionesVisibles();
+      return {
+        cargadas: Object.fromEntries(
+          Object.entries(imagesRef.current).map(([id, r]) => [
+            id.slice(0, 8),
+            { region: r.region, w: (r.img as any).width, h: (r.img as any).height, exif: r.exif },
+          ])
+        ),
+        pedida: Object.fromEntries(Object.entries(pedida).map(([id, r]) => [id.slice(0, 8), r])),
+        exacta: Object.fromEntries(Object.entries(exacta).map(([id, r]) => [id.slice(0, 8), r])),
+        hot: [...hotFifoRef.current].map((x) => x.slice(0, 8)),
+        escala: Object.fromEntries(Object.entries(escalaPorRecursoRef.current).map(([id, v]) => [id.slice(0, 8), v])),
+        tope: Object.fromEntries(Object.entries(topeAlcanzadoRef.current).map(([id, v]) => [id.slice(0, 8), v])),
+      };
+    };
+
     // Leer y fijar el encuadre, para poder volver EXACTAMENTE a la misma vista
     // y comparar el lienzo contra si mismo tras un vendaval de gestos.
     (window as any).__viewerVista = () => ({
@@ -2434,6 +2477,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       delete (window as any).__viewerHotCache;
       delete (window as any).__viewerCobertura;
       delete (window as any).__viewerCajas;
+      delete (window as any).__viewerDiag;
       delete (window as any).__viewerVista;
       delete (window as any).__viewerFijarVista;
       delete (window as any).__viewerRefinando;
