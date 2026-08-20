@@ -1628,6 +1628,11 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       }
 
       onRefinandoRef.current?.(true, aRefinar.length, sinBitmap.length);
+      // Expuesto en window (mismo patron que __viewerCajas/__viewerStats):
+      // los bancos de pruebas necesitan saber cuando hay carga/rasterizado
+      // real en curso para separar "gesto activo, deberia ser gratis" de
+      // "asentando, aca vive el trabajo" sin adivinar por heuristica.
+      (window as any).__viewerRefinando = true;
       const soloVisibles = sinBitmap.filter((id) => visibles.includes(id));
       const soloAnillo = sinBitmap.filter((id) => !visibles.includes(id));
       try {
@@ -1660,6 +1665,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           await cargarRecursos(necesaria * ESCALA_ANILLO, signal, soloAnillo);
         }
       } finally {
+        (window as any).__viewerRefinando = false;
         if (!signal?.aborted) onRefinandoRef.current?.(false, 0, 0);
       }
     },
@@ -2357,6 +2363,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       delete (window as any).__viewerCajas;
       delete (window as any).__viewerVista;
       delete (window as any).__viewerFijarVista;
+      delete (window as any).__viewerRefinando;
     };
   }, [pedirPreviews, docCache, requestRedraw]);
 
