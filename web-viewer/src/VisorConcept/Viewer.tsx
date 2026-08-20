@@ -146,6 +146,27 @@ const ESCALA_ANILLO = 0.5;
  * rasterizar. Con 1 se re-rasterizaria ante el menor movimiento de zoom. */
 const TOLERANCIA_ESCALA = 1.1;
 
+/**
+ * Cuanto se puede correr el lienzo por CSS antes de redibujarlo de verdad.
+ *
+ * Durante un gesto no se redibuja: se desplaza el ultimo frame con un
+ * `transform`, que es gratis para el hilo principal. Pero el canvas mide lo
+ * mismo que la ventana, asi que al correrlo queda una FRANJA DESTAPADA en el
+ * borde contrario — sin dibujo y sin grilla, porque ahi ya no hay canvas.
+ * En un arrastre normal eso dura un frame y no se ve; en un arrastre largo
+ * (o si el navegador deja de componer, como el panel de pruebas cuando
+ * pierde el foco) queda a la vista y parece que el dibujo "se rompio".
+ *
+ * Con esto, en cuanto el corrimiento pasa del 12% de la pantalla se dibuja un
+ * frame de verdad y el gesto se re-ancla ahi. Son unos pocos redibujos por
+ * arrastre, no uno por movimiento: el ahorro del transform CSS se mantiene.
+ */
+const UMBRAL_REANCLAJE = 0.12;
+
+/** Lo mismo para el zoom: un frame viejo estirado mas que esto se ve borroso
+ * y conviene volver a dibujarlo nitido. */
+const UMBRAL_REANCLAJE_ZOOM = 1.35;
+
 /** Espera tras el ultimo gesto antes de tocar la red. Suficiente para no
  * disparar en cada paso de la rueda, corto para que el hueco no se note. */
 const DEBOUNCE_SINCRONIZAR = 220;
@@ -320,6 +341,16 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
    * intento, con otros recursos ya desalojados, puede conseguir mas.
    */
   const topeAlcanzadoRef = useRef<Record<string, boolean>>({});
+  /**
+   * Recursos a los que ya se les pidio la version PLENA (todo el recurso, a
+   * la maxima resolucion que permite el presupuesto, sin importar el zoom
+   * actual). Ver `cargaPlena` en `sincronizarRecursos`.
+   *
+   * Se marca al pedirla y no al conseguirla a propuesto: una foto chica nunca
+   * va a llegar al tope de pixeles (su resolucion nativa manda), y usar el
+   * tope como condicion la volveria a pedir en cada sync para siempre.
+   */
+  const plenoPedidoRef = useRef<Record<string, boolean>>({});
   const layerConfigsRef = useRef<Record<string, LayerConfig>>(layerConfigs);
   const isolatedLayerRef = useRef<string | null>(isolatedLayer);
   const imageOpacityRef = useRef<number>(imageOpacity ?? 1);
@@ -332,6 +363,8 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
   // 19 imagenes por frame costaba 40-50 ms en gama baja, o sea 20 fps y
   // gestos "pegajosos". Al soltar (o al frenar) se re-dibuja nitido.
   const gestoRef = useRef(false);
+  /** Pide un dibujo REAL aunque haya un gesto en curso (ver `marcarGesto`). */
+  const forzarDibujoRef = useRef(false);
   /** Da acceso a `limpiarTransformGesto` desde efectos que corren antes de
    * que se defina (el del cambio de tema). */
   const limpiarTransformGestoRef = useRef<() => void>(() => {});
@@ -1200,7 +1233,10 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     // resolucion plena: es a proposito mas chico y transitorio, y contarlo
     // desalojaria un "hot" de verdad por un adelanto que ni se esta mirando.
     hot = false,
-    visiblesActuales: string[] = []
+    visiblesActuales: string[] = [],
+    /** Pide el recurso a la maxima resolucion que permite el presupuesto,
+     * independientemente del zoom actual (ver `cargaPlena`). */
+    pleno = false
   ) => {
     if (!doc) return;
     if (Object.keys(dibujado).length === 0) return;
@@ -1235,6 +1271,17 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     // eso, una vez que toco el techo de pixeles).
     const targets: Record<string, { width: number; height: number }> = {};
     Object.entries(dibujado).forEach(([id, size]) => {
+      if (pleno) {
+        // Por AREA: se reparte el techo de pixeles segun la forma del
+        // recurso, en vez de escalar por el zoom del momento. Un plano en
+        // tira (1:4,7) pedido "por lado" desperdiciaria la mayor parte del
+        // presupuesto; pedido por area lo usa entero.
+        const area = Math.max(1, size.width * size.height);
+        const k = Math.sqrt(maxPixelsPedido / area);
+        targets[id] = { width: size.width * k, height: size.height * k };
+        plenoPedidoRef.current[id] = true;
+        return;
+      }
       targets[id] = { width: size.width * escala, height: size.height * escala };
     });
 
@@ -1394,6 +1441,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       usoRef.current = {};
       fallosRef.current = {};
       hotFifoRef.current = [];
+      plenoPedidoRef.current = {};
       topeAlcanzadoRef.current = {};
       // Los workers guardan los ultimos PDFs parseados para abaratar el
       // refinado por zoom. Al cerrar el dibujo ya no sirven, y si no se
@@ -1498,7 +1546,28 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       // El anillo se trae a la resolucion de pantalla, sin recorte: todavia no
       // se sabe que pedazo va a mirar el usuario y el recorte solo tiene
       // sentido para lo que ya esta en cuadro.
-      const pendientes = [...sinBitmap, ...aRefinar];
+      /**
+       * Con POCOS recursos no se carga "por tramos": una vez que hay algo en
+       * pantalla, se trae el recurso ENTERO a la maxima resolucion que
+       * permite el presupuesto y no se vuelve a tocar.
+       *
+       * Es lo que pidio el usuario ("si son menos de 2 imagenes ya debe estar
+       * todo cargado"), y con pocos recursos sale gratis: el techo de RAM se
+       * reparte entre MAX_HOT_FIFO, asi que si hay uno o dos en el documento
+       * caben enteros. El limite es el mismo numero que gobierna el FIFO
+       * caliente, para no prometer mas RAM de la que ese tope permite.
+       *
+       * NO se hace antes que la carga rapida de lo visible: la version plena
+       * de un plano grande tarda segundos, y adelantarla retrasaria la
+       * primera pintura — justo lo que se acaba de ganar.
+       */
+      const pocosRecursos = doc.resourceIds.length <= MAX_HOT_FIFO;
+      const cargaPlena = pocosRecursos
+        ? visibles.filter(
+            (id) => !plenoPedidoRef.current[id] && (fallosRef.current[id] ?? 0) < MAX_INTENTOS
+          )
+        : [];
+      const pendientes = [...sinBitmap, ...aRefinar, ...cargaPlena];
       if (debugCache) {
         logCache(
           `sync: zoom=${zoomRef.current.toFixed(2)} pan=(${panRef.current.x.toFixed(0)},${panRef.current.y.toFixed(0)})`,
@@ -1554,6 +1623,12 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         }
         if (aRefinar.length > 0 && !signal?.aborted) {
           await cargarRecursos(necesaria, signal, aRefinar, true, visibles);
+        }
+        // Despues de lo urgente y antes del anillo: con pocos recursos el
+        // anillo casi no existe (todo lo que hay ya esta en pantalla).
+        if (cargaPlena.length > 0 && !signal?.aborted) {
+          logCache("carga plena (pocos recursos)", cargaPlena.map((x) => x.slice(0, 8)).join(","));
+          await cargarRecursos(necesaria, signal, cargaPlena, true, visibles, true);
         }
         if (soloAnillo.length > 0 && !signal?.aborted) {
           // El anillo va a MEDIA escala: es un cuarto de los pixeles. Todavia
@@ -1685,6 +1760,23 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
    * trabajo por movimiento es escribir una propiedad CSS. */
   const marcarGesto = useCallback(() => {
     iniciarGesto();
+    // Si el lienzo ya se corrio (o se estiro) demasiado, el frame viejo
+    // desplazado deja borde vacio: se pide un dibujo real, que ademas
+    // re-ancla el gesto (ver UMBRAL_REANCLAJE).
+    const s = snapshotViewRef.current;
+    const size = sizeRef.current;
+    const k = zoomRef.current / s.zoom;
+    const dx = panRef.current.x - s.panX * k;
+    const dy = panRef.current.y - s.panY * k;
+    if (
+      Math.abs(dx) > size.width * UMBRAL_REANCLAJE ||
+      Math.abs(dy) > size.height * UMBRAL_REANCLAJE ||
+      k > UMBRAL_REANCLAJE_ZOOM ||
+      k < 1 / UMBRAL_REANCLAJE_ZOOM
+    ) {
+      forzarDibujoRef.current = true;
+      requestRedraw();
+    }
     aplicarTransformGesto();
     // El primer movimiento real destapa el lienzo: la vista previa deja de
     // tener sentido en cuanto el usuario empieza a usar el dibujo.
@@ -1697,7 +1789,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     // varias veces por gesto.
     if (finGestoTimerRef.current) window.clearTimeout(finGestoTimerRef.current);
     finGestoTimerRef.current = window.setTimeout(() => terminarGesto(), 250);
-  }, [iniciarGesto, aplicarTransformGesto, terminarGesto]);
+  }, [iniciarGesto, aplicarTransformGesto, terminarGesto, requestRedraw]);
 
   // HIGH PERFORMANCE RENDER LOOP
   useEffect(() => {
@@ -1708,7 +1800,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
 
       // Durante un gesto no hay nada que dibujar: los pixeles ya estan y los
       // mueve el compositor. Redibujar seria trabajo que se descarta.
-      if (isDirtyRef.current && !gestoRef.current && canvasRef.current && docCache) {
+      if (isDirtyRef.current && (!gestoRef.current || forzarDibujoRef.current) && canvasRef.current && docCache) {
         const canvas = canvasRef.current;
         const ctx = contextoCanvas(canvas);
         const pan = panRef.current;
@@ -1916,6 +2008,20 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           ctx.restore();
           isDirtyRef.current = false;
           dibujo = true;
+          // Este frame ya esta dibujado en la vista ACTUAL, asi que el
+          // transform del gesto sobra: se limpia y el gesto se re-ancla aca.
+          // Sin esto el frame recien pintado quedaria corrido por el
+          // transform viejo — el mismo borde vacio que veniamos a evitar.
+          if (forzarDibujoRef.current) {
+            forzarDibujoRef.current = false;
+            limpiarTransformGestoRef.current();
+            snapshotViewRef.current = {
+              panX: pan.x,
+              panY: pan.y,
+              zoom,
+              dpr: statsRef.current.dpr,
+            };
+          }
           }
         }
       }
@@ -2291,6 +2397,65 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       };
     };
 
+    /**
+     * Vuelca un bitmap ya cargado a escala reducida y reporta hasta donde
+     * tiene contenido de verdad.
+     *
+     * Existe para distinguir dos cosas que en pantalla se ven igual: "el
+     * visor dibuja mal" y "el bitmap que nos dieron ya viene a medias". Un
+     * rasterizado que se corta (por ejemplo, un canvas mas grande de lo que
+     * el backend del navegador puede pintar) no tira ningun error: devuelve
+     * la imagen con el resto en blanco.
+     */
+    (window as any).__viewerAuditarBitmap = (id?: string) => {
+      const entradas = Object.entries(imagesRef.current);
+      const elegido = id ? entradas.find(([k]) => k.startsWith(id)) : entradas[0];
+      if (!elegido) return null;
+      const [resourceId, recurso] = elegido;
+      const src = recurso.img as any;
+      const W = src.width ?? 0;
+      const H = src.height ?? 0;
+      if (!W || !H) return { resourceId, error: "bitmap liberado" };
+      const k = Math.min(320 / W, 320 / H, 1);
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(W * k));
+      c.height = Math.max(1, Math.round(H * k));
+      const cx = c.getContext("2d", { willReadFrequently: true });
+      if (!cx) return { resourceId, error: "sin contexto" };
+      // Fondo magenta: distingue "pixel blanco del plano" de "el bitmap no
+      // pinto nada aca" (transparente), que es justo lo que hay que separar.
+      cx.fillStyle = "#ff00ff";
+      cx.fillRect(0, 0, c.width, c.height);
+      cx.drawImage(src, 0, 0, c.width, c.height);
+      const px = cx.getImageData(0, 0, c.width, c.height).data;
+      const filaPintada = (y: number) => {
+        for (let x = 0; x < c.width; x++) {
+          const i = (y * c.width + x) * 4;
+          if (!(px[i] === 255 && px[i + 1] === 0 && px[i + 2] === 255)) return true;
+        }
+        return false;
+      };
+      let primera = -1;
+      let ultima = -1;
+      let vacias = 0;
+      for (let y = 0; y < c.height; y++) {
+        if (filaPintada(y)) {
+          if (primera === -1) primera = y;
+          ultima = y;
+        } else vacias++;
+      }
+      return {
+        resourceId,
+        bitmap: [W, H],
+        filasConContenido: [primera, ultima],
+        // Que fraccion del alto del bitmap tiene contenido. Si el rasterizado
+        // se corto, esto es netamente menor que 1.
+        cobertura: +(((ultima - primera + 1) / c.height) || 0).toFixed(3),
+        filasVacias: vacias,
+        muestra: c.toDataURL("image/png"),
+      };
+    };
+
     // Leer y fijar el encuadre, para poder volver EXACTAMENTE a la misma vista
     // y comparar el lienzo contra si mismo tras un vendaval de gestos.
     (window as any).__viewerVista = () => ({
@@ -2315,6 +2480,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       delete (window as any).__viewerCobertura;
       delete (window as any).__viewerCajas;
       delete (window as any).__viewerDiag;
+      delete (window as any).__viewerAuditarBitmap;
       delete (window as any).__viewerVista;
       delete (window as any).__viewerFijarVista;
       delete (window as any).__viewerRefinando;
