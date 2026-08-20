@@ -2115,7 +2115,16 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
   const dragStartZoomRef = useRef(1);
   const dragStartPanRef = useRef({ x: 0, y: 0 });
 
+  // Cache del rect del contenedor durante el arrastre: `getBoundingClientRect`
+  // fuerza un layout sincronico, y pedirlo en CADA mousemove (ahora ademas a
+  // la frecuencia nativa, sin el throttle implicito del dispatch de React)
+  // paga ese costo docenas de veces por segundo aunque el contenedor no se
+  // mueva ni cambie de tamaño durante un arrastre. Se toma una vez al
+  // empezar el gesto y se reusa hasta soltar.
+  const dragRectRef = useRef<DOMRect | null>(null);
+
   const handleMouseDown = (e: React.MouseEvent) => {
+    dragRectRef.current = containerRef.current?.getBoundingClientRect() ?? null;
     if (e.button === 2) {
        setIsRightDragging(true);
        setRightDragStartPos({ x: e.clientX, y: e.clientY });
@@ -2129,7 +2138,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handleMouseMove = (e: React.MouseEvent | MouseEvent) => {
     if (isRightDragging) {
        const totalDx = e.clientX - rightDragStartPos.x;
        const totalDy = e.clientY - rightDragStartPos.y;
@@ -2141,7 +2150,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
        let newZoom = dragStartZoomRef.current * zoomFactor;
        newZoom = Math.max(0.01, Math.min(newZoom, 100));
 
-       const rect = containerRef.current?.getBoundingClientRect();
+       const rect = dragRectRef.current ?? containerRef.current?.getBoundingClientRect();
        if (!rect) return;
        const centerX = rightDragStartPos.x - rect.left;
        const centerY = rightDragStartPos.y - rect.top;
@@ -2162,11 +2171,37 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     }
   };
 
-  const handleMouseUp = (e: React.MouseEvent) => {
+  const handleMouseUp = (e: React.MouseEvent | MouseEvent) => {
     if (e.button === 2) setIsRightDragging(false);
     if (e.button === 0) setIsDragging(false);
     terminarGesto();
   };
+
+  // Durante el arrastre, mousemove/mouseup se escuchan a mano sobre `window`
+  // en vez de dejarlos como onMouseMove/onMouseUp de React: un arrastre tira
+  // decenas de eventos por segundo, y cada uno pasado por el dispatch
+  // sintetico de React (creacion de SyntheticEvent, batchedUpdates,
+  // recorrido de ancestros) es puro overhead de hilo principal que el
+  // profile de CPU real (bench-cpu-gesto-real.mjs) mostraba como entradas
+  // propias — SyntheticBaseEvent/batchedUpdates$1/updatedAncestorInfoDev —
+  // durante exactamente esta secuencia. Con listener nativo se paga una sola
+  // vez el alta/baja del listener por gesto, no por movimiento. `onMouseDown`
+  // se deja como handler de React (dispara 1 vez por gesto, no vale la pena).
+  useEffect(() => {
+    if (!isDragging && !isRightDragging) return;
+    const onMove = (e: MouseEvent) => handleMouseMove(e);
+    const onUp = (e: MouseEvent) => handleMouseUp(e);
+    // En window y no en el contenedor: si el mouse sale del lienzo sin
+    // soltar el boton (arrastre rapido hacia el borde), el gesto tiene que
+    // seguir viendo el movimiento en vez de quedar "pegado".
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDragging, isRightDragging]);
 
   const handleWheel = (e: React.WheelEvent) => {
     const zoomFactor = 1.1;
@@ -2210,6 +2245,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
   const tapCountRef = useRef(0);
 
   const handleTouchStart = (e: React.TouchEvent) => {
+    dragRectRef.current = containerRef.current?.getBoundingClientRect() ?? null;
     if (e.touches.length === 1) {
       const now = Date.now();
       if (now - lastTapRef.current < 300) {
@@ -2258,7 +2294,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       let newZoom = dragStartZoomRef.current * zoomFactor;
       newZoom = Math.max(0.01, Math.min(newZoom, 100));
 
-      const rect = containerRef.current?.getBoundingClientRect();
+      const rect = dragRectRef.current ?? containerRef.current?.getBoundingClientRect();
       if (!rect) return;
       const centerX = rightDragStartPos.x - rect.left;
       const centerY = rightDragStartPos.y - rect.top;
@@ -2416,9 +2452,6 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         touchAction: "none"
       }}
       onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
       onWheel={handleWheel}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}

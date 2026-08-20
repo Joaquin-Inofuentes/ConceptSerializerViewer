@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { openConceptsRemote, openConceptsLocal } from './parser';
 import type { Document } from './parser';
 import { SeguidorProgreso, TEXTO_FASE, formatearRestante, formatearMB } from './progreso';
@@ -51,6 +51,175 @@ function BarraCarga({ progreso }: { progreso: EstadoProgreso | null }) {
     </div>
   );
 }
+
+interface LayerMenuProps {
+  layers: Document['layers'];
+  layerConfigs: Record<string, LayerConfig>;
+  isolatedLayer: string | null;
+  open: boolean;
+  layerCount: number;
+  menuRef: React.RefObject<HTMLDivElement | null>;
+  onToggleOpen: () => void;
+  onSetOpacity: (id: string, opacity: number) => void;
+  onToggleVisibility: (id: string) => void;
+  onToggleIsolate: (id: string) => void;
+  onReset: () => void;
+  onToggleAll: () => void;
+}
+
+/**
+ * Icono + desplegable de capas, separado de `ConceptViewer` y memoizado.
+ *
+ * Perfilado real (bench ad-hoc arrastrando el slider de opacidad, CPU x6):
+ * cada tick de `input` volvia a ejecutar TODO el render de `ConceptViewer`
+ * (createElement/jsxDEV ~4s de self-time en 40 ticks), porque toolbar,
+ * menu de export y galeria de imagenes vivian inline en el mismo componente
+ * que el estado `layerConfigs`. Al vivir aca, con props estables (los
+ * callbacks son `useCallback` en el padre), arrastrar UN slider ya no
+ * reconstruye los iconos ni el resto de los menus.
+ */
+const LayerMenu = memo(function LayerMenu({
+  layers, layerConfigs, isolatedLayer, open, layerCount, menuRef,
+  onToggleOpen, onSetOpacity, onToggleVisibility, onToggleIsolate, onReset, onToggleAll,
+}: LayerMenuProps) {
+  return (
+    <div className="dropdown-container" ref={menuRef}>
+      <button
+        className={`btn-tool ${open ? 'active-glow' : ''}`}
+        onClick={onToggleOpen}
+        title={`Capas: ${layerCount}`}
+      >
+        <Filter size={20} />
+      </button>
+
+      {open && (
+        <div className="layer-menu dropdown-menu">
+          <div className="layer-menu-header">
+            <span>Capas</span>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              <button className="btn btn-tiny" onClick={onReset}>Restablecer</button>
+              <button className="btn btn-tiny" onClick={onToggleAll}>Alternar</button>
+            </div>
+          </div>
+          <div className="layer-list">
+            {layers.map((l, i) => (
+              <div key={l.id} className={`layer-item ${isolatedLayer === l.id ? 'isolated' : ''}`}>
+                <div className="layer-info">
+                  <span className="layer-name">Capa {i + 1}</span>
+                  <span style={{ fontSize: '0.75rem', color: '#888' }}>
+                    ({l.strokes.length + l.images.length} elem)
+                  </span>
+                </div>
+                <div className="layer-actions">
+                  <input
+                    type="range"
+                    min="0" max="1" step="0.05"
+                    value={layerConfigs[l.id]?.opacity ?? 1}
+                    onChange={(e) => onSetOpacity(l.id, parseFloat(e.target.value))}
+                    className="opacity-slider"
+                    title="Opacidad"
+                  />
+                  <button
+                    className="icon-btn"
+                    onClick={() => onToggleVisibility(l.id)}
+                    title="Mostrar/Ocultar"
+                  >
+                    {layerConfigs[l.id]?.visible ? <Eye size={16} /> : <EyeOff size={16} color="#aaa" />}
+                  </button>
+                  <button
+                    className={`icon-btn ${isolatedLayer === l.id ? 'active-icon' : ''}`}
+                    onClick={() => onToggleIsolate(l.id)}
+                    title="Aislar capa"
+                  >
+                    <Lock size={16} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+interface ImageMenuProps {
+  open: boolean;
+  imageCount: number;
+  imageOpacity: number;
+  resourceIds: string[];
+  imageUrls: Record<string, string>;
+  menuRef: React.RefObject<HTMLDivElement | null>;
+  onToggleOpen: () => void;
+  onSetImageOpacity: (v: number) => void;
+  onOpenPhoto: (resourceId: string, thumbUrl: string) => void;
+}
+
+/** Icono + desplegable de galeria/opacidad de imagenes, mismo motivo que
+ * `LayerMenu`: separado y memoizado para que arrastrar ESTE slider no
+ * reconstruya el menu de capas ni la toolbar. */
+const ImageMenu = memo(function ImageMenu({
+  open, imageCount, imageOpacity, resourceIds, imageUrls, menuRef,
+  onToggleOpen, onSetImageOpacity, onOpenPhoto,
+}: ImageMenuProps) {
+  return (
+    <div className="dropdown-container" ref={menuRef}>
+      <button
+        className={`btn-tool ${open ? 'active-glow' : ''}`}
+        onClick={onToggleOpen}
+        title={`Imágenes: ${imageCount}`}
+      >
+        <ImageIcon size={20} />
+      </button>
+
+      {open && (
+        <div className="image-menu dropdown-menu">
+          <div className="layer-menu-header">
+            <span>Galería</span>
+            <span style={{ fontSize: '0.7rem', color: '#888' }}>ESC para cerrar</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', borderBottom: '1px solid rgba(128,128,128,0.2)' }}>
+            <ImageIcon size={14} style={{ flexShrink: 0, opacity: 0.7 }} />
+            <input
+              type="range"
+              min="0" max="1" step="0.05"
+              value={imageOpacity}
+              onChange={(e) => onSetImageOpacity(parseFloat(e.target.value))}
+              className="opacity-slider"
+              style={{ flex: 1 }}
+              title="Opacidad de las imágenes"
+              aria-label="Opacidad de las imágenes"
+            />
+            <span style={{ fontSize: '0.75rem', color: '#888', minWidth: '2.5em', textAlign: 'right' }}>
+              {Math.round(imageOpacity * 100)}%
+            </span>
+          </div>
+          <div className="image-gallery">
+            {resourceIds.length > 0 ? resourceIds.map((id) => {
+              const url = imageUrls[id];
+              return (
+                <div
+                  key={id}
+                  className={`gallery-item ${url ? '' : 'gallery-item-lejos'}`}
+                  onClick={() => url && onOpenPhoto(id, url)}
+                  title={url ? 'Ver la foto' : 'Acercate en el dibujo para traerla'}
+                >
+                  {url ? (
+                    <img src={url} alt="Recurso" />
+                  ) : (
+                    <span className="gallery-item-aviso">Acercate<br />para verla</span>
+                  )}
+                </div>
+              );
+            }) : (
+              <div style={{ padding: '1rem', textAlign: 'center', color: '#888' }}>No hay recursos embebidos.</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
 
 export function ConceptViewer({ source, onClose }: ViewerProps) {
   const fileName = source.name;
@@ -346,23 +515,63 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
   const alPrimerGesto = useCallback(() => setPreviaDescartada(true), []);
   const alFallar = useCallback((cuantos: number) => setFallidos(cuantos), []);
 
-  const toggleLayerVisibility = (id: string) => {
+  // useCallback con identidad estable: son props de `LayerMenu`/`ImageMenu`
+  // (memoizados, ver sus comentarios), asi que si estos fueran arrows
+  // nuevas en cada render de `ConceptViewer` el memo no serviria de nada.
+  const toggleLayerVisibility = useCallback((id: string) => {
     setLayerConfigs(prev => ({
       ...prev,
       [id]: { ...prev[id], visible: !prev[id]?.visible }
     }));
-  };
+  }, []);
 
-  const setLayerOpacity = (id: string, opacity: number) => {
+  const setLayerOpacity = useCallback((id: string, opacity: number) => {
     setLayerConfigs(prev => ({
       ...prev,
       [id]: { ...prev[id], opacity }
     }));
-  };
+  }, []);
 
-  const toggleIsolate = (id: string) => {
+  const toggleIsolate = useCallback((id: string) => {
     setIsolatedLayer(prev => prev === id ? null : id);
-  };
+  }, []);
+
+  const toggleLayerMenuOpen = useCallback(() => {
+    setShowLayerMenu(v => !v);
+    setShowImageMenu(false);
+  }, []);
+
+  const toggleImageMenuOpen = useCallback(() => {
+    setShowImageMenu(abriendo => {
+      const next = !abriendo;
+      setShowLayerMenu(false);
+      // Las previews se generan recien aca: es un loop de toDataURL en el
+      // hilo principal que en gama baja cuesta cientos de ms, y la mayoria
+      // de los usuarios nunca abre este menu. Se piden en CADA apertura (no
+      // una sola vez por documento): las fotos que llegaron despues de la
+      // primera vez nunca aparecian.
+      if (next) void (window as any).__conceptsPedirPreviews?.();
+      return next;
+    });
+  }, []);
+
+  const resetLayers = useCallback(() => {
+    setLayerConfigs(prev => {
+      const next: Record<string, LayerConfig> = {};
+      Object.keys(prev).forEach(k => { next[k] = { ...prev[k], visible: true, opacity: 1.0 }; });
+      return next;
+    });
+    setIsolatedLayer(null);
+  }, []);
+
+  const toggleAllLayersVisible = useCallback(() => {
+    setLayerConfigs(prev => {
+      const allVisible = Object.values(prev).every(c => c.visible);
+      const next: Record<string, LayerConfig> = {};
+      Object.keys(prev).forEach(k => { next[k] = { ...prev[k], visible: !allVisible }; });
+      return next;
+    });
+  }, []);
 
   if (error) {
     return (
@@ -445,148 +654,32 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
           )}
         </div>
 
-        <div className="dropdown-container" ref={layerMenuRef}>
-          <button 
-            className={`btn-tool ${showLayerMenu ? 'active-glow' : ''}`}
-            onClick={() => { setShowLayerMenu(!showLayerMenu); setShowImageMenu(false); }}
-            title={`Capas: ${stats.layers}`}
-          >
-            <Filter size={20} />
-          </button>
-          
-          {showLayerMenu && (
-            <div className="layer-menu dropdown-menu">
-              <div className="layer-menu-header">
-                <span>Capas</span>
-                <div style={{display:'flex', gap:'4px'}}>
-                  <button className="btn btn-tiny" onClick={() => {
-                    const newConfigs = {...layerConfigs};
-                    Object.keys(newConfigs).forEach(k => {
-                      newConfigs[k].visible = true;
-                      newConfigs[k].opacity = 1.0;
-                    });
-                    setLayerConfigs(newConfigs);
-                    setIsolatedLayer(null);
-                  }}>Restablecer</button>
-                  <button className="btn btn-tiny" onClick={() => {
-                      const newConfigs = {...layerConfigs};
-                      let allVisible = Object.values(newConfigs).every(c => c.visible);
-                      Object.keys(newConfigs).forEach(k => newConfigs[k].visible = !allVisible);
-                      setLayerConfigs(newConfigs);
-                  }}>Alternar</button>
-                </div>
-              </div>
-              <div className="layer-list">
-                {doc.layers.map((l, i) => (
-                  <div key={l.id} className={`layer-item ${isolatedLayer === l.id ? 'isolated' : ''}`}>
-                    <div className="layer-info">
-                        <span className="layer-name">Capa {i+1}</span>
-                        <span style={{ fontSize: '0.75rem', color: '#888' }}>
-                          ({l.strokes.length + l.images.length} elem)
-                        </span>
-                    </div>
-                    <div className="layer-actions">
-                        <input 
-                          type="range" 
-                          min="0" max="1" step="0.05"
-                          value={layerConfigs[l.id]?.opacity ?? 1}
-                          onChange={(e) => setLayerOpacity(l.id, parseFloat(e.target.value))}
-                          className="opacity-slider"
-                          title="Opacidad"
-                        />
-                        <button 
-                          className="icon-btn" 
-                          onClick={() => toggleLayerVisibility(l.id)}
-                          title="Mostrar/Ocultar"
-                        >
-                          {layerConfigs[l.id]?.visible ? <Eye size={16}/> : <EyeOff size={16} color="#aaa"/>}
-                        </button>
-                        <button 
-                          className={`icon-btn ${isolatedLayer === l.id ? 'active-icon' : ''}`} 
-                          onClick={() => toggleIsolate(l.id)}
-                          title="Aislar capa"
-                        >
-                          <Lock size={16} />
-                        </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+        <LayerMenu
+          layers={doc.layers}
+          layerConfigs={layerConfigs}
+          isolatedLayer={isolatedLayer}
+          open={showLayerMenu}
+          layerCount={stats.layers}
+          menuRef={layerMenuRef}
+          onToggleOpen={toggleLayerMenuOpen}
+          onSetOpacity={setLayerOpacity}
+          onToggleVisibility={toggleLayerVisibility}
+          onToggleIsolate={toggleIsolate}
+          onReset={resetLayers}
+          onToggleAll={toggleAllLayersVisible}
+        />
 
-        <div className="dropdown-container" ref={imageMenuRef}>
-          <button
-            className={`btn-tool ${showImageMenu ? 'active-glow' : ''}`}
-            onClick={() => {
-              const abriendo = !showImageMenu;
-              setShowImageMenu(abriendo);
-              setShowLayerMenu(false);
-              // Las previews se generan recien aca: es un loop de toDataURL
-              // en el hilo principal que en gama baja cuesta cientos de ms, y
-              // la mayoria de los usuarios nunca abre este menu. Se piden en
-              // CADA apertura (no una sola vez por documento): las fotos que
-              // llegaron despues de la primera vez nunca aparecian.
-              if (abriendo) void (window as any).__conceptsPedirPreviews?.();
-            }}
-            title={`Imágenes: ${stats.images}`}
-          >
-            <ImageIcon size={20} />
-          </button>
-          
-          {showImageMenu && (
-            <div className="image-menu dropdown-menu">
-              <div className="layer-menu-header">
-                <span>Galería</span>
-                <span style={{fontSize:'0.7rem', color:'#888'}}>ESC para cerrar</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', borderBottom: '1px solid rgba(128,128,128,0.2)' }}>
-                <ImageIcon size={14} style={{ flexShrink: 0, opacity: 0.7 }} />
-                <input
-                  type="range"
-                  min="0" max="1" step="0.05"
-                  value={imageOpacity}
-                  onChange={(e) => setImageOpacity(parseFloat(e.target.value))}
-                  className="opacity-slider"
-                  style={{ flex: 1 }}
-                  title="Opacidad de las imágenes"
-                  aria-label="Opacidad de las imágenes"
-                />
-                <span style={{ fontSize: '0.75rem', color: '#888', minWidth: '2.5em', textAlign: 'right' }}>
-                  {Math.round(imageOpacity * 100)}%
-                </span>
-              </div>
-              <div className="image-gallery">
-                {/* Las que no tienen preview NO son un error: son fotos que
-                    todavia no se bajaron porque a este zoom miden pocos
-                    pixeles. Antes se les mostraba "..." girando en rojo, para
-                    siempre — la grilla parecia una pantalla de errores cuando
-                    en realidad es el comportamiento normal, y ademas no se
-                    comunicaba en ningun lado que hay que acercarse. */}
-                {doc.resourceIds.length > 0 ? doc.resourceIds.map((id) => {
-                  const url = imageUrls[id];
-                  return (
-                    <div
-                      key={id}
-                      className={`gallery-item ${url ? '' : 'gallery-item-lejos'}`}
-                      onClick={() => url && abrirFoto(id, url)}
-                      title={url ? 'Ver la foto' : 'Acercate en el dibujo para traerla'}
-                    >
-                        {url ? (
-                          <img src={url} alt="Recurso" />
-                        ) : (
-                          <span className="gallery-item-aviso">Acercate<br />para verla</span>
-                        )}
-                    </div>
-                  );
-                }) : (
-                  <div style={{padding:'1rem', textAlign:'center', color:'#888'}}>No hay recursos embebidos.</div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+        <ImageMenu
+          open={showImageMenu}
+          imageCount={stats.images}
+          imageOpacity={imageOpacity}
+          resourceIds={doc.resourceIds}
+          imageUrls={imageUrls}
+          menuRef={imageMenuRef}
+          onToggleOpen={toggleImageMenuOpen}
+          onSetImageOpacity={setImageOpacity}
+          onOpenPhoto={abrirFoto}
+        />
       </div>
 
       <main className="main-content">
