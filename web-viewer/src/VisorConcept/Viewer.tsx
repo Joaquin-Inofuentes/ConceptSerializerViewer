@@ -97,6 +97,25 @@ export interface ViewerStats {
   framesLargos: number;
   /** Lo que costo DIBUJAR el ultimo frame (distinto de la cadencia). */
   ultimoFrameMs: number;
+  /**
+   * Desglose por fase del ultimo frame DIBUJADO (no del hueco de cadencia).
+   * Siempre se mide: `performance.now()` en 5 puntos por frame es un costo
+   * insignificante frente al propio dibujado, y sin esto "el frame tarda
+   * 40ms" no dice si el tiempo se va en imagenes, en trazos sueltos o en la
+   * grilla — que es exactamente lo que hace falta saber para optimizar el
+   * correcto.
+   */
+  faseGridMs: number;
+  faseImagenesMs: number;
+  faseTrazosMs: number;
+  faseTrazosFusionadosMs: number;
+  /** Cuantas imagenes/trazos realmente se dibujaron en el ultimo frame (no
+   * los colocados en el documento: los que sobrevivieron al descarte por
+   * frustum). Sin esto un frame lento en un dibujo con 3000 trazos y uno
+   * lento en un dibujo con 30000 pero con solo 40 visibles se ven iguales. */
+  itemsImagenDibujados: number;
+  itemsTrazoDibujados: number;
+  gruposFusionadosDibujados: number;
   framesDibujados: number;
   recursosCargados: number;
   pixelesImagenes: number;
@@ -321,6 +340,13 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     p95FrameMs: 0,
     framesLargos: 0,
     ultimoFrameMs: 0,
+    faseGridMs: 0,
+    faseImagenesMs: 0,
+    faseTrazosMs: 0,
+    faseTrazosFusionadosMs: 0,
+    itemsImagenDibujados: 0,
+    itemsTrazoDibujados: 0,
+    gruposFusionadosDibujados: 0,
     framesDibujados: 0,
     recursosCargados: 0,
     pixelesImagenes: 0,
@@ -1813,6 +1839,12 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = budgets.smoothing;
 
+          // Checkpoints de fase para el desglose por frame (ver ViewerStats).
+          // performance.now() cuesta unos pocos microsegundos por llamada:
+          // insignificante al lado del trabajo que mide, y con solo 5 por
+          // frame no compite con el propio dibujado por el hilo principal.
+          const tFaseInicio = performance.now();
+
           // Grid: se dibuja en coordenadas de PANTALLA (una sola pasada de
           // lineas rectas), no en coordenadas de documento — asi la cantidad
           // de lineas depende del tamaño de la ventana y no del zoom.
@@ -1833,6 +1865,8 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
               ctx.restore();
             }
           }
+
+          const tFaseGrid = performance.now();
 
           ctx.save();
           ctx.translate(pan.x, pan.y);
@@ -1864,15 +1898,25 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           // trazos (ver el sort en el useMemo de mas arriba), asi que alcanza
           // con mover el bloque de grupos fusionados de antes del loop a
           // despues.
+          let itemsImagen = 0;
+          let itemsTrazo = 0;
+          // Marca de tiempo tomada UNA sola vez, al ver el primer trazo: como
+          // `docCache.items` ya viene ordenado imagenes-antes-que-trazos, ese
+          // instante es exactamente el limite entre las dos fases sin tener
+          // que llamar a `performance.now()` en cada iteracion.
+          let tFaseImagenes: number | null = null;
           for (const item of docCache.items) {
             // Los trazos ya se dibujaron todos juntos mas abajo.
             if (usarFusionado && item.kind === "stroke") continue;
+            if (item.kind === "stroke" && tFaseImagenes === null) tFaseImagenes = performance.now();
             if (isolatedLayerRef.current && isolatedLayerRef.current !== item.layerId) continue;
             const config = layerConfigsRef.current[item.layerId];
             if (config && !config.visible) continue;
             if (item.maxX < viewMinX || item.minX > viewMaxX || item.maxY < viewMinY || item.minY > viewMaxY) {
               continue;
             }
+            if (item.kind === "image") itemsImagen++;
+            else itemsTrazo++;
 
             const layerOpacity = config ? config.opacity : 1.0;
 
@@ -1929,6 +1973,13 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
             }
           }
 
+          // Se toma ACA: si no hubo NINGUN trazo (`tFaseImagenes` nunca se
+          // seteo), la fase de imagenes ocupa hasta este punto igual — es la
+          // unica forma consistente de medir "no habia trazos que dibujar"
+          // sin ensuciar el loop con una rama para ese caso.
+          const tFaseTrazos = performance.now();
+          let gruposFusionados = 0;
+
           // Camino de lejos: los trazos fusionados se dibujan ACA, despues de
           // todas las imagenes, para que las notas queden arriba de las fotos
           // sin excepcion (antes se dibujaban primero y una foto pegada
@@ -1938,6 +1989,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
               if (isolatedLayerRef.current && isolatedLayerRef.current !== g.layerId) continue;
               const config = layerConfigsRef.current[g.layerId];
               if (config && !config.visible) continue;
+              gruposFusionados++;
               const a = g.globalAlpha * (config ? config.opacity : 1.0);
               if (g.color !== color) { ctx.strokeStyle = g.color; color = g.color; }
               if (a !== alpha) { ctx.globalAlpha = a; alpha = a; }
@@ -1945,6 +1997,15 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
               ctx.stroke(g.path);
             }
           }
+          const tFaseFin = performance.now();
+          const tFaseImagenesFinal = tFaseImagenes ?? tFaseTrazos;
+          statsRef.current.faseGridMs = tFaseGrid - tFaseInicio;
+          statsRef.current.faseImagenesMs = tFaseImagenesFinal - tFaseGrid;
+          statsRef.current.faseTrazosMs = tFaseTrazos - tFaseImagenesFinal;
+          statsRef.current.faseTrazosFusionadosMs = tFaseFin - tFaseTrazos;
+          statsRef.current.itemsImagenDibujados = itemsImagen;
+          statsRef.current.itemsTrazoDibujados = itemsTrazo;
+          statsRef.current.gruposFusionadosDibujados = gruposFusionados;
           ctx.restore();
           isDirtyRef.current = false;
           dibujo = true;
