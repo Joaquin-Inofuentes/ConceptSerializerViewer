@@ -19,7 +19,7 @@ import {
   ALTO_LINEA_TEXTO,
 } from "../Gallery/renderCore";
 import type { RecursoRasterizado } from "../Gallery/renderCore";
-import { getBudgets } from "../device";
+import { dprVivo, getBudgets } from "../device";
 import { coloresLienzo, temaGuardado } from "../theme";
 import type { Tema } from "../theme";
 
@@ -147,6 +147,27 @@ const ESCALA_ANILLO = 0.5;
 const TOLERANCIA_ESCALA = 1.1;
 
 /**
+ * Cuanto mas grande que la ventana se dibuja el lienzo, por lado.
+ *
+ * El canvas se pinta un 25% mas ancho y un 25% mas alto POR CADA LADO (o sea
+ * un 50% mas de ancho y de alto en total) y se coloca corrido esa misma
+ * cantidad hacia arriba y hacia la izquierda, con el contenedor recortando lo
+ * que sobra. El usuario ve exactamente lo mismo que antes; la diferencia es
+ * que ahora hay lienzo dibujado FUERA de cuadro.
+ *
+ * Para que sirve: durante un gesto el frame no se redibuja, se corre con un
+ * `transform` de CSS. Sin margen, correrlo destapa el borde — sin dibujo y
+ * sin grilla, porque ahi no hay canvas. Con el margen, ese borde destapado
+ * cae fuera de lo que se ve: el paneo y el zoom salen de una zona ya
+ * dibujada. Se sigue re-dibujando de verdad al pasar `UMBRAL_REANCLAJE`, que
+ * es a proposito MENOR que este margen, asi que el hueco nunca llega a
+ * asomar.
+ *
+ * Cuesta 2,25x de area por frame (1,5 x 1,5). Es el precio de no ver negro.
+ */
+const MARGEN_LIENZO = 0.25;
+
+/**
  * Cuanto se puede correr el lienzo por CSS antes de redibujarlo de verdad.
  *
  * Durante un gesto no se redibuja: se desplaza el ultimo frame con un
@@ -161,11 +182,11 @@ const TOLERANCIA_ESCALA = 1.1;
  * frame de verdad y el gesto se re-ancla ahi. Son unos pocos redibujos por
  * arrastre, no uno por movimiento: el ahorro del transform CSS se mantiene.
  */
-const UMBRAL_REANCLAJE = 0.12;
+const UMBRAL_REANCLAJE = 0.2;
 
 /** Lo mismo para el zoom: un frame viejo estirado mas que esto se ve borroso
  * y conviene volver a dibujarlo nitido. */
-const UMBRAL_REANCLAJE_ZOOM = 1.35;
+const UMBRAL_REANCLAJE_ZOOM = 1.4;
 
 /** Espera tras el ultimo gesto antes de tocar la red. Suficiente para no
  * disparar en cada paso de la rueda, corto para que el hueco no se note. */
@@ -953,9 +974,27 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     const ro = new ResizeObserver(updateSize);
     ro.observe(el);
     window.addEventListener("resize", updateSize);
+    // Cambio de densidad de pantalla SIN cambio de tamaño: mover la ventana a
+    // otro monitor o cambiar el zoom del navegador no toca `clientWidth`, asi
+    // que ni el ResizeObserver ni el resize de window se enteran, y el canvas
+    // se quedaba con el buffer de la densidad vieja (borroso, o gastando
+    // pixeles de mas). El media query se re-arma en cada cambio porque
+    // consulta el DPR concreto del momento.
+    let mq: MediaQueryList | null = null;
+    const alCambiarDpr = () => {
+      requestRedraw();
+      escucharDpr();
+    };
+    const escucharDpr = () => {
+      mq?.removeEventListener("change", alCambiarDpr);
+      mq = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      mq.addEventListener("change", alCambiarDpr);
+    };
+    escucharDpr();
     return () => {
       ro.disconnect();
       window.removeEventListener('resize', updateSize);
+      mq?.removeEventListener("change", alCambiarDpr);
     };
   }, [requestRedraw]);
 
@@ -1813,28 +1852,46 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           // entrar y al salir de CADA gesto (dos allocaciones de megabytes mas
           // dos invalidaciones de layout). Ahora el gesto no dibuja, asi que
           // no hay nada que ahorrar y si hay mucho que dejar de reasignar.
-          const dpr = budgets.maxDpr;
+          // Se relee en cada frame (barato) en vez de usar el `maxDpr` que
+          // quedo congelado al abrir la sesion: si la ventana cambia de
+          // densidad —otro monitor, zoom del navegador, un panel que se
+          // redimensiona— el canvas acompaña en vez de quedarse blando.
+          const dpr = dprVivo();
           statsRef.current.dpr = dpr;
+
+          // Margen dibujado fuera de cuadro (ver MARGEN_LIENZO).
+          const margenX = Math.round(size.width * MARGEN_LIENZO);
+          const margenY = Math.round(size.height * MARGEN_LIENZO);
+          const lienzoW = size.width + margenX * 2;
+          const lienzoH = size.height + margenY * 2;
 
           // Reasignar canvas.width/height reserva un buffer nuevo y es caro;
           // solo se hace cuando el tamaño cambio de verdad.
-          const bw = Math.round(size.width * dpr);
-          const bh = Math.round(size.height * dpr);
+          const bw = Math.round(lienzoW * dpr);
+          const bh = Math.round(lienzoH * dpr);
           if (canvasSizeRef.current.width !== bw || canvasSizeRef.current.height !== bh) {
             canvas.width = bw;
             canvas.height = bh;
-            canvas.style.width = `${size.width}px`;
-            canvas.style.height = `${size.height}px`;
+            canvas.style.width = `${lienzoW}px`;
+            canvas.style.height = `${lienzoH}px`;
+            // Corrido para que el trozo que se ve siga siendo el viewport: lo
+            // de mas queda debajo del `overflow: hidden` del contenedor.
+            canvas.style.left = `${-margenX}px`;
+            canvas.style.top = `${-margenY}px`;
             canvasSizeRef.current = { width: bw, height: bh };
           }
 
           {
           const colores = coloresRef.current;
-          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          // El origen logico (0,0) sigue siendo la esquina del VIEWPORT, no la
+          // del canvas: asi todo el resto del dibujado (pan, zoom, grilla,
+          // frustum) sigue razonando en coordenadas de pantalla como antes y
+          // el margen es transparente para ese codigo.
+          ctx.setTransform(dpr, 0, 0, dpr, margenX * dpr, margenY * dpr);
           // Se PINTA el fondo en vez de limpiarlo: con tema oscuro un canvas
           // transparente dejaba ver el blanco del contenedor.
           ctx.fillStyle = colores.fondo;
-          ctx.fillRect(0, 0, size.width, size.height);
+          ctx.fillRect(-margenX, -margenY, lienzoW, lienzoH);
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = budgets.smoothing;
 
@@ -1860,7 +1917,12 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
               // El patron se ancla al pan para que la grilla acompañe al
               // dibujo en vez de quedarse fija a la pantalla.
               ctx.translate(pan.x % gridSize, pan.y % gridSize);
-              ctx.fillRect(-gridSize, -gridSize, size.width + gridSize * 2, size.height + gridSize * 2);
+              ctx.fillRect(
+                -margenX - gridSize,
+                -margenY - gridSize,
+                lienzoW + gridSize * 2,
+                lienzoH + gridSize * 2
+              );
               ctx.restore();
             }
           }
@@ -1871,11 +1933,13 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           ctx.translate(pan.x, pan.y);
           ctx.scale(zoom, zoom);
 
-          // Frustum: solo se dibuja lo que cae dentro de la ventana.
-          const viewMinX = -pan.x / zoom;
-          const viewMinY = -pan.y / zoom;
-          const viewMaxX = (size.width - pan.x) / zoom;
-          const viewMaxY = (size.height - pan.y) / zoom;
+          // Frustum: solo se dibuja lo que cae dentro de la ventana MAS el
+          // margen de fuera de cuadro (si no, el margen quedaria vacio y no
+          // serviria para nada durante el gesto).
+          const viewMinX = (-margenX - pan.x) / zoom;
+          const viewMinY = (-margenY - pan.y) / zoom;
+          const viewMaxX = (size.width + margenX - pan.x) / zoom;
+          const viewMaxY = (size.height + margenY - pan.y) / zoom;
 
           // Con el dibujo alejado se usan los trazos FUSIONADOS: a ese zoom el
           // frustum no descarta nada (el encuadre entra entero), asi que ir
@@ -2510,7 +2574,19 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         ref={canvasRef}
         style={{
           display: "block",
-          touchAction: "none"
+          // El lienzo se dibuja mas grande que la ventana y se corre hacia
+          // arriba/izquierda (ver MARGEN_LIENZO), asi que va posicionado. El
+          // `zIndex: 0` no es decorativo: al sacarlo del flujo, un canvas sin
+          // z-index se pinta ENCIMA de los hermanos no posicionados y se
+          // comia los clicks del modal de bienvenida (lo cazo el test, que se
+          // quedo sin poder apretar "Continuar sin nombre").
+          position: "absolute",
+          zIndex: 0,
+          // Los gestos los escucha el CONTENEDOR, no el canvas. Dejarlo
+          // transparente a los eventos evita que, ya posicionado, le robe los
+          // clicks a cualquier cosa que se muestre encima.
+          pointerEvents: "none",
+          touchAction: "none",
         }}
       />
       {/* Zoom Reference Indicator */}

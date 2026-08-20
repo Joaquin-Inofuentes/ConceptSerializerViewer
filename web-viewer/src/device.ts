@@ -27,8 +27,19 @@ export interface Budgets {
   maxBufferCacheBytes: number;
   /** Tope del cache persistente de rasterizados (IndexedDB). */
   maxRasterCacheBytes: number;
-  /** DPR maximo del canvas del visor en reposo. */
+  /**
+   * DPR del canvas del visor en reposo, resuelto al arrancar la sesion.
+   *
+   * OJO: es una FOTO del `devicePixelRatio` de ese momento. Si la ventana se
+   * mueve a un monitor con otra densidad, o el usuario cambia el zoom del
+   * navegador, este numero se queda viejo — medido: una ventana que arranco a
+   * DPR 1 y paso a 1,28 seguia dibujando a 1 y se veia blanda. Para el canvas
+   * usa `dprVivo()`, que vuelve a leerlo; esto queda para calculos que solo
+   * necesitan el orden de magnitud (presupuestos de resolucion).
+   */
   maxDpr: number;
+  /** Techo al que `dprVivo()` recorta el DPR real del dispositivo. */
+  topeDpr: number;
   /** DPR durante un gesto de pan/zoom (menos pixeles = mas fps). */
   gestureDpr: number;
   /** Si conviene rasterizar PDFs en un worker con OffscreenCanvas. */
@@ -77,6 +88,7 @@ function construir(tier: DeviceTier): Budgets {
       maxBufferCacheBytes: 48 * MB,
       maxRasterCacheBytes: 50 * MB,
       maxDpr: Math.min(dpr, 2),
+      topeDpr: 2,
       gestureDpr: Math.min(dpr, 1.5),
       preferWorker: true,
       smoothing: "medium",
@@ -92,6 +104,7 @@ function construir(tier: DeviceTier): Budgets {
       maxBufferCacheBytes: 150 * MB,
       maxRasterCacheBytes: 150 * MB,
       maxDpr: Math.min(dpr, 2),
+      topeDpr: 2,
       gestureDpr: Math.min(dpr, 2),
       preferWorker: true,
       smoothing: "high",
@@ -106,6 +119,7 @@ function construir(tier: DeviceTier): Budgets {
     maxBufferCacheBytes: 400 * MB,
     maxRasterCacheBytes: 400 * MB,
     maxDpr: Math.min(dpr, 2),
+    topeDpr: 2,
     gestureDpr: Math.min(dpr, 2),
     preferWorker: true,
     smoothing: "high",
@@ -118,6 +132,19 @@ let cache: Budgets | null = null;
 export function getBudgets(): Budgets {
   if (!cache) cache = construir(detectarTier());
   return cache;
+}
+
+/**
+ * DPR a usar AHORA para el canvas, releyendo el del dispositivo.
+ *
+ * `budgets.maxDpr` se calcula una sola vez por sesion, asi que no acompaña un
+ * cambio de densidad (mover la ventana a otro monitor, cambiar el zoom del
+ * navegador, un panel que se redimensiona). Esto lo vuelve a leer y le aplica
+ * el mismo techo.
+ */
+export function dprVivo(): number {
+  if (typeof window === "undefined") return 1;
+  return Math.min(window.devicePixelRatio || 1, getBudgets().topeDpr);
 }
 
 /** Fuerza una gama concreta. Solo para benchmarks (?tier=baja en la URL). */
