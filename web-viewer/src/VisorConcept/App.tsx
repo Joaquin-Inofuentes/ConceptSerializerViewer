@@ -236,23 +236,28 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
         return;
       }
 
-      // 1) Vista previa embebida primero: son ~110 KB y da feedback inmediato
-      //    incluso en el dibujo de 262 MB.
-      seguidor.cambiarFase('descargando', 'vista previa');
-      try {
-        const blob = await archivo.thumbnail();
-        if (blob && !cancelado) {
-          urlPlaceholder = URL.createObjectURL(blob);
-          setPlaceholder(urlPlaceholder);
-        }
-      } catch {
-        // Sin vista previa se sigue igual, solo que sin placeholder.
-      }
+      // La vista previa (thumb.jpg, ~110 KB) y el documento (tree.pack, ~1 MB)
+      // viven en offsets DISTINTOS del mismo zip: no hay ninguna dependencia
+      // real entre pedirlos. Antes se esperaba el thumbnail ENTERO antes de
+      // arrancar el pedido de tree.pack, asi que el segundo rango ni siquiera
+      // salia a la red hasta que volvia el primero — en una conexion con
+      // latencia (el proxy de Drive agrega ~1,7 s de por si) eso es tiempo
+      // muerto sumado en serie por nada. Se piden los dos A LA VEZ y cada uno
+      // actualiza la UI en cuanto el suyo llega, sin esperar al otro.
+      seguidor.cambiarFase('descargando', 'vista previa y documento');
+      const [resThumb, resDoc] = await Promise.allSettled([archivo.thumbnail(), archivo.parse()]);
 
-      // 2) El documento (trazos y capas): solo tree.pack, ~1 MB.
-      seguidor.cambiarFase('procesando', 'trazos y capas');
-      try {
-        const parsedDoc = await archivo.parse();
+      if (resThumb.status === 'fulfilled' && resThumb.value && !cancelado) {
+        urlPlaceholder = URL.createObjectURL(resThumb.value);
+        setPlaceholder(urlPlaceholder);
+      }
+      // Sin vista previa (fallo o el archivo no la trae) se sigue igual.
+
+      if (resDoc.status === 'rejected') {
+        if (!cancelado) setError(resDoc.reason?.message || 'Error al cargar el archivo');
+      } else {
+        seguidor.cambiarFase('procesando', 'trazos y capas');
+        const parsedDoc = resDoc.value;
         if (cancelado) {
           parsedDoc.close();
           return;
@@ -282,8 +287,6 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
           parsedDoc.resourceIds.length > 0 ? 'descargando' : 'listo',
           parsedDoc.resourceIds.length > 0 ? `0 de ${parsedDoc.resourceIds.length} imágenes` : null
         );
-      } catch (err: any) {
-        if (!cancelado) setError(err.message || "Error al cargar el archivo");
       }
     })();
 
