@@ -19,7 +19,7 @@ import {
   ALTO_LINEA_TEXTO,
 } from "../Gallery/renderCore";
 import type { RecursoRasterizado } from "../Gallery/renderCore";
-import { dprVivo, getBudgets } from "../device";
+import { dprVivo, getBudgets, maxCanvasSide } from "../device";
 import { coloresLienzo, temaGuardado } from "../theme";
 import type { Tema } from "../theme";
 
@@ -377,7 +377,16 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
    * momento, no el techo de este recurso), no se marca aca: en el proximo
    * intento, con otros recursos ya desalojados, puede conseguir mas.
    */
-  const topeAlcanzadoRef = useRef<Record<string, boolean>>({});
+  // Guarda el TECHO (maxPixelsPedido) con el que se saturo, no un booleano.
+  // Antes era `boolean`, y un recurso cargado por el anillo (hot=false, techo
+  // chico: budgets.maxPixelsPerResource) que saturaba ESE techo quedaba
+  // marcado "tope alcanzado" para siempre — incluyendo cuando despues el
+  // usuario se acerca y pasa a pedirse con el techo "hot" (hasta 4x mas
+  // grande). `necesita()` devolvia false sin distinguir con QUE techo se
+  // habia saturado, y ese plano quedaba borroso el resto de la sesion aunque
+  // hubiera presupuesto de sobra para refinarlo. Guardando el numero, se
+  // puede comparar contra el techo VIGENTE en cada consulta.
+  const topeAlcanzadoRef = useRef<Record<string, number>>({});
   /**
    * Recursos a los que ya se les pidio la version PLENA (todo el recurso, a
    * la maxima resolucion que permite el presupuesto, sin importar el zoom
@@ -880,7 +889,12 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       // — eso lo resuelve `clampTarget` dentro de loadResourceImages; un PDF
       // (plano vectorial) sí aprovecha el pedido entero.
       const LADO_MINIMO_OBJETIVO = 2200;
-      const LADO_MAXIMO_OBJETIVO = 8000;
+      // Antes hardcodeado en 8000: por debajo del techo real de Chrome de
+      // escritorio (16384) pero por ENCIMA del de buena parte de las GPU
+      // Android y de iOS viejo (4096-8192), donde pasarse no tira error, el
+      // canvas sale en blanco. `maxCanvasSide()` resuelve el limite real del
+      // dispositivo (verificado, no solo por gama) una vez por sesion.
+      const LADO_MAXIMO_OBJETIVO = maxCanvasSide();
       // Mismo criterio que el lienzo (ver `maxPixelsPedido`): esta vista
       // muestra UN recurso solo y a pantalla completa, asi que puede gastar
       // mas que el techo pensado para repartir entre varios. Se corta en 16
@@ -1238,6 +1252,12 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         pixelesTotalesRef.current -= px;
         delete siguiente[id];
         delete escalaPorRecursoRef.current[id];
+        // Sin esto, un recurso desalojado (bitmap liberado, ya no existe en
+        // `imagesRef`) seguia con `topeAlcanzadoRef`/`plenoPedidoRef` de la
+        // vez anterior: al volver a cargarlo de cero, `necesita()` podia
+        // creer que ya estaba saturado sin haber pedido nada todavia.
+        delete topeAlcanzadoRef.current[id];
+        delete plenoPedidoRef.current[id];
         liberarImagen(r.img);
         liberados++;
       }
@@ -1279,6 +1299,8 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       const siguiente = { ...imagesRef.current };
       delete siguiente[viejo];
       delete escalaPorRecursoRef.current[viejo];
+      delete topeAlcanzadoRef.current[viejo];
+      delete plenoPedidoRef.current[viejo];
       pixelesTotalesRef.current -= pixelesDe(r);
       liberarImagen(r.img);
       imagesRef.current = siguiente;
@@ -1420,11 +1442,12 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         const fraccion = recurso.region?.w ?? 1;
         escalaPorRecursoRef.current[id] =
           anchoDoc > 0 && anchoReal > 0 ? anchoReal / (anchoDoc * fraccion) : escala * RESOURCE_QUALITY;
-        // Si lo que se logro ya esta pegado al tope DURO por recurso, pedir
-        // mas nunca va a mejorarlo (ver comentario en topeAlcanzadoRef): se
-        // marca aca, con el mismo dato (`anchoReal`/`altoReal`) que ya se usa
-        // para la escala lograda, nada nuevo que calcular.
-        topeAlcanzadoRef.current[id] = anchoReal * altoReal >= maxPixelsPedido * 0.95;
+        // Si lo que se logro ya esta pegado al tope DURO con el que se pidio,
+        // pedir mas CON ESE MISMO TECHO nunca va a mejorarlo (ver comentario
+        // en topeAlcanzadoRef): se guarda el techo, con el mismo dato
+        // (`anchoReal`/`altoReal`) que ya se usa para la escala lograda, nada
+        // nuevo que calcular. 0 = no se saturo, se puede seguir refinando.
+        topeAlcanzadoRef.current[id] = anchoReal * altoReal >= maxPixelsPedido * 0.95 ? maxPixelsPedido : 0;
         usoRef.current[id] = ++relojUsoRef.current;
         // Solo cuenta para el tope FIFO si de verdad llego a resolucion
         // "full HD": en una vista general de un dibujo con muchos planos,
@@ -1581,14 +1604,30 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
           return true;
         }
         // "Ya cargado, no insistir con la ESCALA": si este recurso ya pego
-        // contra el techo DURO de pixeles por recurso (topeAlcanzadoRef),
-        // pedir mas nunca va a mejorarlo — sin este freno, a zoom muy alto
-        // (mas alla de lo que el presupuesto del dispositivo permite) CADA
-        // gesto de pan o zoom volvia a intentar el rasterizado completo sin
-        // lograr nada mejor, el "mini flash" del cartel "Afinando...".
-        if (topeAlcanzadoRef.current[id]) {
-          logCache("tope de pixeles alcanzado, no se pide mas", id.slice(0, 8));
-          return false;
+        // contra el techo DURO de pixeles CON EL QUE SE PIDIO, pedir mas otra
+        // vez con ESE MISMO techo nunca va a mejorarlo — sin este freno, a
+        // zoom muy alto (mas alla de lo que el presupuesto del dispositivo
+        // permite) CADA gesto de pan o zoom volvia a intentar el rasterizado
+        // completo sin lograr nada mejor, el "mini flash" del cartel
+        // "Afinando...".
+        //
+        // Esta funcion solo se consulta para `visibles` (siempre con hot),
+        // asi que el techo vigente AHORA es el mismo calculo "hot" que hace
+        // `cargarRecursos`. Si el recurso se satur con un techo MENOR (p.ej.
+        // llego por el anillo, hot=false, budgets.maxPixelsPerResource sin
+        // multiplicar), hay margen de sobra para refinarlo con el techo hot
+        // y no hay que rendirse.
+        const techoAlcanzado = topeAlcanzadoRef.current[id] ?? 0;
+        if (techoAlcanzado > 0) {
+          const competidoresHot = Math.min(MAX_HOT_FIFO, Math.max(1, doc.resourceIds.length));
+          const techoHotVigente = Math.min(
+            budgets.maxPixelsPerResource * 4,
+            Math.floor((budgets.maxImagePixels * FRACCION_PLENA) / competidoresHot)
+          );
+          if (techoAlcanzado >= techoHotVigente * 0.999) {
+            logCache("tope de pixeles alcanzado (con el techo vigente), no se pide mas", id.slice(0, 8));
+            return false;
+          }
         }
         // Lo unico que queda como motivo para volver a rasterizar: el usuario
         // se acerco MAS de lo que aguanta la resolucion que tenemos. El paneo

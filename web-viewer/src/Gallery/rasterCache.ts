@@ -110,8 +110,17 @@ function escalon(v: number): number {
  * entradas viejas siguen siendo bitmaps validos pero ya no representan lo que
  * hoy dibujariamos, y servirlas mostraria el bug recien arreglado. Paso con
  * las fotos con EXIF de rotacion, que se guardaban aplastadas 1,78x.
+ *
+ * v3: la CLAVE con la que se guardaba una foto vertical (EXIF 5-8) no
+ * coincidia con la clave con la que se la buscaba (renderCore.ts guardaba
+ * pedidoW/pedidoH ya intercambiados por la orientacion, y los buscaba sin
+ * intercambiar, porque a la hora de consultar el cache todavia no se leyo
+ * el archivo para saber la orientacion). El acierto de cache para esas fotos
+ * era CERO: se re-rasterizaban enteras en cada apertura, y ademas dejaban
+ * entradas basura en IndexedDB que nunca se leian y solo ocupaban lugar.
+ * Subir la version las descarta.
  */
-const VERSION_RASTER = 2;
+const VERSION_RASTER = 3;
 
 export function claveRaster(fileId: string, resourceId: string, width: number, height: number): string {
   return `v${VERSION_RASTER}|${fileId}|${resourceId}|${escalon(width)}x${escalon(height)}`;
@@ -416,11 +425,34 @@ async function podar(): Promise<void> {
 
 /** Borra todo lo cacheado de un archivo (ej. cambio en Drive). */
 export async function invalidarArchivo(fileId: string): Promise<void> {
-  const filas = (await conStore<FilaCache[]>("readonly", (s) =>
-    s.index("fileId").getAll(fileId) as IDBRequest<FilaCache[]>
-  )) as FilaCache[] | null;
-  if (!filas) return;
-  for (const f of filas) await conStore("readwrite", (s) => s.delete(f.key));
+  // Antes: un `getAll()` mas UNA TRANSACCION POR FILA para borrar (`await`
+  // dentro del `for`). Con un archivo con muchas entradas cacheadas (varias
+  // resoluciones por recurso) eran decenas de transacciones secuenciales, y
+  // mientras tanto el visor ya podia haber empezado a leer del cache viejo
+  // (ver `handleOpen` en Gallery.tsx, que ahora espera esta funcion antes de
+  // abrir). Un cursor sobre el indice borra todo en UNA sola transaccion.
+  const db = await abrirDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    let tx: IDBTransaction;
+    try {
+      tx = db.transaction(STORE, "readwrite");
+    } catch {
+      resolve();
+      return;
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+    const cursorReq = tx.objectStore(STORE).index("fileId").openCursor(IDBKeyRange.only(fileId));
+    cursorReq.onerror = () => resolve();
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result;
+      if (!cursor) return; // la transaccion se completa sola
+      cursor.delete();
+      cursor.continue();
+    };
+  });
 }
 
 const MTIMES_KEY = "concepts-raster-mtimes";

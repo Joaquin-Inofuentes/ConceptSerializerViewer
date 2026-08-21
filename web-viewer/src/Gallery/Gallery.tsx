@@ -352,6 +352,11 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
         // abrir por un link compartido/directo — que es exactamente para lo
         // que existe esta ruta — quedaba invisible en las metricas de uso.
         logAbrir(archivo.id, archivo.name, destino.id);
+        // Misma invalidacion (esperada) que `handleOpen`: este camino la
+        // saltaba por completo, asi que abrir por link directo un archivo
+        // re-subido con contenido distinto mostraba el rasterizado viejo
+        // cacheado en este dispositivo.
+        await invalidarSiCambio(archivo.id, archivo.modifiedAt);
         onOpen(archivo.id, archivo.name, null, pila.slice(1).map((c) => c.name));
       }
     })();
@@ -392,7 +397,7 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
   // necesita (vista previa al instante, despues tree.pack, despues los
   // recursos visibles). Antes esto bajaba el archivo entero — hasta 262 MB —
   // antes de mostrar absolutamente nada.
-  const handleOpen = (item: GalleryItem, originRect: DOMRect | null) => {
+  const handleOpen = async (item: GalleryItem, originRect: DOMRect | null) => {
     if (item.status === "processing") return;
     logAbrir(item.id, item.name, currentFolder.id);
     // Si el modifiedAt de Drive cambio desde la ultima vez que se abrio este
@@ -400,7 +405,17 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
     // IndexedDB corresponde al contenido viejo (el cache es por fileId, sin
     // relacion con el contenido); se descarta para que el visor rasterize de
     // nuevo en vez de mostrar el dibujo anterior.
-    void invalidarSiCambio(item.id, item.modifiedAt);
+    //
+    // ESTO TIENE QUE TERMINAR ANTES de abrir el visor: antes se disparaba
+    // sin esperar (`void invalidarSiCambio(...)`) y `onOpen` corria en el
+    // mismo tick. `invalidarArchivo` hace un `getAll()` del indice mas una
+    // transaccion de borrado por fila, así que el visor llegaba a leer
+    // IndexedDB (`leerRasterVarios`) en decenas de ms, ANTES de que el
+    // borrado terminara. Escenario real: alguien re-sube el mismo dibujo a
+    // Drive con planos distintos; el usuario que ya lo habia abierto antes
+    // tocaba la tarjeta y veia los planos VIEJOS con las anotaciones NUEVAS
+    // encima -- exactamente lo que esta funcion existe para evitar.
+    await invalidarSiCambio(item.id, item.modifiedAt);
     // La ruta sin la raiz: es lo que va en la URL compartible.
     onOpen(item.id, item.name, originRect, folderStack.slice(1).map((c) => c.name));
   };

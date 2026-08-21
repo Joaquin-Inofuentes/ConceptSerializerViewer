@@ -24,6 +24,16 @@ function authHeaders(): Record<string, string> {
   };
 }
 
+/** Sin timeout, un fetch que cuelga (tunel, red movil muerta a mitad de
+ * camino sin RST) no resuelve NI rechaza: el try/catch que lo rodea nunca se
+ * dispara y los reintentos de mas abajo no corren nunca. La galeria se queda
+ * con el spinner de "cargando" para siempre. */
+function fetchConTimeout(url: string, init: RequestInit, ms = 10_000): Promise<Response> {
+  const timeoutSignal = AbortSignal.timeout(ms);
+  const signal = init.signal ? AbortSignal.any([init.signal as AbortSignal, timeoutSignal]) : timeoutSignal;
+  return fetch(url, { ...init, signal });
+}
+
 /**
  * Lista subcarpetas y archivos de una carpeta publica de Google Drive
  * (raiz o cualquier subcarpeta), sin API key. Solo el id de la carpeta
@@ -38,9 +48,10 @@ export async function listDriveFolder(folderId: string): Promise<DriveListing> {
   let ultimoError: unknown;
   for (let intento = 0; intento < 3; intento++) {
     try {
-      const res = await fetch(
+      const res = await fetchConTimeout(
         `${FUNCTIONS_URL}/concepts-drive?action=list&folderId=${encodeURIComponent(folderId)}`,
-        { headers: authHeaders() }
+        { headers: authHeaders() },
+        8_000
       );
       if (!res.ok) throw new Error(`No se pudo listar la carpeta de Drive (${res.status})`);
       const data = await res.json();
@@ -95,9 +106,10 @@ export async function downloadDriveFile(
   fileId: string,
   onProgress?: (p: DownloadProgress) => void
 ): Promise<ArrayBuffer> {
-  const res = await fetch(
+  const res = await fetchConTimeout(
     `${FUNCTIONS_URL}/concepts-drive?action=download&fileId=${encodeURIComponent(fileId)}`,
-    { headers: authHeaders() }
+    { headers: authHeaders() },
+    20_000
   );
   if (!res.ok) {
     let detalle = "";

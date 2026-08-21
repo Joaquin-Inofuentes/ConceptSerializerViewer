@@ -1,5 +1,5 @@
 import type { Document } from "../VisorConcept/parser";
-import { getBudgets, soportaOffscreen } from "../device";
+import { getBudgets, soportaOffscreen, maxCanvasSide } from "../device";
 import { leerRasterVarios, guardarRaster, guardarRasterBlob } from "./rasterCache";
 
 // Las coordenadas del documento se asumen en px CSS (96 DPI, el estandar
@@ -14,11 +14,14 @@ export const EXPORT_DPI = 600;
 const BASE_DPI = 96;
 export const EXPORT_SCALE = EXPORT_DPI / BASE_DPI;
 
-// Los canvas del navegador tienen limites duros (Chrome: 65535 px por lado y
-// ~268 Mpx de area; Safari/iOS bastante menos). Pasarse no tira error: el
-// canvas queda en blanco. Un dibujo grande a 600 DPI se pasa facil, asi que
-// el export baja la escala lo necesario en vez de exportar una hoja vacia.
-const MAX_CANVAS_SIDE = 16384;
+// Los canvas del navegador tienen limites duros (Chrome de escritorio:
+// 65535 px por lado y ~268 Mpx de area; Safari/iOS y GPUs Android bastante
+// menos, a menudo 4096 u 8192). Pasarse no tira error: el canvas queda en
+// blanco. Un dibujo grande a 600 DPI se pasa facil, asi que el export baja
+// la escala lo necesario en vez de exportar una hoja vacia. El limite real
+// se resuelve en runtime por dispositivo (ver `maxCanvasSide` en device.ts),
+// no con un numero fijo: 16384 esta bien en desktop pero produce bitmaps
+// vacios en buena parte del parque de gama media/baja.
 
 /** Escala de export efectiva para un tamaño logico dado: EXPORT_SCALE salvo
  * que el canvas resultante no entre, en cuyo caso se reduce lo justo.
@@ -28,10 +31,11 @@ const MAX_CANVAS_SIDE = 16384;
  * terminar el export, asi que ahi el tope baja a 24 Mpx (96 MB). */
 export function safeExportScale(logicalWidth: number, logicalHeight: number): number {
   const maxPixels = getBudgets().maxExportPixels;
+  const ladoMax = maxCanvasSide();
   let scale = EXPORT_SCALE;
   const w = logicalWidth * scale;
   const h = logicalHeight * scale;
-  const porLado = Math.min(MAX_CANVAS_SIDE / w, MAX_CANVAS_SIDE / h, 1);
+  const porLado = Math.min(ladoMax / w, ladoMax / h, 1);
   scale *= porLado;
   const area = logicalWidth * scale * logicalHeight * scale;
   if (area > maxPixels) scale *= Math.sqrt(maxPixels / area);
@@ -45,10 +49,15 @@ export function exportFueRecortado(logicalWidth: number, logicalHeight: number):
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`timeout ${ms}ms`)), ms)),
-  ]);
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout ${ms}ms`)), ms);
+  });
+  // Sin el `finally`, el timer de rechazo queda vivo aunque `promise` gane
+  // la carrera: con N recursos x M sincronizaciones (tipico durante un pan
+  // largo) se acumulan timers de hasta 60 s reteniendo closures que ya no
+  // sirven para nada.
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 let pdfjsPromise: Promise<typeof import("pdfjs-dist")> | null = null;
@@ -220,9 +229,46 @@ interface SlotWorker {
 
 let pool: SlotWorker[] = [];
 let siguienteId = 1;
-let workersRotos = false;
+
+// Antes `workersRotos` era un booleano que, una vez en `true`, quedaba asi
+// el resto de la SESION ENTERA. Un worker puede morir por OOM al abrir un
+// dibujo pesado -- el caso ESPERADO en gama baja, no una falla rara -- y a
+// partir de ahi todo pdf.js pasaba al hilo principal en silencio: los mismos
+// segundos de bloqueo que el pool de workers existe para evitar, sin que
+// nada lo distinga de "hoy anda lento". Ahora es una ventana: unos pocos
+// fallos SEGUIDOS desactivan el pool un rato (probablemente el dispositivo
+// no da para workers concurrentes de pdf.js), pero un fallo aislado no dejo
+// cicatriz permanente.
+const VENTANA_FALLOS_MS = 60_000;
+const MAX_FALLOS_EN_VENTANA = 3;
+const PAUSA_TRAS_FALLOS_MS = 5 * 60_000;
+let fallosRecientes: number[] = [];
+let pausaWorkersHasta = 0;
+
+function marcarFalloWorker() {
+  const ahora = Date.now();
+  fallosRecientes = fallosRecientes.filter((t) => ahora - t < VENTANA_FALLOS_MS);
+  fallosRecientes.push(ahora);
+  if (fallosRecientes.length >= MAX_FALLOS_EN_VENTANA) {
+    pausaWorkersHasta = ahora + PAUSA_TRAS_FALLOS_MS;
+    console.warn(
+      `[renderCore] ${fallosRecientes.length} workers de rasterizado cayeron en menos de ${VENTANA_FALLOS_MS / 1000}s; ` +
+        `se desactiva el pool ${PAUSA_TRAS_FALLOS_MS / 60000} min (todo pasa al hilo principal mientras tanto).`
+    );
+  }
+}
+
+function workersDesactivados(): boolean {
+  return Date.now() < pausaWorkersHasta;
+}
+
+interface EntradaColaSlot {
+  resolve: (s: SlotWorker | null) => void;
+  limpiar: () => void;
+}
+
 /** Quienes esperan un worker libre. Ver `esperarSlot`. */
-let colaSlots: Array<(s: SlotWorker | null) => void> = [];
+let colaSlots: EntradaColaSlot[] = [];
 
 function crearSlot(): SlotWorker | null {
   try {
@@ -238,26 +284,34 @@ function crearSlot(): SlotWorker | null {
       else p.resolve({ bitmap: bitmap as ImageBitmap, cacheBlob: cacheBlob as Blob | undefined });
     };
     worker.onerror = () => {
-      // Si el worker se cae (ej. OOM), se marca el pool como roto y todo lo
-      // que sigue se rasteriza en el hilo principal.
-      workersRotos = true;
+      // Si el worker se cae (ej. OOM), se registra el fallo (ventana movil,
+      // no un latch permanente -- ver `marcarFalloWorker`) y este slot en
+      // particular se saca del pool: dejarlo adentro marcado "libre" haria
+      // que `tomarSlot` lo siguiera entregando y cada pedido volviera a
+      // fallar contra un worker que ya esta muerto.
+      marcarFalloWorker();
       slot.pendientes.forEach((p) => p.reject(new Error("worker de rasterizado caido")));
       slot.pendientes.clear();
-      slot.ocupado = false;
+      pool = pool.filter((s) => s !== slot);
+      try {
+        slot.worker.terminate();
+      } catch {
+        /* ya esta caido */
+      }
       // Los que estaban esperando un worker no pueden quedarse colgados.
       const esperando = colaSlots;
       colaSlots = [];
-      esperando.forEach((r) => r(null));
+      esperando.forEach((e) => e.resolve(null));
     };
     return slot;
   } catch {
-    workersRotos = true;
+    marcarFalloWorker();
     return null;
   }
 }
 
 function tomarSlot(resourceId?: string): SlotWorker | null {
-  if (workersRotos || !soportaOffscreen()) return null;
+  if (workersDesactivados() || !soportaOffscreen()) return null;
   // Primero el que ya tiene este PDF parseado: mandarselo a otro obligaria a
   // parsearlo de nuevo, que es justo el costo que el cache evita.
   const afin = resourceId ? pool.find((s) => !s.ocupado && s.recientes.includes(resourceId)) : undefined;
@@ -279,8 +333,10 @@ function liberarSlot(slot: SlotWorker) {
   const siguiente = colaSlots.shift();
   if (siguiente) {
     // Se queda ocupado: cambia de dueño sin pasar por "libre", para que no lo
-    // tome otro por el medio.
-    siguiente(slot);
+    // tome otro por el medio. `limpiar()` saca el timeout/listener de abort
+    // de esta entrada -- ya no hace falta, gano la carrera por el slot.
+    siguiente.limpiar();
+    siguiente.resolve(slot);
     return;
   }
   slot.ocupado = false;
@@ -300,12 +356,43 @@ function liberarSlot(slot: SlotWorker) {
  *
  * Esperar es estrictamente mejor: el trabajo tarda lo mismo, pero la pantalla
  * sigue respondiendo mientras tanto.
+ *
+ * `signal` y `timeoutMs` cierran una fuga real: el llamador ya envuelve todo
+ * el trabajo en `withTimeout`, pero esa carrera NO cancela la promesa
+ * perdedora -- si `esperarSlot` seguia esperando, su `resolve` quedaba
+ * huerfano en `colaSlots` para siempre. Cuando por fin se liberaba un slot,
+ * `liberarSlot` se lo entregaba a ese resolver muerto, que nadie iba a
+ * volver a soltar: con 2-3 timeouts seguidos en gama baja el pool quedaba
+ * con cero slots utilizables y los recursos dejaban de aparecer. Ahora la
+ * entrada se saca de la cola sola en cuanto el pedido deja de importar.
  */
-function esperarSlot(resourceId?: string): Promise<SlotWorker | null> {
-  if (workersRotos || !soportaOffscreen()) return Promise.resolve(null);
+function esperarSlot(resourceId?: string, signal?: AbortSignal, timeoutMs?: number): Promise<SlotWorker | null> {
+  if (workersDesactivados() || !soportaOffscreen()) return Promise.resolve(null);
   const inmediato = tomarSlot(resourceId);
   if (inmediato) return Promise.resolve(inmediato);
-  return new Promise((resolve) => colaSlots.push(resolve));
+  if (signal?.aborted) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let entry: EntradaColaSlot;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limpiar = () => {
+      colaSlots = colaSlots.filter((e) => e !== entry);
+      signal?.removeEventListener("abort", onAbort);
+      if (timer !== undefined) clearTimeout(timer);
+    };
+    const onAbort = () => {
+      limpiar();
+      resolve(null);
+    };
+    entry = { resolve, limpiar };
+    signal?.addEventListener("abort", onAbort);
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(() => {
+        limpiar();
+        resolve(null);
+      }, timeoutMs);
+    }
+    colaSlots.push(entry);
+  });
 }
 
 /** Le dice a los workers que suelten los PDFs que tienen abiertos. Se llama al
@@ -361,10 +448,26 @@ function rasterizarEnWorker(
 
 /** Cierra los workers. */
 export function cerrarWorkersRaster() {
-  pool.forEach((s) => s.worker.terminate());
+  pool.forEach((s) => {
+    // `terminate()` no rechaza lo que estaba pendiente: sin esto esas
+    // promesas quedaban colgadas hasta que las mataba el `withTimeout` del
+    // llamador (30-60 s), reteniendo closures todo ese tiempo.
+    s.pendientes.forEach((p) => p.reject(new Error("worker de rasterizado cerrado")));
+    s.pendientes.clear();
+    s.worker.terminate();
+  });
   pool = [];
-  colaSlots.forEach((r) => r(null));
+  colaSlots.forEach((e) => {
+    e.limpiar();
+    e.resolve(null);
+  });
   colaSlots = [];
+  // Un cierre explicito es la señal de que el dispositivo SI puede con
+  // workers (llegaron a usarse con normalidad); no tiene sentido que un
+  // fallo viejo siga contando en la ventana o que una pausa vieja se
+  // arrastre a la proxima vez que se abra un dibujo.
+  fallosRecientes = [];
+  pausaWorkersHasta = 0;
 }
 
 let cierreDiferido: number | null = null;
@@ -383,7 +486,19 @@ export function programarCierreWorkers(msEspera = 20000) {
   if (cierreDiferido !== null) clearTimeout(cierreDiferido);
   cierreDiferido = setTimeout(() => {
     cierreDiferido = null;
-    if (pool.every((s) => !s.ocupado)) cerrarWorkersRaster();
+    if (pool.every((s) => !s.ocupado)) {
+      cerrarWorkersRaster();
+      return;
+    }
+    // Antes, si algun slot seguia ocupado (tipico: se cerro el visor con un
+    // refinado en vuelo, que es el caso normal al cerrar durante un zoom),
+    // este `if` simplemente no hacia nada -- y como `cierreDiferido` ya
+    // estaba en null, el cierre NO SE REPROGRAMABA NUNCA. Los workers, cada
+    // uno con pdf.js y hasta 2 PDFs parseados, quedaban vivos el resto de la
+    // sesion mientras el usuario navegaba la galeria, que es justo cuando
+    // esta generando miniaturas y necesita esa RAM. Reintentar hasta que se
+    // desocupen evita la fuga sin adelantar el cierre.
+    programarCierreWorkers(msEspera);
   }, msEspera) as unknown as number;
 }
 
@@ -475,8 +590,9 @@ function clampTarget(
   // limite del navegador no tira error — el canvas queda en blanco y el plano
   // simplemente no aparece.
   const ladoMayor = Math.max(w, h);
-  if (ladoMayor > MAX_CANVAS_SIDE) {
-    const k = MAX_CANVAS_SIDE / ladoMayor;
+  const ladoMax = maxCanvasSide();
+  if (ladoMayor > ladoMax) {
+    const k = ladoMax / ladoMayor;
     w *= k;
     h *= k;
   }
@@ -701,8 +817,19 @@ export async function loadResourceImages(
       };
     });
     const cacheados = await leerRasterVarios(options.fileId, pedidosCache);
-    for (const resourceId of pendientes) {
-      if (options.signal?.aborted) break;
+    for (let iCache = 0; iCache < pendientes.length; iCache++) {
+      const resourceId = pendientes[iCache];
+      if (options.signal?.aborted) {
+        // `leerRasterVarios` ya decodifico TODOS los bitmaps del lote antes
+        // de que arranque este loop (son promesas resueltas de una, no
+        // perezosas). Sin cerrar los que quedan sin procesar, quedan
+        // retenidos hasta que el GC los alcance -- con pan/zoom rapido
+        // abortando sync tras sync, cada aborto filtraba decenas de MB.
+        for (let j = iCache; j < pendientes.length; j++) {
+          cacheados.get(pendientes[j])?.close();
+        }
+        break;
+      }
       const soloComoAdelanto = !!options.targets?.[resourceId]?.region;
       const cacheado = cacheados.get(resourceId) ?? null;
       if (cacheado && !soloComoAdelanto) {
@@ -776,6 +903,18 @@ export async function loadResourceImages(
           const target = options.targets?.[resourceId];
           let pedidoW = (target?.width ?? 0) * opts.quality;
           let pedidoH = (target?.height ?? 0) * opts.quality;
+          // Para la CLAVE de cache (ver mas abajo, guardarRaster/guardarRasterBlob):
+          // se guardan SIN el intercambio de ejes de EXIF 5-8 que sufre `pedidoW`/
+          // `pedidoH` unas lineas mas abajo. La lectura del cache (mas arriba en
+          // esta funcion, antes de bajar el blob) NO PUEDE conocer la orientacion
+          // EXIF todavia -- para eso hay que descargar y leer el archivo, que es
+          // justo lo que el cache existe para evitar -- asi que consulta con estos
+          // valores tal cual (target-space, sin swap). Si se guardara con la
+          // version ya intercambiada, la clave nunca coincidiria con lo que pide la
+          // lectura: toda foto vertical se re-rasterizaria entera en cada apertura
+          // aunque estuviera cacheada.
+          const pedidoWCache = pedidoW;
+          const pedidoHCache = pedidoH;
 
           // Cuanto presupuesto queda. Si ya se gasto casi todo, se rasteriza
           // al minimo legible en vez de saltear el recurso.
@@ -847,7 +986,7 @@ export async function loadResourceImages(
           // nada. Solo tiene sentido cuando de verdad se va a cachear.
           let cacheBlobDelWorker: Blob | undefined;
           const tRaster = performance.now();
-          const slot = options.sinWorker ? null : await esperarSlot(resourceId);
+          const slot = options.sinWorker ? null : await esperarSlot(resourceId, options.signal, timeoutMs);
           if (options.signal?.aborted) {
             if (slot) liberarSlot(slot);
             return;
@@ -867,10 +1006,19 @@ export async function loadResourceImages(
               img = resultado.bitmap;
               cacheBlobDelWorker = resultado.cacheBlob;
             } catch (e) {
+              liberarSlot(slot);
+              // Sin este chequeo, cerrar el visor mientras un rasterizado
+              // sigue en vuelo (soltarPdfsAbiertos() mata las tareas de
+              // pdf.js dentro del worker, esos renders rechazan y caen ACA)
+              // hacia que se rasterizara EN EL HILO PRINCIPAL un dibujo que
+              // el usuario ya cerro: cientos de ms a segundos de bloqueo
+              // gratuito, justo despues de cerrar. El unico chequeo de abort
+              // que existia era ANTES de pedir el slot, no despues de que el
+              // worker fallara.
+              if (options.signal?.aborted) return;
               // No se silencia: caer al hilo principal cuesta cientos de ms de
               // bloqueo por recurso, asi que si esta pasando hay que enterarse.
               if (tiempos.enMain === 0) console.warn("Rasterizado en worker fallo, se sigue en el hilo principal:", e);
-              liberarSlot(slot);
               img = await enMain();
             }
           } else {
@@ -906,13 +1054,13 @@ export async function loadResourceImages(
             if (cacheBlobDelWorker) {
               // El worker ya entrego el JPEG codificado: escribir a
               // IndexedDB es lo unico que queda, y eso es liviano.
-              void guardarRasterBlob(options.fileId!, resourceId, pedidoW, pedidoH, cacheBlobDelWorker, wReal, hReal);
+              void guardarRasterBlob(options.fileId!, resourceId, pedidoWCache, pedidoHCache, cacheBlobDelWorker, wReal, hReal);
             } else {
               // Fallback (rasterizado en el hilo principal): no hay worker
               // que haya podido pre-codificar nada, asi que se hace aca como
               // siempre. Es el camino raro (sin OffscreenCanvas o workers
               // caidos), no el que paga la mayoria de los recursos.
-              void guardarRaster(options.fileId!, resourceId, pedidoW, pedidoH, img);
+              void guardarRaster(options.fileId!, resourceId, pedidoWCache, pedidoHCache, img);
             }
           }
         })(),

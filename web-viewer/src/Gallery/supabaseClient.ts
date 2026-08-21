@@ -22,9 +22,14 @@ function headers(extra: Record<string, string> = {}): Record<string, string> {
   };
 }
 
+/** Sin timeout, un fetch colgado (tunel, red movil muerta a mitad de camino)
+ * no resuelve ni rechaza: el catch de abajo nunca corre y la galeria queda
+ * esperando el arbol de carpetas o las miniaturas para siempre. */
 async function pedir<T>(url: string, init: RequestInit, etiqueta: string): Promise<T | null> {
   try {
-    const res = await fetch(url, init);
+    const timeoutSignal = AbortSignal.timeout(10_000);
+    const signal = init.signal ? AbortSignal.any([init.signal as AbortSignal, timeoutSignal]) : timeoutSignal;
+    const res = await fetch(url, { ...init, signal });
     if (!res.ok) {
       console.error(`Supabase ${etiqueta}: ${res.status} ${await res.text().catch(() => "")}`);
       return null;

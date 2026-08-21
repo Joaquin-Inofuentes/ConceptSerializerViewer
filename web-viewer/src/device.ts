@@ -160,6 +160,62 @@ export function applyTierFromUrl() {
   if (t === "baja" || t === "media" || t === "alta") forceTier(t);
 }
 
+/** Techo de lado de canvas por gama, ANTES de verificar contra el
+ * dispositivo real (ver `maxCanvasSide`). El limite real de muchas GPU
+ * Android y de iOS viejo es 4096, y 8192 en buena parte del resto —
+ * bastante menos que los 16384 que Chrome de escritorio soporta. Pasarse no
+ * tira error: el canvas sale en blanco, en silencio. */
+const TECHO_CANVAS_POR_GAMA: Record<DeviceTier, number> = {
+  baja: 4096,
+  media: 8192,
+  alta: 16384,
+};
+
+let cacheMaxCanvasSide: number | null = null;
+
+/**
+ * Lado maximo seguro para un canvas en este dispositivo.
+ *
+ * Parte del techo por gama y lo VERIFICA de verdad: pinta un pixel en un
+ * canvas cuadrado de ese lado y lo relee. Si sale vacio, el limite real de
+ * la GPU es menor al que se le atribuyo a la gama (pasa en gamas "alta" que
+ * en la practica son gama media con mucha RAM, `deviceMemory>4 && cores>=8`
+ * es un perfil comun hoy), y se baja a la mitad hasta que la prueba pase o
+ * se llegue a un piso de 1024. Se cachea: la prueba solo corre una vez por
+ * sesion.
+ */
+export function maxCanvasSide(): number {
+  if (cacheMaxCanvasSide !== null) return cacheMaxCanvasSide;
+  let candidato = TECHO_CANVAS_POR_GAMA[getBudgets().tier];
+  if (typeof document === "undefined") {
+    cacheMaxCanvasSide = candidato;
+    return candidato;
+  }
+  while (candidato >= 1024) {
+    if (probarLadoCanvas(candidato)) break;
+    candidato = Math.floor(candidato / 2);
+  }
+  cacheMaxCanvasSide = candidato;
+  return candidato;
+}
+
+function probarLadoCanvas(lado: number): boolean {
+  try {
+    const c = document.createElement("canvas");
+    c.width = lado;
+    c.height = 1;
+    const ctx = c.getContext("2d");
+    if (!ctx) return true; // sin contexto no se puede probar; no bloquear por esto
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(lado - 1, 0, 1, 1);
+    const datos = ctx.getImageData(lado - 1, 0, 1, 1).data;
+    c.width = 0; // liberar el backing store de inmediato
+    return datos[3] > 0; // alpha no-cero: el pixel se pinto de verdad
+  } catch {
+    return false;
+  }
+}
+
 /** Soporte de OffscreenCanvas + transferencia a worker (Chrome 69+, Safari 16.4+). */
 export function soportaOffscreen(): boolean {
   return (

@@ -19,6 +19,29 @@
  *     nunca se colocaron en el lienzo.
  */
 
+import { getBudgets } from "../device";
+
+/** Techo duro para cualquier camino que necesite materializar los bytes de
+ * una fuente REMOTA de una sola vez (indice reconstruido por escaneo, o un
+ * servidor que ignoro el Range y mando el archivo entero). Sin este techo,
+ * un .concepts truncado o mal servido de 262 MB se intenta cargar completo
+ * en RAM en un telefono de 1 GB y la pestaña muere sin ningun mensaje. El
+ * multiplicador de 2 sobre el cache de buffers da margen: son casos raros
+ * (archivo dañado / CDN sirviendo sin Range) y preferimos fallar con un
+ * mensaje legible antes que arriesgar el OOM. */
+function techoMaterializable(): number {
+  return getBudgets().maxBufferCacheBytes * 2;
+}
+
+export class ArchivoDemasiadoGrandeError extends Error {
+  constructor(bytes: number, techo: number) {
+    super(
+      `Este archivo (${(bytes / (1024 * 1024)).toFixed(0)} MB) esta dañado, incompleto, o el servidor no soporta descarga parcial, y hace falta bajarlo entero para leerlo. En este dispositivo el limite es ${(techo / (1024 * 1024)).toFixed(0)} MB.`
+    );
+    this.name = "ArchivoDemasiadoGrandeError";
+  }
+}
+
 const SIG_EOCD = 0x06054b50;
 const SIG_EOCD64 = 0x06064b50;
 const SIG_EOCD64_LOC = 0x07064b50;
@@ -183,9 +206,16 @@ export class RemoteSource implements ZipSource {
     const u = this.urlResuelta
       ? `${this.url}${sep}range=${rangeParam}&u=${encodeURIComponent(this.urlResuelta)}`
       : `${this.url}${sep}range=${rangeParam}`;
+    // Sin timeout, un fetch que cuelga (tunel, red movil que murio a mitad de
+    // camino sin mandar RST) nunca resuelve NI rechaza: el try/catch de
+    // fetchRaw nunca se dispara y los reintentos que ya estan escritos no
+    // corren nunca. 20 s alcanza sobradamente para un rango de pocos MB por
+    // el proxy de Drive (~1,7 s de ida y vuelta tipico).
+    const timeoutSignal = AbortSignal.timeout(20_000);
+    const signal = this.signal ? AbortSignal.any([this.signal, timeoutSignal]) : timeoutSignal;
     const res = await fetch(u, {
       headers: { ...this.headers, Range: rangeHeader },
-      signal: this.signal,
+      signal,
     });
     if (!res.ok) throw new Error(`Rango ${rangeHeader} fallo (${res.status})`);
 
@@ -215,8 +245,18 @@ export class RemoteSource implements ZipSource {
     // 200 y no 206. Se detecta para no interpretar mal los offsets.
     if (res.status !== 206 && res.bytes.length > end - start + 1) {
       const total = res.bytes.length;
+      const techo = techoMaterializable();
+      if (total > techo) {
+        // Guardar esto en `bloques` metería el archivo entero en el cache y
+        // `podarBloques` no lo desaloja nunca (ver su guarda de "un solo
+        // bloque"): es exactamente el camino que mata la pestaña. Se
+        // descarta el resultado y se falla con un mensaje legible en vez de
+        // arriesgar el OOM.
+        throw new ArchivoDemasiadoGrandeError(total, techo);
+      }
       this.size = total;
       this.bloques.push({ start: 0, end: total - 1, bytes: res.bytes });
+      this.podarBloques();
       return { bytes: res.bytes.subarray(start, end + 1), total };
     }
     return { bytes: res.bytes, total: res.total };
@@ -271,7 +311,15 @@ export class RemoteSource implements ZipSource {
    * porcion nada despreciable del presupuesto de un telefono de 1 GB. */
   private podarBloques() {
     let total = this.bloques.reduce((n, b) => n + b.bytes.length, 0);
-    while (total > this.MAX_CACHE_BYTES && this.bloques.length > 1) {
+    // Antes se dejaba `length > 1` para no podar el unico bloque (haria que
+    // la lectura en curso se quedara sin sus propios bytes). Pero eso
+    // significaba que UN bloque gigante (p.ej. un servidor que ignoro el
+    // Range) nunca se desalojaba: quedaba retenido para siempre por encima
+    // del presupuesto. `read()` ya sabe recuperarse si el bloque que estaba
+    // usando desaparece del cache (vuelve a pedirlo directo), asi que es
+    // seguro podar hasta dejar cero: lo unico que se pierde es la cache, no
+    // los datos que ya se devolvieron.
+    while (total > this.MAX_CACHE_BYTES && this.bloques.length > 0) {
       const fuera = this.bloques.shift();
       total -= fuera ? fuera.bytes.length : 0;
     }
@@ -450,10 +498,31 @@ export class ZipArchive {
    * se cae a descarga completa (no hay forma de saltar sin el indice).
    */
   private async readIndexEscaneando() {
+    // Este camino requiere materializar TODO el archivo (no hay indice del
+    // que saltar). En una fuente remota eso puede ser un .concepts de hasta
+    // 262 MB: sin techo, un archivo truncado o dañado intenta cargarse
+    // entero en RAM en un telefono de 1 GB y la pestaña muere sin mensaje.
+    // Las fuentes locales (File/Buffer) no tienen este riesgo de red — el
+    // usuario ya eligio ese archivo a proposito — asi que el techo solo
+    // aplica a RemoteSource.
+    if (this.source instanceof RemoteSource) {
+      const techo = techoMaterializable();
+      if (this.source.size > techo) {
+        throw new ArchivoDemasiadoGrandeError(this.source.size, techo);
+      }
+    }
     const bytes = await this.source.read(0, this.source.size);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const decoder = new TextDecoder("utf-8");
     let p = 0;
+    // El escaneo byte a byte del data descriptor (mas abajo) puede recorrer
+    // cientos de millones de posiciones en un archivo grande. Sin ceder el
+    // hilo, eso es la UI congelada por segundos enteros en gama baja. Se
+    // cede cada CICLO_YIELD iteraciones del bucle externo (una por entrada
+    // del zip, normalmente chico) para que el navegador pueda seguir
+    // pintando y atendiendo el resto de la app mientras tanto.
+    const CICLO_YIELD = 8;
+    let ciclo = 0;
     while (p + 30 <= bytes.length) {
       if (view.getUint32(p, true) !== SIG_LOCAL) break;
       const flags = view.getUint16(p + 6, true);
@@ -473,12 +542,17 @@ export class ZipArchive {
       if (compressedSize === 0 && (flags & 0x08) !== 0) {
         let q = dataStart;
         let encontrado = -1;
+        let pasos = 0;
         while (q + 16 <= bytes.length) {
           if (view.getUint32(q, true) === SIG_DATA_DESC && view.getUint32(q + 8, true) === q - dataStart) {
             encontrado = q;
             break;
           }
           q++;
+          // Ceder tambien DENTRO del escaneo de un solo descriptor: si el
+          // stream comprimido de una sola entrada es de decenas de MB, este
+          // bucle interno por si solo ya congela el hilo.
+          if (++pasos % 2_000_000 === 0) await new Promise((r) => setTimeout(r, 0));
         }
         if (encontrado < 0) break;
         compressedSize = encontrado - dataStart;
@@ -496,6 +570,7 @@ export class ZipArchive {
         uncompressedSize,
         localHeaderOffset: dataStart - 30 - nameLen - extraLen,
       });
+      if (++ciclo % CICLO_YIELD === 0) await new Promise((r) => setTimeout(r, 0));
     }
     if (this.entries.size === 0) {
       throw new Error("No parece un archivo .concepts valido (no se encontro ninguna entrada)");
