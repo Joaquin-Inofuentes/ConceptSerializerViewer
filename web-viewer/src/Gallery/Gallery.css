@@ -291,12 +291,16 @@
   height: 100%;
   object-fit: contain;
   image-rendering: auto;
-  animation: thumbIn 0.5s ease-out;
+  /* Antes tambien animaba `transform: scale(1.04) -> 1`: la miniatura
+     entraba AGRANDANDOSE, que se lee como "algo esta llegando" en vez de
+     "esto ya esta completo". Solo opacidad -- aparece en su lugar, no crece
+     hacia el. */
+  animation: thumbIn 0.35s ease-out;
 }
 
 @keyframes thumbIn {
-  from { opacity: 0; transform: scale(1.04); }
-  to { opacity: 1; transform: scale(1); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .gallery-thumb-error {
   color: var(--error, #dc3545);
@@ -518,20 +522,37 @@
   z-index: 400;
 }
 
+/* Antes el brillo se animaba con `background-position` sobre un gradiente:
+   eso NO va por compositor, obliga a repintar el gradiente entero en cada
+   frame, en CADA tarjeta, a 60 fps. Con 37 tarjetas en cola (una carpeta
+   grande sin cache) son 37 repintados por frame en el mismo hilo principal
+   que esta corriendo el recorte de miniaturas (`thumbnail.ts`) -- el peor
+   combo posible. Un pseudo-elemento animado por `transform` sí va por
+   compositor: cuesta lo mismo con 1 tarjeta que con 100. */
+.skeleton-shimmer,
+.skeleton-line {
+  position: relative;
+  overflow: hidden;
+  background: var(--skeleton-1);
+}
+.skeleton-shimmer::after,
+.skeleton-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(100deg, transparent 30%, var(--skeleton-2) 50%, transparent 70%);
+  animation: shimmer 1.3s ease-in-out infinite;
+}
+
 .skeleton-shimmer {
   width: 100%;
   height: 100%;
-  background: linear-gradient(100deg, var(--skeleton-1) 30%, var(--skeleton-2) 50%, var(--skeleton-1) 70%);
-  background-size: 200% 100%;
-  animation: shimmer 1.3s ease-in-out infinite;
 }
 
 .skeleton-line {
   height: 0.85rem;
   border-radius: 4px;
-  background: linear-gradient(100deg, var(--skeleton-1) 30%, var(--skeleton-2) 50%, var(--skeleton-1) 70%);
-  background-size: 200% 100%;
-  animation: shimmer 1.3s ease-in-out infinite;
 }
 
 .gallery-card.skeleton {
@@ -539,8 +560,19 @@
 }
 
 @keyframes shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  100% { transform: translateX(100%); }
+}
+
+/* La galeria no respetaba esta preferencia en absoluto (index.html si, para
+   el skeleton estatico de arranque): la app se volvia MENOS accesible una
+   vez que React montaba. */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer::after,
+  .skeleton-line::after,
+  .gallery-thumb img,
+  .gallery-card {
+    animation: none !important;
+  }
 }
 
 @keyframes fadeIn {

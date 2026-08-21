@@ -235,17 +235,43 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
   // en rasterizarse. Se avisa en vez de dejar el lienzo a medio dibujar sin
   // explicacion.
   const [recursosListos, setRecursosListos] = useState(false);
-  const [progresoRecursos, setProgresoRecursos] = useState<{ listos: number; total: number } | null>(null);
   const [progreso, setProgreso] = useState<EstadoProgreso | null>(null);
   /** Cuantos planos se estan afinando y cuantos hay que traer de la red. Se
    * distinguen porque para el usuario no es lo mismo esperar un instante que
    * esperar 30 s de 4G. */
   const [refinando, setRefinando] = useState({ afinar: 0, traer: 0 });
-  /** El usuario ya toco el lienzo: se saca la vista previa de encima. */
+  /**
+   * Se saca la vista previa de encima cuando TODO lo que cae en el viewport
+   * ya tiene bitmap real (`onCoberturaLista` del Viewer), o cuando se cumple
+   * el techo de espera de mas abajo (lo que llegue primero).
+   *
+   * Antes se descartaba con el primer recurso que llegaba
+   * (`progresoRecursos.listos > 0`) O con el primer gesto del usuario: un
+   * dibujo con 19 planos mostraba 1 real y 18 huecos casi negros durante el
+   * resto de la carga, y un toque accidental al 3% dejaba esos huecos
+   * visibles de forma PERMANENTE. El objetivo es que nunca se vea nada a
+   * medio cargar: se tapa todo con la vista previa hasta que reemplazarla no
+   * deja huecos.
+   */
   const [previaDescartada, setPreviaDescartada] = useState(false);
   /** Planos que no se pudieron traer. Se avisa en vez de decir "listo". */
   const [fallidos, setFallidos] = useState(0);
   const seguidorRef = useRef<SeguidorProgreso | null>(null);
+
+  /** Techo de espera para la cobertura del lienzo: si algun recurso falla o
+   * tarda demasiado, se revela igual (con el aviso de "N planos no se
+   * pudieron cargar" que ya existe) en vez de dejar al usuario mirando la
+   * vista previa para siempre. */
+  const TECHO_ESPERA_COBERTURA_MS = 12_000;
+  const coberturaTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const alCoberturaLista = useCallback(() => {
+    if (coberturaTimeoutRef.current) {
+      clearTimeout(coberturaTimeoutRef.current);
+      coberturaTimeoutRef.current = null;
+    }
+    setPreviaDescartada(true);
+  }, []);
 
   // Layer State
   const [layerConfigs, setLayerConfigs] = useState<Record<string, LayerConfig>>({});
@@ -367,11 +393,15 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
     setRecursosListos(false);
     setPreviaDescartada(false);
     setFallidos(0);
-    setProgresoRecursos(null);
     setPlaceholder(null);
     setDoc(null);
     setStats(null);
     setError(null);
+    if (coberturaTimeoutRef.current) clearTimeout(coberturaTimeoutRef.current);
+    coberturaTimeoutRef.current = setTimeout(() => {
+      coberturaTimeoutRef.current = null;
+      setPreviaDescartada(true);
+    }, TECHO_ESPERA_COBERTURA_MS);
     let cancelado = false;
     faseDibujandoRef.current = false;
     let docCreado: Document | null = null;
@@ -465,6 +495,10 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
       // esto, abrir y cerrar dibujos pesados va dejando fuentes vivas.
       docCreado?.close();
       if (urlPlaceholder) URL.revokeObjectURL(urlPlaceholder);
+      if (coberturaTimeoutRef.current) {
+        clearTimeout(coberturaTimeoutRef.current);
+        coberturaTimeoutRef.current = null;
+      }
     };
   }, [source]);
 
@@ -487,7 +521,6 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
 
   const faseDibujandoRef = useRef(false);
   const alAvanzarRecursos = useCallback((listos: number, total: number) => {
-    setProgresoRecursos({ listos, total });
     // La fase se cambia UNA vez; el resto de los avisos van por `fijarDetalle`,
     // que respeta el limitador de 100 ms. `cambiarFase` fuerza el aviso, asi
     // que llamarlo por cada recurso provocaba un render extra cada vez aunque
@@ -512,7 +545,12 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
     seguidorRef.current?.fijarEsperados(bytes);
   }, []);
 
-  const alPrimerGesto = useCallback(() => setPreviaDescartada(true), []);
+  // Antes este callback descartaba la vista previa apenas el usuario tocaba
+  // el lienzo, sin importar cuanto se hubiera cargado -- un toque accidental
+  // al 3% dejaba 18 huecos negros visibles el resto de la apertura. Ahora el
+  // unico criterio es la cobertura (ver `alCoberturaLista`) o el techo de
+  // espera; el toque en si ya no decide nada. Se deja de pasar el prop al
+  // Viewer.
   const alFallar = useCallback((cuantos: number) => setFallidos(cuantos), []);
 
   // useCallback con identidad estable: son props de `LayerMenu`/`ImageMenu`
@@ -696,8 +734,8 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
             onResourceProgress={alAvanzarRecursos}
             onRefinando={alRefinar}
             onBytesPrevistos={alPreverBytes}
-            onPrimerGesto={alPrimerGesto}
             onFallidos={alFallar}
+            onCoberturaLista={alCoberturaLista}
           />
           {/* Al acercarse, los planos se vuelven a rasterizar a mas resolucion.
               Mientras tanto se sigue viendo la version anterior, y sin avisar
@@ -710,13 +748,17 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
                 : `Afinando ${refinando.afinar} plano${refinando.afinar === 1 ? '' : 's'}…`}
             </div>
           )}
-          {/* La vista previa se mantiene hasta que aparece la PRIMERA imagen,
-              no hasta que se decodifica el documento. En estos dibujos los
-              trazos son anotaciones finas sobre los planos, asi que mostrar
-              solo los trazos daba un lienzo practicamente vacio durante toda
-              la carga de las fotos (medido: ~28 s en el dibujo de 262 MB).
-              Con esto el usuario ve su dibujo completo todo el tiempo, y el
-              lienzo real lo reemplaza cuando ya tiene contenido. */}
+          {/* La vista previa se mantiene hasta que TODO lo que cae en el
+              viewport ya tiene bitmap real (`previaDescartada`, disparado por
+              `onCoberturaLista` del Viewer o por el techo de espera de mas
+              arriba) -- NO hasta que aparece la primera imagen. En estos
+              dibujos los trazos son anotaciones finas sobre los planos, asi
+              que mostrar solo los trazos daba un lienzo practicamente vacio
+              durante toda la carga de las fotos (medido: ~28 s en el dibujo
+              de 262 MB). Antes se retiraba con el PRIMER recurso, dejando ver
+              el resto como huecos casi negros el resto de la carga: el
+              objetivo es que nunca se vea nada a medio cargar, asi que se
+              tapa todo hasta que reemplazarlo no deja huecos. */}
           {/* Un plano que no se pudo traer se dice, no se esconde: antes la
               app afirmaba "listo" con recuadros vacios y sin ninguna pista de
               que faltaba algo ni de por que. */}
@@ -725,7 +767,7 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
               {fallidos} plano{fallidos === 1 ? '' : 's'} no se pudo cargar
             </div>
           )}
-          {placeholder && doc.resourceIds.length > 0 && !recursosListos && !previaDescartada && !(progresoRecursos && progresoRecursos.listos > 0) && (
+          {placeholder && doc.resourceIds.length > 0 && !recursosListos && !previaDescartada && (
             <div className="viewer-placeholder viewer-placeholder-overlay">
               <img src={placeholder} alt="" className="viewer-placeholder-img" />
             </div>

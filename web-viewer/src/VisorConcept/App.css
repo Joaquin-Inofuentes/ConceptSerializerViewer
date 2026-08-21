@@ -296,7 +296,13 @@ body {
   background: var(--bg-canvas);
   pointer-events: none;
   z-index: 20;
-  animation: fadeIn 0.3s ease-out both;
+  /* Antes entraba con `animation: fadeIn 0.3s ease-out both` (opacidad
+     0 -> 1). El overlay REEMPLAZA al placeholder de "!doc" en el mismo
+     instante en que React remonta el arbol (Viewer.tsx aparece), y durante
+     esos ~300ms de fade-in se veia el fondo oscuro liso por debajo -- un
+     parpadeo a negro en cada apertura. La vista previa ya viene visible en
+     el frame anterior (era el placeholder de "!doc"): no hace falta que
+     "aparezca", tiene que estar ahi desde el primer pixel. */
 }
 
 .viewer-placeholder-img {

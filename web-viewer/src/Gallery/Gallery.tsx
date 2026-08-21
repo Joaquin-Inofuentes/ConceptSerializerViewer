@@ -788,7 +788,14 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
 
                     <div className="gallery-thumb">
                       {item.status === "ready" && item.thumbnail ? (
-                        <img src={item.thumbnail} alt={item.name} />
+                        // decoding="async": son data URLs (ya en memoria, sin
+                        // red de por medio), pero decodificar un JPEG de
+                        // hasta 384px sigue siendo trabajo de layout si el
+                        // navegador lo hace sync. alt="": el nombre del
+                        // archivo ya esta en `.gallery-name` justo debajo;
+                        // con alt={item.name} un lector de pantalla lo
+                        // anunciaba dos veces seguidas.
+                        <img src={item.thumbnail} alt="" decoding="async" />
                       ) : item.status === "error" ? (
                         <div className="gallery-thumb-error">
                           <AlertTriangle size={18} />

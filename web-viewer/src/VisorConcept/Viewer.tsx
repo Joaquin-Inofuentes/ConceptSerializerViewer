@@ -65,6 +65,17 @@ interface ViewerProps {
   /** Cuantos planos se dieron por perdidos tras varios intentos. Con esto la
    * app puede decirlo en vez de afirmar que termino de cargar. */
   onFallidos?: (cuantos: number) => void;
+  /**
+   * Se dispara UNA sola vez, la primera vez que todo lo que cae dentro del
+   * viewport actual ya tiene bitmap dibujable (o el documento no tiene
+   * imagenes). Es la condicion de "no hay nada a medio cargar visible":
+   * antes la vista previa se retiraba con el PRIMER recurso que llegaba
+   * (`progresoRecursos.listos > 0` en App.tsx), dejando ver el resto de los
+   * planos como huecos negros durante el resto de la carga. Con esto la
+   * vista previa se sostiene hasta que reemplazarla no deja ningun hueco
+   * visible.
+   */
+  onCoberturaLista?: () => void;
 }
 
 export interface ViewerHandle {
@@ -307,7 +318,7 @@ function buildPath(points: Stroke["points"], tolerancia: number): Path2D {
   return path;
 }
 
-const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerConfigs, isolatedLayer, imageOpacity, onImagesLoaded, onResourcesReady, onResourceProgress, onRefinando, onBytesPrevistos, onPrimerGesto, onFallidos }, ref) => {
+const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerConfigs, isolatedLayer, imageOpacity, onImagesLoaded, onResourcesReady, onResourceProgress, onRefinando, onBytesPrevistos, onPrimerGesto, onFallidos, onCoberturaLista }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -471,6 +482,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
   const onBytesPrevistosRef = useRef(onBytesPrevistos);
   const onPrimerGestoRef = useRef(onPrimerGesto);
   const onFallidosRef = useRef(onFallidos);
+  const onCoberturaListaRef = useRef(onCoberturaLista);
   useEffect(() => {
     onImagesLoadedRef.current = onImagesLoaded;
     onResourcesReadyRef.current = onResourcesReady;
@@ -479,7 +491,11 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     onBytesPrevistosRef.current = onBytesPrevistos;
     onPrimerGestoRef.current = onPrimerGesto;
     onFallidosRef.current = onFallidos;
+    onCoberturaListaRef.current = onCoberturaLista;
   });
+
+  /** Se avisa una sola vez por documento (ver `onCoberturaLista`). */
+  const coberturaAvisadaRef = useRef(false);
 
   /** Se avisa una sola vez, en el primer gesto de verdad. */
   const avisoGestoRef = useRef(false);
@@ -673,6 +689,54 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     if (isolatedLayerRef.current && isolatedLayerRef.current !== item.layerId) return false;
     const config = layerConfigsRef.current[item.layerId];
     return !(config && !config.visible);
+  };
+
+  /**
+   * Misma cuenta que `__viewerCobertura` (mas abajo, expuesta solo para
+   * tests), pero como funcion reusable: "completa" cuando TODO lo que cae
+   * dentro del viewport actual (y no es una chinche demasiado chica para
+   * bajarse a proposito) ya tiene un bitmap dibujable. Si el documento no
+   * tiene imagenes, se considera completa de entrada (nada que esperar).
+   */
+  const calcularCoberturaVisible = (): { completa: boolean; colocadas: number } => {
+    const dc = docCacheRef.current;
+    if (!dc) return { completa: false, colocadas: 0 };
+    const pan = panRef.current;
+    const zoom = zoomRef.current;
+    const size = sizeRef.current;
+    const vMinX = -pan.x / zoom;
+    const vMinY = -pan.y / zoom;
+    const vMaxX = (size.width - pan.x) / zoom;
+    const vMaxY = (size.height - pan.y) / zoom;
+    let colocadas = 0;
+    let visibles = 0;
+    let conBitmap = 0;
+    for (const item of dc.items) {
+      // Las imagenes vienen todas primero en `docCache.items`.
+      if (item.kind !== "image") break;
+      colocadas++;
+      if (!visibleItem(item)) continue;
+      if (item.maxX < vMinX || item.minX > vMaxX || item.maxY < vMinY || item.minY > vMaxY) continue;
+      const ladoPx = Math.max(item.maxX - item.minX, item.maxY - item.minY) * zoom;
+      if (ladoPx < LADO_MINIMO_PX) continue; // "chinche": no se baja a proposito, no cuenta
+      visibles++;
+      const recurso = imagesRef.current[item.resourceId];
+      if (recurso && anchoUtil(recurso.img)) conBitmap++;
+    }
+    if (colocadas === 0) return { completa: true, colocadas: 0 };
+    return { completa: visibles > 0 && visibles === conBitmap, colocadas };
+  };
+
+  /** Se llama cada vez que puede haber cambiado la cobertura (llego un
+   * bitmap, o el encuadre inicial ya se aplico). Solo avisa la PRIMERA vez
+   * que da completa: a partir de ahi la vista previa ya se solto y no hay
+   * que seguir midiendo. */
+  const revisarCoberturaLista = () => {
+    if (coberturaAvisadaRef.current) return;
+    const { completa } = calcularCoberturaVisible();
+    if (!completa) return;
+    coberturaAvisadaRef.current = true;
+    onCoberturaListaRef.current?.();
   };
 
   // El handle se crea UNA sola vez.
@@ -1094,6 +1158,11 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     limpiarTransformGestoRef.current();
     requestRedraw();
     pedirRefinadoRef.current();
+    // El encuadre inicial puede ser lo que recien pone recursos YA cargados
+    // dentro del viewport (p.ej. un documento con un solo plano que llego
+    // antes de que se supiera donde centrar la vista): sin esto, ese caso no
+    // tenia ningun otro disparador que volviera a revisar la cobertura.
+    revisarCoberturaLista();
   }, [computeFit, requestRedraw]);
 
   // El handle imperativo se crea una sola vez; estos refs le dan acceso a la
@@ -1118,7 +1187,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
    * ve recuadros vacios hasta que terminan de rasterizarse — que es
    * exactamente el sintoma de "con el paneo se pierden las imagenes".
    */
-  const recursosVisibles = useCallback((margen = 0): string[] => {
+  const recursosVisibles = useCallback((margen = 0, sinFiltroTamaño = false): string[] => {
     if (!docCache) return [];
     const pan = panRef.current;
     const zoom = zoomRef.current;
@@ -1147,14 +1216,24 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       const area = ix * iy;
       if (area <= 0) continue;
       // Cuanto ocupa en PANTALLA. Es el criterio que decide si vale la pena
-      // bajarlo: en estos dibujos el 96% de los bytes son fotos de 3-5 MB
+      // BAJARLO: en estos dibujos el 96% de los bytes son fotos de 3-5 MB
       // colocadas como "chinches" sobre el plano, que en el encuadre completo
       // miden 2 px de lado. Bajar 252 MB para pintar 73 puntitos de 2 px es lo
       // que hacia que abrir el dibujo mas pesado tardara mas de dos minutos.
       // Por debajo del umbral se dibuja el marcador de posicion, que a ese
       // tamano se ve igual, y la foto se trae recien cuando te acercas.
-      const ladoPx = Math.max(item.maxX - item.minX, item.maxY - item.minY) * zoom;
-      if (ladoPx < LADO_MINIMO_PX) continue;
+      //
+      // `sinFiltroTamaño` existe para un uso DISTINTO: decidir que PROTEGER
+      // de desalojo (ver `desalojarLejanos`). Un recurso que YA tiene bitmap
+      // y esta en pantalla, aunque mida menos de LADO_MINIMO_PX ahora, sigue
+      // siendo contenido visible -- desalojarlo por LRU lo convierte en un
+      // hueco que reaparece apenas el usuario se aleja un poco. El filtro de
+      // tamano solo tiene sentido para decidir que vale la pena TRAER de
+      // cero, no para decidir que ya-cargado se puede tirar.
+      if (!sinFiltroTamaño) {
+        const ladoPx = Math.max(item.maxX - item.minX, item.maxY - item.minY) * zoom;
+        if (ladoPx < LADO_MINIMO_PX) continue;
+      }
       areas.set(item.resourceId, Math.max(areas.get(item.resourceId) || 0, area));
     }
     return [...areas.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
@@ -1460,6 +1539,7 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         statsRef.current.recursosCargados = Object.keys(imagesRef.current).length;
         onResourceProgressRef.current?.(listos, total);
         requestRedraw();
+        revisarCoberturaLista();
       },
     });
 
@@ -1695,7 +1775,16 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       // nunca libera lo que quedo lejos de un recorrido anterior, y el
       // presupuesto de RAM del dispositivo deja de cumplirse en silencio.
       for (const id of cercanos) usoRef.current[id] = ++relojUsoRef.current;
-      desalojarLejanos(cercanos);
+      // OJO: se protege con el conjunto SIN el filtro de tamaño minimo, no
+      // con `cercanos`. `cercanos` (y `visibles`) excluyen las "chinches"
+      // (recursos que miden menos de LADO_MINIMO_PX en pantalla) porque no
+      // vale la pena TRAERLOS de cero a ese tamaño -- pero un recurso que YA
+      // tiene bitmap cargado y sigue intersectando la pantalla, aunque ahora
+      // mida menos de ese umbral (p.ej. tras alejar el zoom), sigue siendo
+      // contenido VISIBLE. Pasar `cercanos` aca lo dejaba sin proteccion: el
+      // LRU podia desalojarlo, y al acercarse un poco reaparecia como hueco
+      // negro un plano que un momento antes se veia perfectamente.
+      desalojarLejanos(recursosVisibles(MARGEN_ANILLO, true));
       if (pendientes.length === 0) return;
 
       // Cuantos bytes va a costar ESTA tanda de verdad. Es lo unico con lo que
@@ -1792,6 +1881,10 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       // no es el que va a ver el usuario).
       await new Promise((r) => requestAnimationFrame(() => r(null)));
       if (cancelado || abort.signal.aborted) return;
+      // Cubre el caso "documento sin imagenes" (o cuyas imagenes ya estaban
+      // todas en cache al primer intento): sin recursos que esperar, `onEach`
+      // nunca se llama y nada mas dispara esta revision.
+      revisarCoberturaLista();
       await sincronizarRecursos(abort.signal);
       if (cancelado || abort.signal.aborted) return;
       onResourcesReadyRef.current?.();
