@@ -124,7 +124,16 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
   // asi que no hay nada grande que valga la pena retener en memoria.
   const itemsRef = useRef<GalleryItem[]>([]);
   const foldersRef = useRef<DriveFolderRef[]>([]);
-  const loadedOnceRef = useRef(false);
+  /**
+   * Ultima ruta que se resolvio, para no volver a resolver la MISMA (que
+   * seria re-listar la carpeta en cada render) pero si una nueva.
+   *
+   * Antes era un simple "ya cargue una vez", y eso dejaba el historial a
+   * medias: al apretar atras, `App` pasa la ruta nueva por esta misma via, y
+   * el guard la descartaba — la URL volvia al dibujo pero la galeria se
+   * quedaba donde estaba.
+   */
+  const rutaResueltaRef = useRef<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   // Arbol de carpetas ya visitadas/crawleadas (solo ids/nombres), traido
   // entero de Supabase una vez al montar. Mientras una carpeta este aca,
@@ -303,8 +312,9 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
   );
 
   useEffect(() => {
-    if (loadedOnceRef.current) return;
-    loadedOnceRef.current = true;
+    const firma = (rutaInicial || []).join("/");
+    if (rutaResueltaRef.current === firma) return;
+    rutaResueltaRef.current = firma;
     (async () => {
       if (!folderTreeLoadedRef.current) {
         folderTreeCacheRef.current = await fetchAllFolderCache();

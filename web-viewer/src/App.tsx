@@ -46,7 +46,24 @@ function App() {
 
   // Ruta con la que arranco la pagina: son los slugs de la URL. El ultimo
   // puede ser un archivo, y de eso se encarga la galeria al resolverla.
-  const [rutaInicial] = useState<string[]>(() => leerRuta());
+  // Ruta a resolver por la galeria. Arranca con la de la URL y vuelve a
+  // cambiar con el boton "atras" del navegador (ver `alVolver`), que es lo que
+  // permite que atras REABRA un dibujo, no solo que lo cierre.
+  const [rutaInicial, setRutaInicial] = useState<string[]>(() => leerRuta());
+  /** Slug del dibujo abierto, para saber si la URL de un `popstate` apunta a
+   * ese mismo o a otro. Va en un ref y no en el estado porque se lee dentro
+   * del handler, donde el estado seria el de la primera suscripcion. */
+  const slugAbiertoRef = useRef<string | null>(null);
+  /**
+   * Se esta resolviendo una ruta que vino del HISTORIAL (atras/adelante).
+   *
+   * Mientras dura, la galeria no puede tocar la URL. Cuando resuelve la ruta
+   * avisa su carpeta, y ese aviso hacia `replaceState` de la carpeta ENCIMA de
+   * la entrada del dibujo; despues el visor empujaba la suya, con lo que la
+   * entrada de "adelante" desaparecia y el boton dejaba de responder. La URL
+   * que vino del historial ya es la correcta: no hay nada que escribir.
+   */
+  const resolviendoRutaRef = useRef(false);
   const rutaCarpetaRef = useRef<string[]>([]);
 
   const submitUserName = (name: string) => {
@@ -85,6 +102,7 @@ function App() {
 
   useEffect(() => {
     hayDibujoRef.current = !!fileData;
+    slugAbiertoRef.current = fileData ? aSlug(fileData.name) : null;
   }, [fileData]);
 
   const closeFile = useCallback(() => {
@@ -101,6 +119,10 @@ function App() {
 
   const alCambiarRutaCarpeta = useCallback((ruta: string[]) => {
     rutaCarpetaRef.current = ruta;
+    if (resolviendoRutaRef.current) {
+      resolviendoRutaRef.current = false;
+      return;
+    }
     // Con un dibujo abierto manda la ruta del dibujo, no la de la carpeta.
     if (!hayDibujoRef.current) irA(construirRuta(ruta), true);
   }, []);
@@ -146,16 +168,31 @@ function App() {
     });
   }, [openRemote]);
 
-  // Boton "atras" del navegador: si la URL vuelve a una carpeta, se cierra el
-  // dibujo. Sin esto, atras cambiaba la URL pero dejaba el visor abierto.
+  // Boton "atras" (y "adelante") del navegador.
+  //
+  // Si la URL deja de apuntar al dibujo abierto, se cierra el visor: sin esto
+  // atras cambiaba la URL y dejaba el dibujo abierto. Y al reves, si apunta a
+  // OTRO dibujo (o a una carpeta), se le pasa la ruta nueva a la galeria para
+  // que la resuelva igual que cuando se entra por un link directo.
+  //
+  // Sin esa segunda mitad, el historial funcionaba en un solo sentido: cerrar
+  // un dibujo y apretar atras cambiaba la URL a la del dibujo pero dejaba la
+  // galeria a la vista — la URL decia una cosa y la pantalla otra.
   useEffect(() => {
     const alVolver = () => {
       const partes = leerRuta();
+      const apuntaAlAbierto =
+        !!slugAbiertoRef.current && partes[partes.length - 1] === slugAbiertoRef.current;
       setFileData((actual) => {
         if (!actual) return actual;
-        const sigueEnElDibujo = partes[partes.length - 1] === aSlug(actual.name);
-        return sigueEnElDibujo ? actual : null;
+        return apuntaAlAbierto ? actual : null;
       });
+      // Ya estando en ese dibujo no hay nada que resolver; volver a pedirlo
+      // solo lo recargaria.
+      if (!apuntaAlAbierto) {
+        resolviendoRutaRef.current = true;
+        setRutaInicial(partes);
+      }
     };
     window.addEventListener('popstate', alVolver);
     return () => window.removeEventListener('popstate', alVolver);
