@@ -553,7 +553,11 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, pho
       <button
         onClick={onClose}
         style={{
-          position: 'absolute', top: '20px', right: '20px',
+          position: 'absolute',
+          // env(safe-area-inset-*): sin esto, en un iPhone en landscape el
+          // boton quedaba bajo el notch.
+          top: 'calc(20px + env(safe-area-inset-top))',
+          right: 'calc(20px + env(safe-area-inset-right))',
           zIndex: 10001, background: 'rgba(255,255,255,0.2)',
           border: 'none', color: 'white', padding: '8px 16px',
           borderRadius: '4px', cursor: 'pointer'
@@ -565,7 +569,7 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, pho
       {loadingFull && (
         <div
           style={{
-            position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)',
+            position: 'absolute', top: 'calc(20px + env(safe-area-inset-top))', left: '50%', transform: 'translateX(-50%)',
             zIndex: 10001, display: 'flex', alignItems: 'center', gap: '0.5rem',
             background: 'rgba(0,0,0,0.55)', color: 'white', padding: '0.4rem 0.9rem',
             borderRadius: '999px', fontSize: '0.8rem', pointerEvents: 'none',

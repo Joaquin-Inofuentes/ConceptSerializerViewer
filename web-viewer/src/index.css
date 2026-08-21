@@ -39,6 +39,12 @@
   --carga-tenue: #99a0b0;
   --carga-riel: rgba(255, 255, 255, 0.12);
   --carga-barra: linear-gradient(90deg, #4d9fff, #7bd4ff);
+  /* Overlay de "esto se esta procesando" sobre una miniatura (Gallery.css).
+     Mismo criterio que --carga-fondo: oscuro translucido en los DOS temas,
+     porque va sobre contenido variable (el skeleton o una miniatura a medio
+     generar), no sobre el fondo de la pagina. Antes era blanco fijo y
+     destellaba en tema oscuro. */
+  --overlay-procesando: rgba(15, 17, 22, 0.6);
 
   color-scheme: dark;
 }
@@ -65,6 +71,7 @@
   --carga-tenue: rgba(255, 255, 255, 0.7);
   --carga-riel: rgba(255, 255, 255, 0.2);
   --carga-barra: linear-gradient(90deg, #4da3ff, #8fd0ff);
+  --overlay-procesando: rgba(15, 17, 22, 0.55);
 
   color-scheme: light;
 }

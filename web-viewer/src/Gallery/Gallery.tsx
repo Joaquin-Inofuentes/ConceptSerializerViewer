@@ -593,11 +593,25 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
   // Baja recursivamente todos los archivos de una carpeta (y sus
   // subcarpetas, sin limite de profundidad) para armar una seccion de
   // descarga a partir de una carpeta seleccionada entera.
+  //
+  // `Promise.all(listing.folders.map(...))` sin limite: un arbol con 40
+  // subcarpetas en 3 niveles disparaba ~40 requests simultaneas al proxy en
+  // el nivel mas ancho, que a su vez hace 2 fetches a Drive cada una --
+  // ~80 requests concurrentes a Drive. `driveClient.ts` documenta que Drive
+  // devuelve 502 esporadicos cuando se lo apura; con esa rafaga el 502 deja
+  // de ser esporadico, dispara reintentos con backoff, y el usuario ve el
+  // boton de descarga "colgado" sin ningun indicio de por que. `runPool`
+  // (definido mas abajo en este archivo) acota la concurrencia al mismo
+  // numero que ya usa el resto de la galeria para no pegarle a Drive mas
+  // fuerte de lo que el dispositivo/la red aguantan.
   const collectFolderFiles = async (folderId: string): Promise<{ id: string; name: string }[]> => {
     const listing = await listDriveFolder(folderId);
     const direct = listing.files.map((f) => ({ id: f.id, name: cleanName(f.name) }));
-    const nested = await Promise.all(listing.folders.map((sub) => collectFolderFiles(sub.id)));
-    return direct.concat(nested.flat());
+    const nestedPorCarpeta: { id: string; name: string }[][] = [];
+    await runPool(listing.folders, getBudgets().concurrency, async (sub) => {
+      nestedPorCarpeta.push(await collectFolderFiles(sub.id));
+    });
+    return direct.concat(nestedPorCarpeta.flat());
   };
 
   const handleDownload = async (format: "pdf" | "jpg") => {
@@ -608,6 +622,13 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
     const fileRefs = refs.filter((r) => r.kind === "file");
     const folderRefs = refs.filter((r) => r.kind === "folder");
 
+    // Se muestra ANTES de resolver que archivos hay que bajar, no despues:
+    // `collectFolderFiles` puede tardar (recorre carpetas enteras, con la
+    // concurrencia acotada de mas arriba) y sin esto el boton de descarga
+    // se veia "colgado" sin ningun indicio de que algo estaba pasando
+    // durante todo ese tiempo. `total: 0` se interpreta en el modal como
+    // "todavia buscando", no como "0 archivos".
+    setExportProgress({ done: 0, total: 0 });
     try {
       const plan: { title: string | null; files: { id: string; name: string }[] }[] = [];
       if (fileRefs.length > 0) {
@@ -690,7 +711,18 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
   const selectedCount = selected.size;
 
   return (
-    <div className="gallery-page" style={hidden ? { display: "none" } : undefined}>
+    <div
+      className="gallery-page"
+      // `visibility: hidden`, no `display: none`: el visor ya se muestra
+      // encima con `position: fixed` (`.viewer-hero`, cubre toda la
+      // pantalla), asi que ocultar la galeria por debajo no necesita
+      // sacarla del flujo. `display: none` colapsa el alto del elemento a
+      // 0 -- al cerrar el dibujo, la galeria volvia a aparecer siempre
+      // desde arriba, con el scroll perdido. Con `visibility: hidden` el
+      // elemento conserva su tamaño mientras esta oculto, y con el la
+      // posicion de scroll de la pagina.
+      style={hidden ? { visibility: "hidden" } : undefined}
+    >
       <header className="gallery-header">
         <div>
           <h1>ConceptSerializer</h1>
@@ -1012,7 +1044,11 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
               transition={{ type: "spring", stiffness: 320, damping: 26 }}
             >
               <RefreshCw size={20} className="spin-slow" />
-              <p>Preparando descarga: {exportProgress.done} de {exportProgress.total}</p>
+              <p>
+                {exportProgress.total === 0
+                  ? "Buscando archivos…"
+                  : `Preparando descarga: ${exportProgress.done} de ${exportProgress.total}`}
+              </p>
             </m.div>
           </m.div>
         )}

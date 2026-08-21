@@ -16,6 +16,7 @@ body {
   background-color: var(--bg-canvas);
   color: var(--text-main);
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -24,7 +25,14 @@ body {
   animation: fadeIn 0.1s ease-out forwards;
   display: flex;
   flex-direction: column;
+  /* `100vh` en Safari/Chrome moviles incluye la zona de la barra de URL: la
+     fila de herramientas de abajo quedaba tapada por el borde real de la
+     pantalla hasta que el usuario scrolleaba -- y aca no se puede, hay
+     overflow:hidden. `100dvh` (altura VISIBLE de verdad) es soportado desde
+     hace tiempo en los navegadores que importan aca; `100vh` queda como
+     fallback para los que no lo entienden. */
   height: 100vh;
+  height: 100dvh;
   width: 100vw;
   overflow: hidden;
   background-color: var(--bg-canvas);
@@ -47,8 +55,11 @@ body {
 
 .btn-close-viewer {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  /* `viewport-fit=cover` (index.html) hace que el contenido pueda dibujarse
+     debajo del notch/las esquinas redondeadas; sin esto el boton de cerrar
+     quedaba tapado por el notch en landscape en un iPhone. */
+  top: calc(10px + env(safe-area-inset-top));
+  right: calc(10px + env(safe-area-inset-right));
   background: transparent;
   border: none;
   color: var(--text-muted);
@@ -68,8 +79,10 @@ body {
 
 .floating-tools {
   position: absolute;
-  bottom: 20px;
-  right: 20px;
+  /* Mismo motivo que .btn-close-viewer: sin esto los botones quedaban bajo
+     el indicador de home de iOS o la barra de gestos de Android. */
+  bottom: calc(20px + env(safe-area-inset-bottom));
+  right: calc(20px + env(safe-area-inset-right));
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -326,7 +339,7 @@ body {
 .viewer-carga {
   position: absolute;
   left: 50%;
-  bottom: 1.25rem;
+  bottom: calc(1.25rem + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   /* Se reserva el carril derecho: la columna de herramientas vive en
      right:20px con botones de 44 px, y la tarjeta centrada le tapaba entero el
@@ -562,4 +575,21 @@ body {
   text-align: center;
   color: var(--text-muted);
   padding: 0 2px;
+}
+
+/* Ya habia DOS bloques `prefers-reduced-motion` en este archivo, cada uno
+   cubriendo un caso puntual (ver mas arriba) -- pero `.spin-slow` (el
+   spinner que gira sin parar mientras carga el visor), `.viewer-loading-dot`
+   (pulseDot, tambien infinito) y los popIn/slideUpFade de los menus
+   desplegables (escala + traslado, no solo opacidad) no estaban cubiertos
+   por ninguno. Las animaciones INFINITAS son las que mas importa frenar: el
+   resto de esta app respeta la preferencia menos en estos puntos. */
+@media (prefers-reduced-motion: reduce) {
+  .spin-slow,
+  .viewer-loading-dot {
+    animation: none;
+  }
+  .dropdown-menu {
+    animation: fadeIn 0.1s ease-out forwards;
+  }
 }

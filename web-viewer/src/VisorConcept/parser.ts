@@ -602,11 +602,28 @@ export async function openConceptsSource(fuente: ZipSource): Promise<ConceptsFil
     totalBytes: fuente.size,
     async thumbnail() {
       const nombre = zip.names().find((n) => /(^|\/)thumb\.jpe?g$/i.test(n));
+      // Esto SI es "no hay vista previa": no hay entrada `thumb.jpg` en el
+      // zip, nada que reintentar.
       if (!nombre) return null;
+      // Pero un fallo de LECTURA (502 esporadico del proxy, cortada de red
+      // a mitad del rango -- ambos documentados como reales en
+      // driveClient.ts) es otra cosa completamente distinta, y antes se
+      // trataba igual: se devolvia `null` sin reintentar. `thumbnailDeArchivo`
+      // interpreta `null` como "no trae vista previa" y cae al camino caro
+      // (`archivo.parse()` + rasterizar cada PDF con pdf.js): segundos de
+      // CPU y ~10x los datos para producir una miniatura de 192px que
+      // estaba a UN REINTENTO de distancia. Un solo reintento corto cubre
+      // el caso comun (falla transitoria) sin demorar mucho el caso real de
+      // "de verdad no se puede leer".
       try {
         return await zip.readBlob(nombre, "image/jpeg");
       } catch {
-        return null;
+        await new Promise((r) => setTimeout(r, 400));
+        try {
+          return await zip.readBlob(nombre, "image/jpeg");
+        } catch {
+          return null;
+        }
       }
     },
     parse: () => documentoDesdeZip(zip, fuente),

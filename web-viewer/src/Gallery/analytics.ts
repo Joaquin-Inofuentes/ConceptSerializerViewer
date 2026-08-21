@@ -4,10 +4,29 @@ export type DescargaOrigen = "galeria" | "lienzo" | "foto";
 
 // Un id por pestaña/sesion de navegacion, para poder agrupar eventos del
 // mismo visitante sin pedir login.
-const SESION_ID = crypto.randomUUID();
+//
+// `crypto.randomUUID()` solo existe en contextos SEGUROS (https, o
+// localhost). Evaluarlo a nivel de MODULO significaba que probar el build
+// desde el telefono en `http://192.168.1.x:5173` (el flujo real para medir
+// gama baja en un dispositivo real, ver PLAN_IMPLEMENTACION.md) tiraba un
+// `TypeError` en la evaluacion del modulo -- y como `Gallery.tsx` importa
+// este archivo, la app entera quedaba en pantalla en blanco, sin ninguna
+// relacion aparente con analytics. Se resuelve perezosamente (recien cuando
+// hace falta, dentro de un `try`) y con un fallback que no depende de la
+// API criptografica.
+let sesionId: string | null = null;
+function idDeSesion(): string {
+  if (sesionId) return sesionId;
+  try {
+    sesionId = crypto.randomUUID();
+  } catch {
+    sesionId = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  }
+  return sesionId;
+}
 
 async function registrarEvento(evento: "abrir" | "cerrar" | "descargar", campos: Record<string, unknown>) {
-  await insertEvento({ evento, sesion_id: SESION_ID, ...campos });
+  await insertEvento({ evento, sesion_id: idDeSesion(), ...campos });
 }
 
 export function logAbrir(archivoId: string, archivoNombre: string, carpetaId: string) {

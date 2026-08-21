@@ -56,6 +56,16 @@ export interface ThumbnailRow {
   source_modified_at: string | null;
 }
 
+/** Cuantos ids entran en una sola consulta `in.(...)`. Cada id de Drive son
+ * ~33 caracteres, y percent-encoded con comillas quedan en ~42; 50 ids dan
+ * una URL de ~2100 caracteres, comodo por debajo de los limites tipicos de
+ * URL (~8000). Sin este tope, una carpeta de 200 archivos armaba una URL de
+ * ~8400 caracteres -> 414 URI Too Long, que `pedir()` traga como
+ * `console.error` + `null`: el mapa volvia VACIO y los 200 archivos entraban
+ * en cola para regenerar sus 200 miniaturas desde cero por rangos HTTP en
+ * vez de servirse instantaneas desde el cache. */
+const LOTE_THUMBNAILS = 50;
+
 /** Trae del cache de Supabase las miniaturas ya generadas para estos ids. */
 export async function fetchCachedThumbnails(
   ids: string[]
@@ -63,16 +73,19 @@ export async function fetchCachedThumbnails(
   const map = new Map<string, ThumbnailRow>();
   if (ids.length === 0) return map;
 
-  // PostgREST: in.(a,b,c). Los ids de Drive son alfanumericos con - y _, sin
-  // comas ni comillas, pero se citan igual por las dudas.
-  const lista = ids.map((id) => `"${id}"`).join(",");
-  const url =
-    `${REST}/concept_thumbnails` +
-    `?select=drive_file_id,file_name,thumbnail_base64,updated_at,source_modified_at` +
-    `&drive_file_id=in.(${encodeURIComponent(lista)})`;
+  for (let i = 0; i < ids.length; i += LOTE_THUMBNAILS) {
+    const lote = ids.slice(i, i + LOTE_THUMBNAILS);
+    // PostgREST: in.(a,b,c). Los ids de Drive son alfanumericos con - y _, sin
+    // comas ni comillas, pero se citan igual por las dudas.
+    const lista = lote.map((id) => `"${id}"`).join(",");
+    const url =
+      `${REST}/concept_thumbnails` +
+      `?select=drive_file_id,file_name,thumbnail_base64,updated_at,source_modified_at` +
+      `&drive_file_id=in.(${encodeURIComponent(lista)})`;
 
-  const data = await pedir<ThumbnailRow[]>(url, { headers: headers() }, "leer thumbnails");
-  (data || []).forEach((row) => map.set(row.drive_file_id, row));
+    const data = await pedir<ThumbnailRow[]>(url, { headers: headers() }, "leer thumbnails");
+    (data || []).forEach((row) => map.set(row.drive_file_id, row));
+  }
   return map;
 }
 
@@ -114,20 +127,40 @@ export interface FolderCacheRow {
   updated_at: string;
 }
 
+/** Pedido en vuelo, para deduplicar llamadas concurrentes (ver mas abajo). */
+let fetchAllFolderCacheEnVuelo: Promise<Map<string, FolderCacheRow>> | null = null;
+
 /**
  * Trae TODO el arbol de carpetas cacheado en un solo query (son solo ids y
  * nombres, liviano). Con esto la Gallery puede navegar entre carpetas ya
  * visitadas sin volver a pegarle a Drive.
+ *
+ * Deduplica llamadas CONCURRENTES: en un deep-link (`?file=<id>`), la
+ * Gallery llama esto al montar Y `ubicarArchivo` (mas abajo) tambien lo
+ * llama para resolver el nombre/ruta del archivo -- sin esto, el caso mas
+ * comun de "alguien abre un link compartido" descargaba el arbol completo
+ * DOS VECES en paralelo. No se cachea el RESULTADO (la Gallery ya tiene su
+ * propio cache con su propia logica de invalidacion vía `folderTreeCacheRef`/
+ * `folderTreeLoadedRef`); esto solo evita pedir lo mismo dos veces mientras
+ * el primer pedido todavia esta en el aire.
  */
 export async function fetchAllFolderCache(): Promise<Map<string, FolderCacheRow>> {
-  const map = new Map<string, FolderCacheRow>();
-  const data = await pedir<FolderCacheRow[]>(
-    `${REST}/drive_folder_cache?select=*`,
-    { headers: headers() },
-    "leer cache de carpetas"
-  );
-  (data || []).forEach((row) => map.set(row.folder_id, row));
-  return map;
+  if (fetchAllFolderCacheEnVuelo) return fetchAllFolderCacheEnVuelo;
+  fetchAllFolderCacheEnVuelo = (async () => {
+    const map = new Map<string, FolderCacheRow>();
+    const data = await pedir<FolderCacheRow[]>(
+      `${REST}/drive_folder_cache?select=*`,
+      { headers: headers() },
+      "leer cache de carpetas"
+    );
+    (data || []).forEach((row) => map.set(row.folder_id, row));
+    return map;
+  })();
+  try {
+    return await fetchAllFolderCacheEnVuelo;
+  } finally {
+    fetchAllFolderCacheEnVuelo = null;
+  }
 }
 
 /** Guarda (o actualiza) el listado de una carpeta puntual en el cache. */

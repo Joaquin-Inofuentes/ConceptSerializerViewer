@@ -85,6 +85,16 @@
   color: var(--text-main, #212529);
   cursor: pointer;
   transition: background 0.25s ease, border-color 0.25s ease, transform 0.15s ease, color 0.25s ease;
+  /* El boton se ve chico (30px, a proposito, no hay lugar en el header
+     para mas) pero el area TOCABLE llega a 44px via un pseudo-elemento
+     invisible mas grande -- por debajo de 44px es facil errarle en un
+     telefono real. */
+  position: relative;
+}
+.gallery-icon-btn::before {
+  content: "";
+  position: absolute;
+  inset: -7px;
 }
 .gallery-icon-btn:hover:not(:disabled) {
   background: var(--bg-hover);
@@ -177,7 +187,10 @@
   font-size: 0.85rem;
   color: var(--error, #dc3545);
   background: var(--error-bg);
-  border: 1px solid #f5c2c7;
+  /* Antes #f5c2c7 fijo (rosa claro): apenas se distinguia del --error-bg
+     oscuro en tema oscuro. El propio color de error, sin token dedicado
+     para el borde, se ve bien en los dos temas. */
+  border: 1px solid var(--error, #dc3545);
   border-radius: 8px;
   padding: 0.6rem 0.9rem;
 }
@@ -197,7 +210,10 @@
   cursor: pointer;
 }
 .folder-thumb {
-  background: #eaf1ff;
+  /* Antes #eaf1ff fijo (celeste claro): un rectangulo brillante suelto en
+     una grilla oscura. `--bg-hover` es el mismo tono neutro "superficie
+     resaltada" que ya usa el resto de la UI en los dos temas. */
+  background: var(--bg-hover);
   color: var(--primary, #0d6efd);
 }
 
@@ -266,9 +282,22 @@
   transition: opacity 0.5s ease, color 0.5s ease, background 0.5s ease;
 }
 .gallery-card:hover .gallery-checkbox,
-.gallery-card:focus-visible .gallery-checkbox,
+.gallery-card:focus-within .gallery-checkbox,
 .gallery-checkbox.checked {
   opacity: 1;
+}
+/* En una pantalla tactil no hay `:hover`, y el modo seleccion (y con el,
+   TODA la exportacion a PDF/ZIP) dependia de eso para ser descubrible: el
+   checkbox tiene `opacity:0` pero sigue recibiendo eventos, asi que
+   "funcionaba" pero nadie lo iba a encontrar en el dispositivo principal de
+   la app. En tactil se muestra siempre, a baja opacidad. */
+@media (hover: none) {
+  .gallery-checkbox {
+    opacity: 0.55;
+  }
+  .gallery-checkbox.checked {
+    opacity: 1;
+  }
 }
 .gallery-checkbox.checked {
   color: var(--primary, #0d6efd);
@@ -320,13 +349,15 @@
 .gallery-thumb-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(255, 255, 255, 0.65);
+  /* Antes blanco fijo: un flash blanco sobre la tarjeta en tema oscuro,
+     justo mientras la miniatura se esta procesando. */
+  background: var(--overlay-procesando);
   display: flex;
   flex-direction: column;
   gap: 4px;
   align-items: center;
   justify-content: center;
-  color: var(--primary, #0d6efd);
+  color: #fff;
 }
 
 /* Avance de descarga: estos dibujos pueden pesar cientos de MB y sin esto la
@@ -363,13 +394,19 @@
   position: fixed;
   left: 0;
   right: 0;
-  bottom: 1.5rem;
+  bottom: calc(1.5rem + env(safe-area-inset-bottom));
   width: fit-content;
   margin: 0 auto;
   display: flex;
   align-items: center;
   gap: 1rem;
-  background: var(--bg-elevado);
+  /* Intencionalmente NO usa --bg-elevado: ese token es blanco en tema
+     claro, y el texto/los botones de esta barra son blancos fijos (ver mas
+     abajo) -- "N seleccionados" quedaba invisible, texto blanco sobre fondo
+     blanco. Pill oscura fija en los dos temas, a proposito: es una barra
+     flotante de selección con alto contraste, el mismo patron que usan
+     Google Photos y similares, no una superficie que deba seguir el tema. */
+  background: #14161c;
   color: #fff;
   padding: 0.7rem 0.7rem 0.7rem 1.1rem;
   border-radius: 999px;
@@ -462,7 +499,10 @@
 }
 .gallery-modal-option:hover {
   border-color: var(--primary, #0d6efd);
-  background: #f1f6ff;
+  /* Antes #f1f6ff fijo (celeste muy claro): un flash claro sobre la tarjeta
+     oscura en tema oscuro. --bg-hover es el mismo tono "superficie
+     resaltada" que ya se usa en el resto de esta hoja. */
+  background: var(--bg-hover);
 }
 .gallery-modal-option:active {
   transform: scale(0.96);

@@ -88,6 +88,7 @@ const LayerMenu = memo(function LayerMenu({
         className={`btn-tool ${open ? 'active-glow' : ''}`}
         onClick={onToggleOpen}
         title={`Capas: ${layerCount}`}
+        aria-label={`Capas: ${layerCount}`}
       >
         <Filter size={20} />
       </button>
@@ -168,6 +169,7 @@ const ImageMenu = memo(function ImageMenu({
         className={`btn-tool ${open ? 'active-glow' : ''}`}
         onClick={onToggleOpen}
         title={`Imágenes: ${imageCount}`}
+        aria-label={`Imágenes: ${imageCount}`}
       >
         <ImageIcon size={20} />
       </button>
@@ -716,10 +718,11 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
         </button>
 
         <div className="dropdown-container" ref={exportMenuRef}>
-          <button 
+          <button
             className={`btn-tool ${showExportMenu ? 'active-glow' : ''}`}
             onClick={() => { setShowExportMenu(!showExportMenu); setShowLayerMenu(false); setShowImageMenu(false); }}
             title="Exportar"
+            aria-label="Exportar"
           >
             <Download size={20} />
           </button>

@@ -1599,26 +1599,47 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
     if (!onImagesLoadedRef.current) return;
     const firma = Object.keys(imagesRef.current).sort().join(",");
     if (previewsDeRef.current === firma) return;
-    previewsDeRef.current = firma;
     const urls: Record<string, string> = {};
     for (const [id, recurso] of Object.entries(imagesRef.current)) {
       const fuente = recurso.img;
-      const w = (fuente as any).width || 384;
-      const h = (fuente as any).height || 384;
-      const k = Math.min(384 / Math.max(w, h), 1);
-      const c = document.createElement("canvas");
-      c.width = Math.max(1, Math.round(w * k));
-      c.height = Math.max(1, Math.round(h * k));
-      const cctx = c.getContext("2d");
-      if (!cctx) continue;
-      cctx.imageSmoothingQuality = budgets.smoothing;
-      cctx.drawImage(fuente, 0, 0, c.width, c.height);
-      urls[id] = c.toDataURL("image/jpeg", 0.85);
-      c.width = 0;
-      c.height = 0;
+      // El loop cede el hilo entre imagenes (mas abajo), y en ese hueco
+      // `desalojarLejanos`/`marcarHot` pueden liberar el bitmap de un
+      // recurso que este loop todavia no proceso (`liberarImagen` hace
+      // `ImageBitmap.close()`). Sin este chequeo -- el mismo que ya usa el
+      // render loop antes de dibujar -- `drawImage` tiraba
+      // `InvalidStateError` SIN try/catch: la excepcion mataba el resto del
+      // loop, `onImagesLoaded` nunca se llamaba, y como `previewsDeRef` se
+      // marcaba ANTES de empezar (ver mas abajo), reabrir el menu no
+      // reintentaba nunca -- la galeria de imagenes quedaba vacia el resto
+      // de la sesion.
+      if (!anchoUtil(fuente)) continue;
+      try {
+        const w = (fuente as any).width || 384;
+        const h = (fuente as any).height || 384;
+        const k = Math.min(384 / Math.max(w, h), 1);
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(w * k));
+        c.height = Math.max(1, Math.round(h * k));
+        const cctx = c.getContext("2d");
+        if (cctx) {
+          cctx.imageSmoothingQuality = budgets.smoothing;
+          cctx.drawImage(fuente, 0, 0, c.width, c.height);
+          urls[id] = c.toDataURL("image/jpeg", 0.85);
+        }
+        c.width = 0;
+        c.height = 0;
+      } catch {
+        // Se salta este recurso (probablemente se libero mientras esperaba
+        // su turno) en vez de abortar el resto de las previews.
+      }
       // Cede el hilo entre imagenes para no bloquear los gestos.
       await new Promise((r) => setTimeout(r, 0));
     }
+    // Se marca DESPUES de terminar, no antes: si el loop de arriba se
+    // salteo recursos por estar liberados, la proxima apertura del menu
+    // tiene que poder reintentarlos (para entonces puede que ya esten
+    // cargados de nuevo).
+    previewsDeRef.current = firma;
     onImagesLoadedRef.current?.(urls);
   }, [budgets]);
 
