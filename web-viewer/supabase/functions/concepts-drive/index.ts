@@ -32,6 +32,28 @@ const CORS = {
 // que descargue una URL arbitraria usando nuestro edge function.
 const HOSTS_DRIVE = new Set(["drive.google.com", "drive.usercontent.google.com"]);
 
+// Los ids de Drive son alfanumericos + "-"/"_", tipicamente 28-44
+// caracteres (algunos legados son mas cortos). `folderId`/`fileId` NO
+// tenian ninguna validacion mas alla de "no vacio": cualquiera podia
+// pedirle a este proxy que listara o descargara CUALQUIER archivo publico
+// de Drive del planeta, consumiendo el egress y la cuota de invocaciones de
+// este proyecto (la SUPABASE_ANON_KEY que habilita esto vive en el bundle
+// JS publico, sin expiracion util). Esta validacion no reemplaza una lista
+// blanca real (verificar que el id pertenece al arbol de DRIVE_FOLDER_ID
+// exigiria consultar la tabla drive_folder_cache desde aca), pero cierra el
+// caso mas barato: un id que ni siquiera tiene la forma de un id de Drive
+// se rechaza antes de gastar una sola request contra Drive. Tambien cierra
+// la inyeccion de query string: folderId/fileId se interpolan crudos en la
+// URL a Drive (`listarCarpetaPublica`, `resolverUrlDescarga`, etc.), y un
+// valor con "&" adicionales podia agregar parametros no previstos.
+const ID_DRIVE_VALIDO = /^[A-Za-z0-9_-]{10,80}$/;
+
+function validarIdDrive(id: string, etiqueta: string): void {
+  if (!ID_DRIVE_VALIDO.test(id)) {
+    throw new Error(`${etiqueta} invalido`);
+  }
+}
+
 function urlResueltaValida(u: string | null): string | null {
   if (!u) return null;
   try {
@@ -281,6 +303,7 @@ Deno.serve(async (req) => {
     if (action === "list") {
       const folderId = url.searchParams.get("folderId") || "";
       if (!folderId) throw new Error("falta folderId");
+      validarIdDrive(folderId, "folderId");
       const ahora = new Date();
       const [entradas, ivdTimes] = await Promise.all([
         listarCarpetaPublica(folderId),
@@ -317,6 +340,7 @@ Deno.serve(async (req) => {
     if (action === "download") {
       const fileId = url.searchParams.get("fileId") || "";
       if (!fileId) throw new Error("falta fileId");
+      validarIdDrive(fileId, "fileId");
 
       // El rango puede venir por header (fetch normal) o por query param: el
       // navegador NO deja setear Range a mano en algunos contextos y ademas

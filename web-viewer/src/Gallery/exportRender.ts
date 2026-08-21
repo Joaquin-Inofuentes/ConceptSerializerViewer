@@ -8,6 +8,7 @@ import {
   safeExportScale,
 } from "./renderCore";
 import { getBudgets } from "../device";
+import type { ExportMetadata } from "./exportMetadata";
 
 export interface RenderedCanvas {
   canvas: HTMLCanvasElement;
@@ -158,12 +159,11 @@ export interface ExportSection {
   entries: ExportEntry[];
 }
 
-export interface ExportMetadata {
-  userName: string;
-  fecha: string;
-  hora: string;
-  ip: string;
-}
+// Antes habia una copia DUPLICADA de esta interfaz aca, separada de la de
+// `exportMetadata.ts` (con su propio campo `ip`, que ya no existe del lado
+// de quien la produce). Reexportar el mismo tipo evita que las dos vuelvan
+// a divergir.
+export type { ExportMetadata };
 
 const PAGE_W = 800;
 const PAGE_H = 1000;
@@ -236,7 +236,7 @@ export async function exportSectionsAsPdf(sections: ExportSection[], metadata: E
     title: "ConceptSerializer - Exportacion",
     subject: `Exportado por ${metadata.userName} el ${metadata.fecha} ${metadata.hora}`,
     author: metadata.userName,
-    keywords: `ip:${metadata.ip}, archivos:${totalFiles}`,
+    keywords: `archivos:${totalFiles}`,
     creator: "ConceptSerializer",
   });
 
@@ -274,7 +274,6 @@ export async function exportSectionsAsZip(sections: ExportSection[], metadata: E
     `Usuario: ${metadata.userName}`,
     `Fecha: ${metadata.fecha}`,
     `Hora: ${metadata.hora}`,
-    `IP: ${metadata.ip}`,
     `Total de archivos: ${totalFiles}`,
     "",
     "Contenido:",
