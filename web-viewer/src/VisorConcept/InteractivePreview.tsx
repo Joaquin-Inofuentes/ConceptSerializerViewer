@@ -5,6 +5,20 @@ import { safeExportScale } from '../Gallery/renderCore';
 
 interface InteractivePreviewProps {
   src: string;
+  /**
+   * Identidad ESTABLE de la foto (el resourceId), distinta de `src`.
+   *
+   * `src` cambia DOS veces por foto: primero la miniatura chica (ya
+   * cacheada), despues la version completa sin recortar (`obtenerImagenCompleta`
+   * en Viewer.tsx). Antes el efecto que calcula rotacion/zoom/pan escuchaba
+   * cambios en `src` directamente, asi que ese segundo cambio (misma foto,
+   * mejor resolucion) TAMBIEN reseteaba todo: la foto se des-rotaba y se
+   * volvia a rotar con un salto visible, y cualquier zoom/pan que el
+   * usuario hubiera hecho mientras esperaba se tiraba a la basura. Con
+   * `photoId` estable entre esas dos cargas, el reset solo ocurre cuando de
+   * verdad se abre una foto DISTINTA.
+   */
+  photoId: string;
   fileName?: string;
   onClose: () => void;
   /** true mientras se pide la version completa sin recortar (ver
@@ -14,7 +28,7 @@ interface InteractivePreviewProps {
   loadingFull?: boolean;
 }
 
-export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fileName, onClose, loadingFull }) => {
+export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, photoId, fileName, onClose, loadingFull }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -108,20 +122,46 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
     encuadrar(rot);
   };
 
+  /** Ultimo `photoId` para el que ya se corrio `evaluarRotacion`. Evita
+   * repetirla cuando `src` cambia por la miniatura->version completa de la
+   * MISMA foto (ver el comentario largo en `photoId` mas arriba). */
+  const photoIdEvaluadoRef = useRef<string | null>(null);
+
   useEffect(() => {
+    if (photoIdEvaluadoRef.current === photoId) return;
     const img = imgRef.current;
-    if (img?.complete && img.naturalWidth) evaluarRotacion();
-    else setRotacion(0);
+    if (img?.complete && img.naturalWidth) {
+      photoIdEvaluadoRef.current = photoId;
+      evaluarRotacion();
+    } else {
+      // Todavia no se sabe la forma real de la imagen: se resuelve cuando
+      // termine de cargar (ver `onLoad` en el <img>, mas abajo).
+      setRotacion(0);
+    }
     // `rotacionInicial` solo lee el DOM y el tamaño de la ventana; recrearla
     // en cada render no cambia lo que decide.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src]);
+  }, [photoId]);
+
+  /** Handler de `onLoad` del <img>: mismo criterio que el efecto de arriba,
+   * para no re-evaluar cuando lo que cargo es la version de mas resolucion
+   * de la foto que ya se estaba mostrando. */
+  const alCargarImagen = () => {
+    if (photoIdEvaluadoRef.current === photoId) return;
+    photoIdEvaluadoRef.current = photoId;
+    evaluarRotacion();
+  };
 
   const exportDrawing = async (format: 'png' | 'jpg' | 'pdf', zoomAll: boolean = true) => {
     const img = new Image();
     img.src = src;
-    await new Promise((resolve) => {
+    await new Promise((resolve, reject) => {
       img.onload = resolve;
+      // Sin esto, si la imagen fallaba al cargar la promesa nunca resolvia
+      // NI rechazaba: el export quedaba colgado sin ningun feedback, con el
+      // menu abierto para siempre y sin ningun error en consola que
+      // explicara por que.
+      img.onerror = () => reject(new Error("No se pudo cargar la imagen para exportar"));
       if (img.complete) resolve(true);
     });
 
@@ -176,9 +216,24 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
     ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
     ctx.restore();
 
-    const dataUrl = exportCanvas.toDataURL(`image/${format === 'jpg' ? 'jpeg' : 'png'}`, 1.0);
+    // toBlob (async) en vez de toDataURL (sincronico): a la escala de export
+    // esto puede ser un canvas de varios Mpx, y toDataURL bloquea el hilo
+    // principal codificando JPEG/PNG entero antes de devolver el control.
+    const mime = `image/${format === 'jpg' ? 'jpeg' : 'png'}`;
+    const blob = await new Promise<Blob | null>((resolve) => exportCanvas.toBlob(resolve, mime, 1.0));
+    exportCanvas.width = 0;
+    exportCanvas.height = 0;
+    if (!blob) throw new Error("No se pudo generar la exportacion");
 
     if (format === 'pdf') {
+      // jsPDF no acepta Blob en addImage: hace falta el data URL, pero solo
+      // ACA, uno a la vez, no desde el arranque.
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(reader.error ?? new Error("No se pudo leer el blob"));
+        reader.readAsDataURL(blob);
+      });
       const jsPDF = (await import('jspdf')).default;
       const pdf = new jsPDF({
         orientation: exportWidth > exportHeight ? 'landscape' : 'portrait',
@@ -188,10 +243,21 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
       pdf.addImage(dataUrl, 'JPEG', 0, 0, exportWidth, exportHeight);
       pdf.save('export.pdf');
     } else {
+      const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.download = `export.${format}`;
-      link.href = dataUrl;
+      link.href = url;
+      // Mismo motivo que en exportRender.ts: revocar el ObjectURL
+      // inmediatamente tras click() es una carrera conocida en Safari/
+      // Firefox moviles (la descarga puede fallar o salir truncada, sin
+      // error). Se agrega al DOM (Firefox lo requiere para ser confiable) y
+      // se revoca diferido.
+      document.body.appendChild(link);
       link.click();
+      setTimeout(() => {
+        link.remove();
+        URL.revokeObjectURL(url);
+      }, 60_000);
     }
     logDescarga('foto', format, [], fileName);
   };
@@ -404,14 +470,24 @@ export const InteractivePreview: React.FC<InteractivePreviewProps> = ({ src, fil
           left: '50%',
           transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom}) rotate(${rotacion}deg)`,
           transformOrigin: 'center center',
-          transition: isDragging || isRightDragging ? 'none' : 'transform 0.1s ease',
+          // `touchDistStart !== null`: durante un pinch de 2 dedos,
+          // `handleTouchStart` pone `isDragging` en false (correcto, no es
+          // un pan de 1 dedo) pero `isRightDragging` es EXCLUSIVO del
+          // arrastre con boton derecho del mouse -- nunca se activa en
+          // tactil. Sin este chequeo, ninguna de las dos condiciones era
+          // cierta durante un pinch y la transicion de 0.1s quedaba activa,
+          // animando cada frame del gesto: se sentia gomoso y con
+          // retraso perceptible. `touchDistStart` ya es exactamente la
+          // señal de "hay un pinch en curso" (se pone al iniciar uno, se
+          // limpia en `handleTouchEnd`).
+          transition: isDragging || isRightDragging || touchDistStart !== null ? 'none' : 'transform 0.1s ease',
         }}
       >
         <img 
            src={src} 
            alt="Preview" 
            ref={imgRef}
-           onLoad={evaluarRotacion}
+           onLoad={alCargarImagen}
            style={{ pointerEvents: 'none', userSelect: 'none', display: 'block' }}
            draggable={false}
         />

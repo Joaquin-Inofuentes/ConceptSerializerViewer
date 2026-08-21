@@ -2,6 +2,7 @@ import type { Document, ConceptsFile } from "../VisorConcept/parser";
 import { readEmbeddedThumbnail, readEmbeddedThumbnailRemote } from "../VisorConcept/parser";
 import { BufferSource } from "../VisorConcept/zip";
 import { THUMBNAIL_SIZE } from "../config";
+import { getBudgets } from "../device";
 import type { RecursoRasterizado } from "./renderCore";
 import {
   loadResourceImages,
@@ -33,8 +34,16 @@ function encuadrarAContenido(
   let maxY = -1;
   try {
     const data = wctx.getImageData(0, 0, anchoFuente, altoFuente).data;
-    for (let y = 0; y < altoFuente; y++) {
-      for (let x = 0; x < anchoFuente; x++) {
+    // Muestreo cada PASO px, no pixel a pixel: el bounding box que importa
+    // aca es el de un recorte con margen del 4% (ver `pad` mas abajo), asi
+    // que perder 2-3 px de precision en cada borde no se nota, y en una
+    // vista previa de ~2000x1500 esto es 4-16x menos iteraciones en el hilo
+    // principal, corriendo ademas dentro del pool de miniaturas (varias en
+    // paralelo). El piso de PASO=1 para fuentes chicas evita perder el
+    // contenido de una vista previa diminuta.
+    const PASO = Math.max(1, Math.floor(Math.min(anchoFuente, altoFuente) / 400));
+    for (let y = 0; y < altoFuente; y += PASO) {
+      for (let x = 0; x < anchoFuente; x += PASO) {
         const i = (y * anchoFuente + x) * 4;
         // Umbral alto: el fondo es papel casi blanco, no blanco puro.
         if (data[i] > 243 && data[i + 1] > 243 && data[i + 2] > 243) continue;
@@ -71,7 +80,17 @@ function encuadrarAContenido(
   const dw = cw * k;
   const dh = ch * k;
   octx.drawImage(work, minX, minY, cw, ch, (size - dw) / 2, (size - dh) / 2, dw, dh);
-  return out.toDataURL("image/jpeg", 0.82);
+  const resultado = out.toDataURL("image/jpeg", 0.82);
+  // En iOS/Android el backing store de un canvas no vuelve solo hasta el
+  // GC (mismo motivo que `liberarImagen` en renderCore.ts): con 3+
+  // miniaturas procesandose en paralelo por carpeta, sin esto quedan
+  // canvases enteros de la vista previa (hasta unos MB cada uno) vivos mas
+  // tiempo del necesario.
+  work.width = 0;
+  work.height = 0;
+  out.width = 0;
+  out.height = 0;
+  return resultado;
 }
 
 /**
@@ -188,14 +207,22 @@ export async function renderThumbnailDataUrl(
       targets[id] = { width: size.width * scale, height: size.height * scale };
     });
 
+    // Antes fijos (1 Mpx / 8 Mpx / concurrency 4), ignorando el dispositivo.
+    // Como esto se invoca desde varios `processItem` de la galeria a la vez
+    // (ver `getBudgets().concurrency` en Gallery.tsx), el techo efectivo se
+    // multiplicaba por esa cantidad de llamadas simultaneas: en gama baja
+    // (12 Mpx / 48 MB de presupuesto TOTAL de imagenes) unas pocas
+    // miniaturas en paralelo ya doblaban el presupuesto pensado para todo
+    // el documento que el usuario tiene abierto.
+    const budgets = getBudgets();
     images = await loadResourceImages(doc, {
       targets,
       quality: 1,
-      maxPixels: 1_000_000,
-      maxTotalPixels: 8_000_000,
+      maxPixels: Math.min(1_000_000, budgets.maxPixelsPerResource),
+      maxTotalPixels: Math.min(8_000_000, budgets.maxImagePixels),
       minSide: 32,
       timeoutMs: 20000,
-      concurrency: 4,
+      concurrency: budgets.concurrency,
       // La miniatura pide una resolucion diminuta que no le sirve a nadie mas;
       // cachearla desalojaria las versiones utiles.
       sinCache: true,
@@ -217,5 +244,12 @@ export async function renderThumbnailDataUrl(
   sctx.drawImage(big, 0, 0, superSample, superSample, 0, 0, finalSize, finalSize);
 
   releaseResourceImages(images);
-  return small.toDataURL("image/jpeg", 0.85);
+  const resultado = small.toDataURL("image/jpeg", 0.85);
+  // Ver el comentario equivalente en `encuadrarAContenido`: liberar el
+  // backing store de inmediato en vez de esperar al GC.
+  big.width = 0;
+  big.height = 0;
+  small.width = 0;
+  small.height = 0;
+  return resultado;
 }

@@ -215,6 +215,13 @@
   text-align: left;
   transition: border-color 0.5s ease, box-shadow 0.5s ease, transform 0.15s ease;
   animation: cardIn 0.5s ease-out backwards;
+  /* Red de seguridad barata: el navegador salta el layout/paint de las
+     tarjetas fuera de pantalla (una carpeta grande puede tener cientos).
+     Se ignora sin romper nada en navegadores que no lo soportan (Safari
+     <18). `contain-intrinsic-size` evita que el scrollbar salte al no
+     saber el alto real todavia. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 210px;
 }
 .gallery-card:hover {
   border-color: var(--primary, #0d6efd);

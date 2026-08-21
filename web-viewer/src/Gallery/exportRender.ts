@@ -103,11 +103,22 @@ export async function renderDocumentCanvas(doc: Document): Promise<RenderedCanva
 
 export interface ExportEntry {
   name: string;
-  /** JPEG ya codificado. NO se guarda el canvas: en una descarga de 20
-   * dibujos, retener 20 canvases de export (decenas de MB cada uno) es
-   * cientos de MB vivos a la vez y en un telefono mata la pestaña. El JPEG
-   * de la misma pagina pesa ~1 MB. */
-  dataUrl: string;
+  /**
+   * JPEG ya codificado, como Blob (no data URL). NO se guarda el canvas: en
+   * una descarga de 20 dibujos, retener 20 canvases de export (decenas de
+   * MB cada uno) es cientos de MB vivos a la vez y en un telefono mata la
+   * pestaña. El JPEG de la misma pagina pesa ~1 MB.
+   *
+   * Blob y no data URL: `canvas.toBlob()` es asincronico (no bloquea el
+   * hilo principal codificando) y el Blob resultante pesa ~25% menos en RAM
+   * que su equivalente en base64 -- con 20 archivos exportandose a la vez
+   * (`ExportEntry[]` completo vive hasta que termina el PDF/ZIP), esa
+   * diferencia es real. `exportSectionsAsZip` lo entrega directo a JSZip
+   * (que acepta Blob); `exportSectionsAsPdf` lo convierte a data URL UNO
+   * POR VEZ justo antes de `addImage` (jsPDF no acepta Blob), asi que nunca
+   * hay mas de un data URL vivo a la vez en vez de todos desde el arranque.
+   */
+  blob: Blob;
   logicalWidth: number;
   logicalHeight: number;
 }
@@ -120,10 +131,23 @@ export async function renderDocumentEntry(
   calidad = 0.92
 ): Promise<ExportEntry> {
   const { canvas, logicalWidth, logicalHeight } = await renderDocumentCanvas(doc);
-  const dataUrl = canvas.toDataURL("image/jpeg", calidad);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", calidad));
   canvas.width = 0;
   canvas.height = 0;
-  return { name, dataUrl, logicalWidth, logicalHeight };
+  if (!blob) throw new Error(`No se pudo codificar la exportacion de "${name}"`);
+  return { name, blob, logicalWidth, logicalHeight };
+}
+
+/** Convierte un Blob a data URL. Solo lo necesita jsPDF (`addImage` no
+ * acepta Blob); se llama de a uno, justo antes de usarlo, para no tener
+ * mas de un data URL vivo a la vez. */
+function blobADataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error("No se pudo leer el blob"));
+    reader.readAsDataURL(blob);
+  });
 }
 
 /** Un grupo de entries; title=null cuando son archivos sueltos (sin
@@ -167,6 +191,14 @@ function drawDividerPage(pdf: any, title: string) {
  * La metadata (usuario/fecha/hora/IP) va solo en las propiedades del PDF,
  * no como una hoja extra. */
 export async function exportSectionsAsPdf(sections: ExportSection[], metadata: ExportMetadata): Promise<void> {
+  // Hoy el unico llamador (`Gallery.tsx`) ya filtra `totalFiles === 0` antes
+  // de invocar esto, pero esa es una precondicion IMPLICITA de esta funcion
+  // exportada, no algo que el tipo garantice. Sin ningun `entries.length`,
+  // `pdf` nunca se inicializa (`startPage` no se llama nunca) y
+  // `pdf.setProperties`/`pdf.save` mas abajo revientan contra null.
+  if (sections.every((s) => s.entries.length === 0)) {
+    throw new Error("No hay nada para exportar (todas las secciones estan vacias).");
+  }
   const { default: JsPDF } = await import("jspdf");
   let pdf: any = null;
   const showDividers = sections.length > 1 || (sections.length === 1 && !!sections[0].title);
@@ -179,20 +211,24 @@ export async function exportSectionsAsPdf(sections: ExportSection[], metadata: E
     }
   };
 
-  sections.forEach((section) => {
+  // Secuencial (no Promise.all): son data URLs de varios MB cada una, y la
+  // idea de guardar Blob en vez de data URL en `ExportEntry` es justamente
+  // no tener mas de una viva a la vez.
+  for (const section of sections) {
     if (showDividers && section.title) {
       startPage(PAGE_W, PAGE_H, "portrait");
       drawDividerPage(pdf, section.title);
     }
-    section.entries.forEach(({ dataUrl, logicalWidth, logicalHeight }) => {
+    for (const { blob, logicalWidth, logicalHeight } of section.entries) {
       const orientation = logicalWidth > logicalHeight ? "landscape" : "portrait";
       startPage(logicalWidth, logicalHeight, orientation);
+      const dataUrl = await blobADataUrl(blob);
       // El JPEG tiene mas pixeles que logicalWidth/Height (EXPORT_SCALE) —
       // addImage lo encuadra al tamaño logico de pagina, asi que el resultado
       // sale nitido en vez de pixelado.
       pdf.addImage(dataUrl, "JPEG", 0, 0, logicalWidth, logicalHeight);
-    });
-  });
+    }
+  }
 
   const totalFiles = sections.reduce((n, s) => n + s.entries.length, 0);
 
@@ -218,7 +254,7 @@ export async function exportSectionsAsZip(sections: ExportSection[], metadata: E
   sections.forEach((section) => {
     const target = section.title ? zip.folder(section.title) || zip : zip;
     const usedNames = new Set<string>();
-    section.entries.forEach(({ name, dataUrl }) => {
+    section.entries.forEach(({ name, blob }) => {
       let fileName = `${name}.jpg`;
       let n = 2;
       while (usedNames.has(fileName)) {
@@ -226,7 +262,10 @@ export async function exportSectionsAsZip(sections: ExportSection[], metadata: E
         n++;
       }
       usedNames.add(fileName);
-      target.file(fileName, dataUrl.split(",")[1], { base64: true });
+      // Blob directo: JSZip lo acepta sin pasar por base64 (mas liviano en
+      // RAM: sin el ~33% extra de codificar a texto, y sin el split(",")[1]
+      // de antes).
+      target.file(fileName, blob);
     });
   });
 
@@ -246,11 +285,25 @@ export async function exportSectionsAsZip(sections: ExportSection[], metadata: E
   ];
   zip.file("metadata.txt", metaLines.join("\n"));
 
-  const blob = await zip.generateAsync({ type: "blob" });
+  // STORE, no DEFLATE (el default de JSZip): los JPEGs que se estan
+  // guardando ya vienen comprimidos, y aplicarles DEFLATE encima es CPU
+  // pura en el hilo principal a cambio de ~0% de ahorro de tamaño --
+  // literalmente el peor trato posible en un dispositivo de gama baja.
+  const blob = await zip.generateAsync({ type: "blob", compression: "STORE" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = `concepts-${totalFiles}.zip`;
+  // El link tiene que estar en el DOM para que Firefox dispare la descarga
+  // de forma confiable, y revocar el ObjectURL DE INMEDIATO tras el click()
+  // es una carrera conocida: en Safari/Firefox moviles el navegador todavia
+  // no empezo a leer el blob en ese instante, y la descarga puede fallar o
+  // bajar truncada sin ningun error visible. Se difiere el revoke y se
+  // limpia el link del DOM despues.
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => {
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, 60_000);
 }

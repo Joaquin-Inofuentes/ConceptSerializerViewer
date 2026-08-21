@@ -216,21 +216,33 @@ export async function leerRasterVarios(
   // async y una transaccion de IDB se auto-cierra en cuanto no le quedan
   // pedidos pendientes, asi que hacerlo adentro no alarga nada, solo
   // complicaria el manejo de errores.
-  await Promise.all(
-    pedidos.map(async (p) => {
-      const fila = filas.get(p.resourceId);
-      if (!fila || !fila.blob) { resultado.set(p.resourceId, null); return; }
-      try {
-        const bitmap = await createImageBitmap(fila.blob);
-        resultado.set(p.resourceId, bitmap);
-        // Renovar "usado en", fire-and-forget: no bloquea la respuesta y no
-        // hace falta que comparta transaccion con la lectura.
-        void conStore("readwrite", (s) => s.put({ ...fila, usadoEn: Date.now() }));
-      } catch {
-        resultado.set(p.resourceId, null);
-      }
-    })
-  );
+  //
+  // Por LOTES de `concurrency`, no todos a la vez: al reabrir un dibujo de
+  // 19 planos, decodificar 19 JPEGs de 1-3 Mpx en paralelo es un pico de
+  // jank grande justo en el momento de abrir -- el peor momento posible,
+  // porque es cuando el usuario esta mirando la pantalla esperando. Ir de a
+  // `concurrency` reparte ese trabajo en el tiempo sin cambiar el resultado
+  // final (el orden de llegada no importa, todos terminan antes de que
+  // `leerRasterVarios` resuelva).
+  const concurrency = Math.max(1, getBudgets().concurrency);
+  for (let i = 0; i < pedidos.length; i += concurrency) {
+    const lote = pedidos.slice(i, i + concurrency);
+    await Promise.all(
+      lote.map(async (p) => {
+        const fila = filas.get(p.resourceId);
+        if (!fila || !fila.blob) { resultado.set(p.resourceId, null); return; }
+        try {
+          const bitmap = await createImageBitmap(fila.blob);
+          resultado.set(p.resourceId, bitmap);
+          // Renovar "usado en", fire-and-forget: no bloquea la respuesta y no
+          // hace falta que comparta transaccion con la lectura.
+          void conStore("readwrite", (s) => s.put({ ...fila, usadoEn: Date.now() }));
+        } catch {
+          resultado.set(p.resourceId, null);
+        }
+      })
+    );
+  }
 
   return resultado;
 }

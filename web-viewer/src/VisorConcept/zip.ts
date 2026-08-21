@@ -117,9 +117,21 @@ export class RemoteSource implements ZipSource {
   /** Bytes que se piden de mas alrededor de una lectura chica, para que la
    * siguiente lectura cercana salga del cache en vez de otra request. */
   private readonly HOLGURA = 64 * 1024;
-  /** Techo del cache de bloques. Guarda el indice y lo que se esta leyendo,
-   * nunca el archivo entero. */
-  private readonly MAX_CACHE_BYTES = 12 * 1024 * 1024;
+  /**
+   * Techo del cache de bloques. Guarda el indice y lo que se esta leyendo,
+   * nunca el archivo entero.
+   *
+   * Antes 12 MB fijos, sin importar el dispositivo -- el unico presupuesto
+   * de todo el pipeline de imagenes que ignoraba `device.ts`. Se deriva del
+   * presupuesto general de buffers (25%, con piso de 8 MB y techo de 64 MB):
+   * en gama baja da exactamente los mismos 12 MB de siempre (48 MB * 0.25),
+   * asi que no hay regresion ahi; en gama media/alta da mas margen para
+   * agrupar rangos y evitar viajes de red redundantes.
+   */
+  private readonly MAX_CACHE_BYTES = Math.max(
+    8 * 1024 * 1024,
+    Math.min(getBudgets().maxBufferCacheBytes * 0.25, 64 * 1024 * 1024)
+  );
 
   /** Cuanto puede adelantar `prefetch` sin que lo adelantado se desaloje solo.
    * Se deja un margen para el indice y las lecturas en curso. */

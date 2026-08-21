@@ -408,6 +408,19 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
    * tope como condicion la volveria a pedir en cada sync para siempre.
    */
   const plenoPedidoRef = useRef<Record<string, boolean>>({});
+  /**
+   * Recursos que YA estan siendo pedidos por una sincronizacion en curso.
+   *
+   * Sin esto, dos `sincronizarRecursos` que se solapan (la inicial, que
+   * espera 1 rAF, y la que dispara `pedirRefinado` a los 220ms tras un
+   * gesto) recalculan `sinBitmap`/`aRefinar`/`cargaPlena` cada una por su
+   * cuenta y sin saber de la otra: si un PDF tarda segundos en rasterizarse,
+   * la segunda lo ve "todavia sin bitmap" y lo vuelve a pedir -- doble
+   * viaje de red y doble rasterizado por el mismo recurso, en un pool de
+   * apenas 2 workers en gama baja. Abortar la sincronizacion vieja tampoco
+   * alcanza: el trabajo ya encolado en el worker sigue corriendo igual.
+   */
+  const enVueloRef = useRef<Set<string>>(new Set());
   const layerConfigsRef = useRef<Record<string, LayerConfig>>(layerConfigs);
   const isolatedLayerRef = useRef<string | null>(isolatedLayer);
   const imageOpacityRef = useRef<number>(imageOpacity ?? 1);
@@ -1049,10 +1062,19 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
         // espejo/EXIF de las fotos y respeta el recorte si `loadResourceImages`
         // igual tuvo que darnos uno mas chico que el nativo.
         dibujarRecurso(ctx, recurso, w, h);
-        const url = canvas.toDataURL("image/jpeg", 0.92);
+        // `toBlob` en vez de `toDataURL`: la foto a pantalla completa puede
+        // ser de hasta varios Mpx (el techo de gama baja son 6 Mpx), y
+        // `toDataURL` es un encode JPEG SINCRONICO que bloquea el hilo
+        // principal, mas una string base64 (~33% mas pesada que el binario)
+        // que queda viva en el estado de React mientras se mira la foto.
+        // `toBlob` es async y el ObjectURL resultante es un string tan
+        // usable en <img src> como un data URL, sin ninguna de las dos
+        // penalidades -- a cambio de que el llamador tiene que revocarlo
+        // cuando ya no lo necesite (lo hace `App.tsx`, ver `abrirFoto`).
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
         canvas.width = 0;
         canvas.height = 0;
-        return url;
+        return blob ? URL.createObjectURL(blob) : null;
       } finally {
         liberarImagen(recurso.img);
       }
@@ -1721,8 +1743,19 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
 
       // Los que ni siquiera tienen bitmap van primero: un recuadro vacio
       // molesta mucho mas que un plano con menos resolucion de la ideal.
+      //
+      // `&& !enVueloRef.current.has(id)`: sin esto, dos sincronizaciones que
+      // se solapan (la inicial, con 1 rAF de espera, y la que dispara el
+      // debounce de `pedirRefinado` a los 220ms) recalculan `sinBitmap` cada
+      // una POR SU CUENTA. Si la primera todavia no trajo el bitmap para un
+      // recurso (un PDF puede tardar segundos), la segunda lo ve "sin
+      // bitmap" otra vez y lo vuelve a pedir -- mismo recurso, dos viajes a
+      // red y dos rasterizados con 2 workers ya limitados en gama baja. El
+      // registro evita eso: un recurso que ya esta siendo traido por OTRA
+      // sincronizacion en curso no se vuelve a encolar hasta que esa
+      // termine (exito o error).
       const sinBitmap = cercanos.filter(
-        (id) => !imagesRef.current[id] && (fallosRef.current[id] ?? 0) < MAX_INTENTOS
+        (id) => !imagesRef.current[id] && (fallosRef.current[id] ?? 0) < MAX_INTENTOS && !enVueloRef.current.has(id)
       );
       // Mismo tope que sinBitmap: sin este chequeo, un recurso que ya tiene
       // bitmap pero cuyo refinado a mas resolucion sigue fallando (timeout
@@ -1730,7 +1763,11 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       // (~cada 220ms tras un gesto) para siempre, aunque ya estuviera
       // contado como "fallido" en otros lados de la UI.
       const aRefinar = visibles.filter(
-        (id) => imagesRef.current[id] && necesita(id) && (fallosRef.current[id] ?? 0) < MAX_INTENTOS
+        (id) =>
+          imagesRef.current[id] &&
+          necesita(id) &&
+          (fallosRef.current[id] ?? 0) < MAX_INTENTOS &&
+          !enVueloRef.current.has(id)
       );
       // El anillo se trae a la resolucion de pantalla, sin recorte: todavia no
       // se sabe que pedazo va a mirar el usuario y el recorte solo tiene
@@ -1753,7 +1790,10 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       const pocosRecursos = doc.resourceIds.length <= MAX_HOT_FIFO;
       const cargaPlena = pocosRecursos
         ? visibles.filter(
-            (id) => !plenoPedidoRef.current[id] && (fallosRef.current[id] ?? 0) < MAX_INTENTOS
+            (id) =>
+              !plenoPedidoRef.current[id] &&
+              (fallosRef.current[id] ?? 0) < MAX_INTENTOS &&
+              !enVueloRef.current.has(id)
           )
         : [];
       const pendientes = [...sinBitmap, ...aRefinar, ...cargaPlena];
@@ -1786,6 +1826,11 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       // negro un plano que un momento antes se veia perfectamente.
       desalojarLejanos(recursosVisibles(MARGEN_ANILLO, true));
       if (pendientes.length === 0) return;
+
+      // Se registran ANTES de empezar a pedir: es lo que hace que una
+      // sincronizacion solapada (ver el comentario de `enVueloRef`) los vea
+      // y no los vuelva a encolar.
+      for (const id of pendientes) enVueloRef.current.add(id);
 
       // Cuantos bytes va a costar ESTA tanda de verdad. Es lo unico con lo que
       // se puede calcular un porcentaje y un tiempo restante honestos.
@@ -1841,6 +1886,10 @@ const ViewerBase = forwardRef<ViewerHandle, ViewerProps>(({ doc, fileId, layerCo
       } finally {
         (window as any).__viewerRefinando = false;
         if (!signal?.aborted) onRefinandoRef.current?.(false, 0, 0);
+        // Exito, error o aborto: en cualquier caso esta sincronizacion ya
+        // termino de intentarlo, y otra tiene que poder volver a pedirlos
+        // si hiciera falta (p.ej. si esta fallo por timeout).
+        for (const id of pendientes) enVueloRef.current.delete(id);
       }
     },
     [doc, budgets, cargarRecursos, recursosVisibles, desalojarLejanos]

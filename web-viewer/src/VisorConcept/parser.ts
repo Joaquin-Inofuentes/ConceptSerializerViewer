@@ -1,6 +1,7 @@
 import { decode, ExtensionCodec } from "@msgpack/msgpack";
 import { ZipArchive, BufferSource, FileSource, RemoteSource } from "./zip";
 import type { ZipSource } from "./zip";
+import { getBudgets } from "../device";
 
 export interface BBox {
   minX: number;
@@ -435,7 +436,16 @@ async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Do
   if (!nombreTree) {
     throw new Error("No se encontró tree.pack en el archivo.");
   }
-  const treeData = await zip.read(nombreTree);
+  // `leerCamara` lee workspace.pack, un rango totalmente independiente de
+  // tree.pack: antes se esperaba DESPUES de terminar todo el procesamiento
+  // de capas/trazos, sumando en serie una request de rango extra + un
+  // decode entero + una busqueda recursiva (ver su comentario: "nunca es un
+  // error que falte", es puramente cosmetica) al camino critico, antes de
+  // que el visor pudiera dibujar un solo trazo. Pedirlas en paralelo con
+  // Promise.all no cambia el contrato (`doc.camara` sigue disponible de
+  // forma sincronica cuando `doc` se devuelve) pero le saca ese tiempo
+  // muerto: las dos requests salen a la red a la vez en vez de una tras otra.
+  const [treeData, camara] = await Promise.all([zip.read(nombreTree), leerCamara(zip)]);
   const tree = decode(treeData, { extensionCodec }) as any;
 
   const docData = Array.isArray(tree) && tree.length > 1 ? tree[1] : tree;
@@ -478,7 +488,17 @@ async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Do
   const cacheBlobs = new Map<string, Blob>();
   const lecturas = new Map<string, Promise<Blob | null>>();
   let bytesEnCache = 0;
-  const MAX_BYTES_BLOBS = 16 * 1024 * 1024;
+  // Antes 16 MB fijos. Junto con el cache de bloques de `RemoteSource`
+  // (ver zip.ts), son los dos unicos caminos que tocan los BYTES CRUDOS del
+  // archivo -- y los dos ignoraban el dispositivo. Misma derivacion que
+  // ahi (25% del presupuesto de buffers, piso 8 MB, techo 48 MB): en gama
+  // baja da 12 MB (antes 16), un poco mas ajustado a proposito porque este
+  // cache es puramente un lujo de "no volver a pedir por HTTP", no algo de
+  // lo que dependa la apertura.
+  const MAX_BYTES_BLOBS = Math.max(
+    8 * 1024 * 1024,
+    Math.min(getBudgets().maxBufferCacheBytes * 0.25, 48 * 1024 * 1024)
+  );
   const podarBlobs = () => {
     while (bytesEnCache > MAX_BYTES_BLOBS && cacheBlobs.size > 1) {
       const masViejo = cacheBlobs.keys().next().value as string | undefined;
@@ -492,8 +512,6 @@ async function documentoDesdeZip(zip: ZipArchive, fuente: ZipSource): Promise<Do
 
   const bytesRecursos = ids.reduce((n, id) => n + (sizes[id] || 0), 0);
   const bytesTree = zip.get(nombreTree)?.compressedSize ?? 0;
-
-  const camara = await leerCamara(zip);
 
   const doc: Document = {
     layers,

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo, memo } from "react";
 import { AnimatePresence, m } from "motion/react";
 import {
   Upload, RefreshCw, AlertTriangle, CheckCircle2, Circle, Download, X,
@@ -22,6 +22,7 @@ import type { Tema } from "../theme";
 import { listarRecientes, vaciarRecientes } from "./recientes";
 import type { Reciente } from "./recientes";
 import { vaciarCache, invalidarSiCambio } from "./rasterCache";
+import { getBudgets } from "../device";
 import "./Gallery.css";
 
 type ItemStatus = "queued" | "processing" | "ready" | "error";
@@ -84,6 +85,84 @@ function formatModified(modifiedAt: string | null, hasTime: boolean): string {
   const minutes = String(d.getMinutes()).padStart(2, "0");
   return `${datePart} ${hours}:${minutes}hs`;
 }
+
+interface TarjetaArchivoProps {
+  item: GalleryItem;
+  idx: number;
+  checked: boolean;
+  onActivate: (item: GalleryItem, el: HTMLElement) => void;
+  onToggleCheck: (e: React.MouseEvent, ref: SelectedRef) => void;
+}
+
+/**
+ * Extraida de `items.map(...)` y envuelta en `React.memo`.
+ *
+ * `processItem` hace DOS `setItems` por archivo (`Gallery.tsx`, mas abajo):
+ * con 40 archivos son 80 re-renders del componente `Gallery` completo, y sin
+ * esto cada uno volvia a reconciliar las ~40 tarjetas enteras (incluidos los
+ * iconos de lucide-react, que son componentes React reales, no strings). El
+ * `setItems` que dispara esto usa `prev.map(it => it.id === file.id ? {...it,
+ * ...} : it)`: los items NO tocados conservan la MISMA referencia de objeto,
+ * asi que memo puede saltarselos de verdad -- de los 40 renders solo se
+ * reconcilia el que efectivamente cambio.
+ */
+const TarjetaArchivo = memo(function TarjetaArchivo({
+  item, idx, checked, onActivate, onToggleCheck,
+}: TarjetaArchivoProps) {
+  return (
+    <div
+      className={`gallery-card ${checked ? "selected" : ""}`}
+      style={{ animationDelay: `${Math.min(idx, 12) * 35}ms` }}
+      role="button"
+      tabIndex={0}
+      onClick={(e) => onActivate(item, e.currentTarget)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onActivate(item, e.currentTarget);
+        }
+      }}
+      title={item.name}
+    >
+      <button
+        type="button"
+        className={`gallery-checkbox ${checked ? "checked" : ""}`}
+        onClick={(e) => onToggleCheck(e, { kind: "file", id: item.id, name: item.name })}
+        aria-label={checked ? "Deseleccionar" : "Seleccionar"}
+      >
+        {checked ? <CheckCircle2 size={20} /> : <Circle size={20} />}
+      </button>
+
+      <div className="gallery-thumb">
+        {item.status === "ready" && item.thumbnail ? (
+          // decoding="async": son data URLs (ya en memoria, sin red de por
+          // medio), pero decodificar un JPEG de hasta 384px sigue siendo
+          // trabajo de layout si el navegador lo hace sync. alt="": el
+          // nombre del archivo ya esta en `.gallery-name` justo debajo; con
+          // alt={item.name} un lector de pantalla lo anunciaba dos veces
+          // seguidas.
+          <img src={item.thumbnail} alt="" decoding="async" />
+        ) : item.status === "error" ? (
+          <div className="gallery-thumb-error">
+            <AlertTriangle size={18} />
+          </div>
+        ) : (
+          <div className="skeleton-shimmer" />
+        )}
+        {item.status === "processing" && (
+          <div className="gallery-thumb-overlay">
+            <RefreshCw size={16} className="spin-slow" />
+          </div>
+        )}
+      </div>
+      <div className="gallery-name">{item.name}</div>
+      {item.modifiedAt && (
+        <div className="gallery-date">{formatModified(item.modifiedAt, item.hasTime)}</div>
+      )}
+      {item.status === "error" && <div className="gallery-card-error">{item.error}</div>}
+    </div>
+  );
+});
 
 async function runPool<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
   let idx = 0;
@@ -299,7 +378,13 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
 
         const pending = listing.files.filter((f) => nextItems.find((it) => it.id === f.id)?.status === "queued");
         if (pending.length > 0) {
-          await runPool(pending, 3, processItem);
+          // Antes 3 fijo, ignorando el dispositivo: en gama baja
+          // `getBudgets().concurrency` es 2, y cada slot de `processItem`
+          // abre su propio `RemoteSource` con cache de bloques de hasta
+          // varios MB -- con 3 en paralelo eso son varios MB extra de
+          // buffers de red sumados a lo que ya gasta el visor si esta
+          // abierto detras.
+          await runPool(pending, getBudgets().concurrency, processItem);
         }
       } catch (err: any) {
         setListError(err?.message || "No se pudo cargar la carpeta de Drive");
@@ -397,7 +482,12 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
   // necesita (vista previa al instante, despues tree.pack, despues los
   // recursos visibles). Antes esto bajaba el archivo entero — hasta 262 MB —
   // antes de mostrar absolutamente nada.
-  const handleOpen = async (item: GalleryItem, originRect: DOMRect | null) => {
+  // useCallback con deps acotadas (no `items`/`selected`, que cambian en
+  // cada tanda de miniaturas): es lo que permite que memoizar la tarjeta
+  // mas abajo (`TarjetaArchivo`) sirva de algo. Sin esto, aunque el
+  // componente estuviera envuelto en `React.memo`, recibir esta funcion con
+  // identidad NUEVA en cada render invalidaria la memoizacion igual.
+  const handleOpen = useCallback(async (item: GalleryItem, originRect: DOMRect | null) => {
     if (item.status === "processing") return;
     logAbrir(item.id, item.name, currentFolder.id);
     // Si el modifiedAt de Drive cambio desde la ultima vez que se abrio este
@@ -418,7 +508,7 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
     await invalidarSiCambio(item.id, item.modifiedAt);
     // La ruta sin la raiz: es lo que va en la URL compartible.
     onOpen(item.id, item.name, originRect, folderStack.slice(1).map((c) => c.name));
-  };
+  }, [currentFolder.id, folderStack, onOpen]);
 
   // --- Tema, recientes y restablecer ------------------------------------
   const cambiarTema = () => setTema(alternarTema());
@@ -444,7 +534,9 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
     window.location.href = "/";
   };
 
-  const toggleSelected = (ref: SelectedRef) => {
+  // Update funcional (`setSelected(prev => ...)`): no necesita `selected`
+  // en las dependencias, asi que con `[]` alcanza para que sea 100% estable.
+  const toggleSelected = useCallback((ref: SelectedRef) => {
     setSelected((prev) => {
       const next = new Map(prev);
       if (next.has(ref.id)) next.delete(ref.id);
@@ -452,21 +544,27 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
       if (next.size === 0) setSelectionMode(false);
       return next;
     });
-  };
+  }, []);
 
-  const handleCheckboxClick = (e: React.MouseEvent, ref: SelectedRef) => {
-    e.stopPropagation();
-    if (!selectionMode) setSelectionMode(true);
-    toggleSelected(ref);
-  };
+  const handleCheckboxClick = useCallback(
+    (e: React.MouseEvent, ref: SelectedRef) => {
+      e.stopPropagation();
+      if (!selectionMode) setSelectionMode(true);
+      toggleSelected(ref);
+    },
+    [selectionMode, toggleSelected]
+  );
 
-  const handleCardActivate = (item: GalleryItem, el: HTMLElement) => {
-    if (selectionMode) {
-      toggleSelected({ kind: "file", id: item.id, name: item.name });
-    } else {
-      handleOpen(item, el.getBoundingClientRect());
-    }
-  };
+  const handleCardActivate = useCallback(
+    (item: GalleryItem, el: HTMLElement) => {
+      if (selectionMode) {
+        toggleSelected({ kind: "file", id: item.id, name: item.name });
+      } else {
+        handleOpen(item, el.getBoundingClientRect());
+      }
+    },
+    [selectionMode, toggleSelected, handleOpen]
+  );
 
   // A diferencia de un archivo (que en modo seleccion no tiene otra accion
   // util al hacer click), una carpeta siempre tiene sentido abrirla — asi
@@ -578,8 +676,15 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
     }
   };
 
-  const pendingCount = items.filter((it) => it.status === "queued" || it.status === "processing").length;
-  const cachedCount = items.filter((it) => it.fromCache).length;
+  // Memoizados: sin esto, cada uno de los `setItems` que dispara
+  // `processItem` (dos por archivo, ver mas arriba) recorria TODOS los
+  // items de nuevo solo para estos dos contadores, en cada uno de los
+  // renders extra que ese mismo `setItems` ya provoca.
+  const pendingCount = useMemo(
+    () => items.filter((it) => it.status === "queued" || it.status === "processing").length,
+    [items]
+  );
+  const cachedCount = useMemo(() => items.filter((it) => it.fromCache).length, [items]);
   const driveFolderUrl = `https://drive.google.com/drive/folders/${currentFolder.id}`;
   const isEmpty = !listLoading && folders.length === 0 && items.length === 0 && !listError;
   const selectedCount = selected.size;
@@ -759,64 +864,16 @@ export function Gallery({ hidden, userName, onOpen, onUpload, rutaInicial, onRut
 
           {items.length > 0 && (
             <div className="gallery-grid">
-              {items.map((item, idx) => {
-                const checked = selected.has(item.id);
-                return (
-                  <div
-                    key={item.id}
-                    className={`gallery-card ${checked ? "selected" : ""}`}
-                    style={{ animationDelay: `${Math.min(idx, 12) * 35}ms` }}
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => handleCardActivate(item, e.currentTarget)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        handleCardActivate(item, e.currentTarget);
-                      }
-                    }}
-                    title={item.name}
-                  >
-                    <button
-                      type="button"
-                      className={`gallery-checkbox ${checked ? "checked" : ""}`}
-                      onClick={(e) => handleCheckboxClick(e, { kind: "file", id: item.id, name: item.name })}
-                      aria-label={checked ? "Deseleccionar" : "Seleccionar"}
-                    >
-                      {checked ? <CheckCircle2 size={20} /> : <Circle size={20} />}
-                    </button>
-
-                    <div className="gallery-thumb">
-                      {item.status === "ready" && item.thumbnail ? (
-                        // decoding="async": son data URLs (ya en memoria, sin
-                        // red de por medio), pero decodificar un JPEG de
-                        // hasta 384px sigue siendo trabajo de layout si el
-                        // navegador lo hace sync. alt="": el nombre del
-                        // archivo ya esta en `.gallery-name` justo debajo;
-                        // con alt={item.name} un lector de pantalla lo
-                        // anunciaba dos veces seguidas.
-                        <img src={item.thumbnail} alt="" decoding="async" />
-                      ) : item.status === "error" ? (
-                        <div className="gallery-thumb-error">
-                          <AlertTriangle size={18} />
-                        </div>
-                      ) : (
-                        <div className="skeleton-shimmer" />
-                      )}
-                      {item.status === "processing" && (
-                        <div className="gallery-thumb-overlay">
-                          <RefreshCw size={16} className="spin-slow" />
-                        </div>
-                      )}
-                    </div>
-                    <div className="gallery-name">{item.name}</div>
-                    {item.modifiedAt && (
-                      <div className="gallery-date">{formatModified(item.modifiedAt, item.hasTime)}</div>
-                    )}
-                    {item.status === "error" && <div className="gallery-card-error">{item.error}</div>}
-                  </div>
-                );
-              })}
+              {items.map((item, idx) => (
+                <TarjetaArchivo
+                  key={item.id}
+                  item={item}
+                  idx={idx}
+                  checked={selected.has(item.id)}
+                  onActivate={handleCardActivate}
+                  onToggleCheck={handleCheckboxClick}
+                />
+              ))}
             </div>
           )}
         </>

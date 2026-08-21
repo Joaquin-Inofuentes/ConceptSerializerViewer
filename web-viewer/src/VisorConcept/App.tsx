@@ -271,6 +271,19 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
       coberturaTimeoutRef.current = null;
     }
     setPreviaDescartada(true);
+    // Backstop para la fase "listo" de la barra de carga (normalmente la
+    // pone `onResourcesReady`, ver `alTerminarRecursos`). Se observo en
+    // pruebas manuales que el contador interno de `cargarRecursos`
+    // ("N de M imagenes") puede quedar pegado un numero por debajo del
+    // total incluso cuando TODOS los recursos visibles ya tienen bitmap
+    // (confirmado con `getStats().tiempos.n` == cantidad total) -- una
+    // carrera fina entre el timeout/onEach de un recurso puntual que no se
+    // pudo aislar con confianza sin arriesgar romper el pipeline de carga.
+    // La cobertura (este mismo callback) es una señal MAS confiable de
+    // "no queda nada visible sin cargar" que ese contador: si ya disparo,
+    // no tiene sentido dejar la barra de carga girando para siempre.
+    setRecursosListos(true);
+    seguidorRef.current?.cambiarFase('listo');
   }, []);
 
   // Layer State
@@ -302,29 +315,66 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
   // (`obtenerImagenCompleta`, ver Viewer.tsx) para reemplazarla apenas
   // llega.
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  /** Identidad de la foto que se esta mostrando (el resourceId), separada
+   * de `previewImage`: ver el comentario de `photoId` en
+   * InteractivePreview.tsx -- es lo que le permite a ese componente saber
+   * que la miniatura y la version completa son la MISMA foto. */
+  const [previewPhotoId, setPreviewPhotoId] = useState<string | null>(null);
   const [previewLoadingFull, setPreviewLoadingFull] = useState(false);
   // Se incrementa en cada apertura/cierre: si el pedido de full-res de una
   // foto vieja resuelve DESPUES de que el usuario ya cerro o abrio otra,
   // este token evita que ese resultado tardio pise la foto actual (o
   // reabra el visor de fotos ya cerrado).
   const previewTokenRef = useRef(0);
+  // `obtenerImagenCompleta` (Viewer.tsx) devuelve un ObjectURL, no un data
+  // URL: mas liviano y no bloquea el hilo principal para codificarlo, pero
+  // a diferencia de un data URL alguien tiene que revocarlo o el blob queda
+  // vivo en memoria el resto de la sesion. Se guarda aparte del propio
+  // `previewImage` (que puede ser la miniatura en base64 mientras la
+  // version completa todavia no llego) para saber exactamente cual hay que
+  // revocar y cual no.
+  const previewFullUrlRef = useRef<string | null>(null);
 
   const cerrarFoto = useCallback(() => {
     previewTokenRef.current++;
     setPreviewImage(null);
+    setPreviewPhotoId(null);
     setPreviewLoadingFull(false);
+    if (previewFullUrlRef.current) {
+      URL.revokeObjectURL(previewFullUrlRef.current);
+      previewFullUrlRef.current = null;
+    }
   }, []);
 
   const abrirFoto = useCallback((resourceId: string, thumbUrl: string) => {
     previewTokenRef.current++;
     const token = previewTokenRef.current;
+    // La foto ANTERIOR (si habia una) ya no se va a mostrar: se revoca su
+    // ObjectURL aca, no solo en `cerrarFoto`, porque abrir una foto nueva
+    // sin cerrar la anterior (click directo de una a otra en la galeria) es
+    // un camino real que no pasa por `cerrarFoto`.
+    if (previewFullUrlRef.current) {
+      URL.revokeObjectURL(previewFullUrlRef.current);
+      previewFullUrlRef.current = null;
+    }
     setPreviewImage(thumbUrl);
+    setPreviewPhotoId(resourceId);
     setPreviewLoadingFull(true);
     void viewerRef.current
       ?.obtenerImagenCompleta(resourceId)
       .then((full) => {
-        if (previewTokenRef.current !== token) return;
-        if (full) setPreviewImage(full);
+        if (previewTokenRef.current !== token) {
+          // Esta foto ya no es la que se esta mostrando (el usuario cerro o
+          // abrio otra mientras se generaba): igual llego un ObjectURL
+          // valido que nadie va a usar, y hay que revocarlo aca porque
+          // nunca va a pasar por `previewFullUrlRef`.
+          if (full) URL.revokeObjectURL(full);
+          return;
+        }
+        if (full) {
+          previewFullUrlRef.current = full;
+          setPreviewImage(full);
+        }
         setPreviewLoadingFull(false);
       })
       .catch(() => {
@@ -775,9 +825,10 @@ export function ConceptViewer({ source, onClose }: ViewerProps) {
           {!recursosListos && doc.resourceIds.length > 0 && <BarraCarga progreso={progreso} />}
         </div>
 
-        {previewImage && (
+        {previewImage && previewPhotoId && (
           <InteractivePreview
             src={previewImage}
+            photoId={previewPhotoId}
             fileName={fileName}
             loadingFull={previewLoadingFull}
             onClose={cerrarFoto}
