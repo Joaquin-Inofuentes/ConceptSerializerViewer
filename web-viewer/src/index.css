@@ -107,3 +107,36 @@ body {
   overflow: hidden;
   transform-origin: center center;
 }
+
+/* Fallback minimo del Suspense de App.tsx mientras baja el chunk del visor
+   (pdf.js + jspdf + parser). Duplicado a proposito de VisorConcept/App.css:
+   ese CSS viaja DENTRO del chunk lazy que este fallback esta esperando, asi
+   que si el spinner viviera solo ahi, el usuario veia texto pelado sobre
+   fondo oscuro -- exactamente la pantalla "a medio cargar" que no debe
+   existir. Este bloque va en el CSS del bundle inicial. */
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  width: 100vw;
+  overflow: hidden;
+  background-color: var(--bg-canvas);
+}
+
+.empty-state {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.spin-slow {
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
